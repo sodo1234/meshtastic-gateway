@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Meshtastic Launcher</title>
+<style>
+  /* Paleta dashboard.yaml (lora_base / lora_hdr / lora_stat) */
+  :root{
+    --bg:#0a0a0a; --card:#141414; --border:#1f1f1f; --border-strong:#2a2a2a;
+    --fg:#e5e5e5; --mut:#525252; --mut2:#888;
+    --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --accent:#22d3ee;
+    --ui-font:'Inter','Segoe UI',system-ui,sans-serif;
+    --mono:'JetBrains Mono','Cascadia Code',Consolas,monospace;
+  }
+  *{box-sizing:border-box;font-family:var(--ui-font);}
+  body{margin:0;background:var(--bg);color:var(--fg);font-size:14px;}
+  /* HEADER — dashboard style: subtle, all-caps wordmark */
+  header{padding:18px 22px;background:#0a0a0a;border-bottom:1px solid var(--border);
+         display:flex;justify-content:space-between;align-items:center;gap:14px;}
+  h1{margin:0;font-size:13px;font-weight:800;letter-spacing:4px;text-transform:uppercase;color:var(--fg);}
+  h1 .accent{color:var(--accent);margin-right:8px;}
+  /* GRID */
+  .gridwrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;height:calc(100vh - 70px);}
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;
+         display:flex;flex-direction:column;overflow:hidden;}
+  /* PANEL HEADER — uppercase mini-label per lora_hdr */
+  .panel h2{margin:0;padding:14px 16px 6px 16px;background:transparent;border:none;
+            font-size:11px;font-weight:800;letter-spacing:3px;text-transform:uppercase;
+            color:var(--mut);display:flex;justify-content:space-between;align-items:center;}
+  .ctl{padding:8px 14px 14px 14px;display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:center;
+       border-bottom:1px solid var(--border);}
+  label{color:var(--mut);font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;}
+  select,input{background:#0a0a0a;color:var(--fg);border:1px solid var(--border);padding:9px 12px;
+               border-radius:8px;font-size:13px;font-family:var(--ui-font);font-weight:500;}
+  select:focus,input:focus{outline:none;border-color:var(--accent);}
+  .btnrow{grid-column:1/-1;display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;}
+  button{background:#0a0a0a;color:var(--fg);border:1px solid var(--border-strong);
+         padding:12px 20px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:800;
+         letter-spacing:1.5px;text-transform:uppercase;transition:transform .08s;}
+  button:hover{filter:brightness(1.25);}
+  button:active{transform:scale(.97);}
+  button:hover{background:#374151;}
+  /* BUTTONS — dashboard chip style with subtle accent borders */
+  button.start{color:var(--ok);border-color:var(--ok);}
+  button.start:hover{background:rgba(74,222,128,.08);}
+  button.stop{color:var(--bad);border-color:var(--bad);}
+  button.stop:hover{background:rgba(248,113,113,.08);}
+  button.clear{color:var(--accent);border-color:var(--accent);}
+  button.clear:hover{background:rgba(34,211,238,.08);}
+  /* STATUS chip — uppercase + tabular nums */
+  .status{padding:10px 16px;font-size:11px;color:var(--mut);border-bottom:1px solid var(--border);
+          font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+          font-variant-numeric:tabular-nums;}
+  .status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+               background:#333;margin-right:10px;vertical-align:middle;
+               transition:background .25s, box-shadow .25s;}
+  .status.running .dot{background:var(--ok);box-shadow:0 0 10px var(--ok),0 0 2px var(--ok);}
+  .status.running{color:var(--ok);}
+  .status.stopped .dot{background:var(--bad);}
+  .status.stopped{color:var(--mut2);}
+  /* CONSOLE — raw terminal, BLACK bg, monospace, dense lines */
+  pre.log{flex:1;overflow:auto;padding:10px 14px;margin:0;
+          font-family:var(--mono);font-size:13px;line-height:1.55;
+          background:#000;white-space:pre-wrap;word-break:break-word;
+          border-top:1px solid var(--border);
+          font-variant-numeric:tabular-nums;
+          -webkit-font-smoothing:antialiased;}
+  pre.log::-webkit-scrollbar{width:8px;}
+  pre.log::-webkit-scrollbar-track{background:#000;}
+  pre.log::-webkit-scrollbar-thumb{background:#222;border-radius:4px;}
+  pre.log .ts{color:#3a3a3a;font-size:11px;margin-right:8px;font-weight:500;}
+  pre.log .badge{display:inline-block;padding:1px 7px;margin-right:6px;border-radius:4px;
+                 font-size:10px;font-weight:800;letter-spacing:1px;background:#141414;
+                 color:#cbd5e1;border:1px solid #374151;text-transform:uppercase;}
+  /* Component badges — dashboard chip style (dark bg + accent border + accent text) */
+  pre.log .b-main {background:#141414;color:#60a5fa;border-color:#1e3a8a;}
+  pre.log .b-mqtt {background:#141414;color:#c084fc;border-color:#581c87;}
+  pre.log .b-lora {background:#141414;color:#fb923c;border-color:#7c2d12;}
+  pre.log .b-ha   {background:#141414;color:#4ade80;border-color:#14532d;}
+  pre.log .b-disc {background:#141414;color:#facc15;border-color:#854d0e;}
+  pre.log .b-batch{background:#141414;color:#22d3ee;border-color:#0e7490;}
+  pre.log .b-an,pre.log .b-anom{background:#141414;color:#fb7185;border-color:#9f1239;}
+  pre.log .b-sync {background:#141414;color:#a5b4fc;border-color:#4338ca;}
+  pre.log .b-hb   {background:#141414;color:#4ade80;border-color:#166534;}
+  pre.log .b-cmd  {background:#141414;color:#fcd34d;border-color:#a16207;}
+  pre.log .b-status,pre.log .b-state{background:#141414;color:#9ca3af;border-color:#374151;}
+  pre.log .b-avail,pre.log .b-ping  {background:#141414;color:#5eead4;border-color:#0f766e;}
+  pre.log .b-check{background:#141414;color:#c4b5fd;border-color:#7c3aed;}
+  pre.log .b-err,pre.log .b-error   {background:#141414;color:#f87171;border-color:#7f1d1d;}
+  pre.log .b-debug{background:#141414;color:#94a3b8;border-color:#475569;}
+  pre.log .emoji{margin-right:4px;}
+  pre.log .line-err{color:#fca5a5;background:rgba(127,29,29,.18);padding:1px 4px;border-radius:2px;}
+  pre.log .line-warn{color:#fbbf24;}
+  pre.log .line-trace{color:#f87171;font-style:italic;opacity:.85;}
+  pre.log .line-info{color:#e8e8e8;}
+  pre.log .line-debug{color:#7dd3fc;opacity:.85;}
+  pre.log .line-mut{color:#888;}
+  /* Level tag — dot-pill style */
+  pre.log .lvl{display:inline-block;padding:1px 6px;margin-right:6px;border-radius:4px;
+               font-size:9px;font-weight:800;letter-spacing:1.5px;background:#141414;
+               border:1px solid;text-transform:uppercase;min-width:48px;text-align:center;}
+  pre.log .lvl-info {color:#60a5fa;border-color:#1e3a8a;}
+  pre.log .lvl-debug{color:#7dd3fc;border-color:#0c4a6e;}
+  pre.log .lvl-warn {color:#fbbf24;border-color:#854d0e;}
+  pre.log .lvl-error{color:#f87171;border-color:#7f1d1d;}
+  .toast{position:fixed;bottom:14px;right:14px;background:#141414;border:1px solid var(--accent);
+         color:var(--accent);padding:10px 16px;border-radius:8px;font-size:11px;
+         font-weight:800;letter-spacing:1.5px;text-transform:uppercase;display:none;z-index:99;}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="accent">●</span>Meshtastic · Launcher</h1>
+  <div style="display:flex;gap:14px;align-items:center;">
+    <button class="clear" onclick="clearAll()">Clear consoles</button>
+    <span style="color:var(--mut);font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;">localhost:8765</span>
+  </div>
+</header>
+
+<div class="gridwrap">
+  <div class="panel" id="panel-sup"></div>
+  <div class="panel" id="panel-gw"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const ROLES = [{key:"sup", title:"SUPERVISOR"}, {key:"gw", title:"GATEWAY"}];
+const state = {sup:{host:null,script:null,es:null}, gw:{host:null,script:null,es:null}};
+let hosts = {tailscale:[], lan:[]};
+
+function toast(msg, ms=2500){
+  const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block';
+  clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', ms);
+}
+
+function panelHTML(role){
+  const r = role.key;
+  return `
+    <h2>${role.title}
+      <span class="status" id="st-${r}"><span class="dot"></span><span id="sttxt-${r}">checking…</span></span>
+    </h2>
+    <div class="ctl">
+      <label>Network</label>
+      <select id="net-${r}" onchange="renderHosts('${r}')">
+        <option value="tailscale">Tailscale</option><option value="lan">LAN</option>
+      </select>
+      <label>Host</label>
+      <select id="host-${r}" onchange="onHostChange('${r}')"></select>
+      <label>Script</label>
+      <select id="script-${r}"></select>
+      <label>USB port</label>
+      <select id="port-${r}" title="Wykryte urzadzenia szeregowe (by-id)"></select>
+      <label></label>
+      <div id="usbinfo-${r}" style="font-size:10px;color:var(--mut);grid-column:2;">USB: —</div>
+      <div class="btnrow">
+        <button class="start" onclick="doStart('${r}')">▶ Start</button>
+        <button class="stop" onclick="doStop('${r}')">■ Stop</button>
+      </div>
+    </div>
+    <pre class="log" id="log-${r}">[idle]</pre>
+  `;
+}
+
+function renderHosts(r){
+  const net = document.getElementById(`net-${r}`).value;
+  const sel = document.getElementById(`host-${r}`);
+  const list = (hosts[net]||[]);
+  sel.innerHTML = list.map(h => `<option value="${h.ip}">${h.name} (${h.ip})</option>`).join('')
+                  || '<option value="">(none)</option>';
+  onHostChange(r);
+}
+
+async function onHostChange(r){
+  const host = document.getElementById(`host-${r}`).value;
+  closeStream(r);  // zamknij poprzedni stream zanim przelaczymy host
+  state[r].host = host;
+  if(!host){ document.getElementById(`script-${r}`).innerHTML=''; return; }
+  // 1) scripts
+  const j = await fetch(`/api/scripts?host=${host}`).then(x=>x.json());
+  const sel = document.getElementById(`script-${r}`);
+  const defaultName = r==='sup' ? 'supervisor.py' : 'gateway.py';
+  sel.innerHTML = j.scripts.map(s =>
+    `<option ${s===defaultName?'selected':''} value="${s}">${s}</option>`).join('');
+  // 2) USB devices
+  await refreshUsb(r);
+  refreshStatus(r);
+}
+
+async function refreshUsb(r){
+  const host = state[r].host; if(!host) return;
+  const j = await fetch(`/api/usb-devices?host=${host}`).then(x=>x.json());
+  const sel = document.getElementById(`port-${r}`);
+  const info = document.getElementById(`usbinfo-${r}`);
+  if(!j.devices || j.devices.length === 0){
+    sel.innerHTML = '<option value="">(brak USB)</option>';
+    info.innerHTML = '<span style="color:var(--bad)">⚠ brak wykrytych urządzeń serial</span>';
+    return;
+  }
+  // pre-select: gw → ttyACM0/ttyUSB0, sup → ttyACM1/ttyUSB1 (heurystyka)
+  const preferIdx = r === 'gw' ? 0 : Math.min(1, j.devices.length - 1);
+  sel.innerHTML = j.devices.map((d,i) =>
+    `<option value="${d.byid}" ${i===preferIdx?'selected':''}>${d.tty}</option>`).join('');
+  info.innerHTML = j.devices.map(d =>
+    `<div>• ${d.tty} <span style="color:var(--accent)">${d.label}</span></div>`).join('');
+}
+
+async function refreshStatus(r){
+  const host = state[r].host; if(!host) return;
+  const j = await fetch(`/api/status?host=${host}&role=${r}`).then(x=>x.json());
+  const el = document.getElementById(`st-${r}`);
+  const tx = document.getElementById(`sttxt-${r}`);
+  const prev = el.classList.contains('running');
+  el.classList.remove('running','stopped');
+  el.classList.add(j.running ? 'running' : 'stopped');
+  tx.textContent = j.running
+    ? `RUNNING [${j.mode||'?'}] pid=${j.pid||'?'} • ${j.log}`
+    : `STOPPED • ${j.log}`;
+  if(prev && !j.running) toast(`⚠ ${r.toUpperCase()} stopped (crash?) — check log`);
+  // ZAWSZE strumieniuj log (running lub nie) — żebyś widział też traceback po crashu
+  ensureStream(r);
+}
+
+function ensureStream(r){
+  if(state[r].es) return;
+  const host = state[r].host;
+  const es = new EventSource(`/api/stream?host=${host}&role=${r}`);
+  const log = document.getElementById(`log-${r}`);
+  log.textContent='';
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    const line = colorize(d.line);
+    log.innerHTML += line + '\n';
+    if(log.childNodes.length > 4000) log.innerHTML = log.innerHTML.split('\n').slice(-3000).join('\n');
+    log.scrollTop = log.scrollHeight;
+  };
+  state[r].es = es;
+}
+function closeStream(r){
+  if(state[r].es){ state[r].es.close(); state[r].es=null; }
+}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]);}
+
+function colorize(line){
+  // 1) strip ANSI escape sequences
+  let clean = line.replace(/\x1b\[[0-9;]*m/g, '');
+  // 2) detect & isolate timestamp HH:MM:SS at start
+  let html = '';
+  const tsM = clean.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)$/);
+  if(tsM){ html += `<span class="ts">${tsM[1]}</span>`; clean = tsM[2]; }
+  // 3) detect status emoji prefix
+  const emojiM = clean.match(/^([✅⚠❌🚀📡🏠🔭📻⚡⏰🔧🔄💾🛰️🌙☀️])\s+(.*)$/u);
+  if(emojiM){ html += `<span class="emoji">${emojiM[1]}</span>`; clean = emojiM[2]; }
+  // 4) detect [LEVEL] tag (INFO/DEBUG/WARN/ERROR) — typowy format Python logger
+  const lvlM = clean.match(/^\[(INFO|DEBUG|WARN|WARNING|ERROR)\]\s+(.*)$/);
+  let levelTag = '';
+  if(lvlM){
+    const lvl = lvlM[1].toLowerCase().replace('warning','warn');
+    html += `<span class="lvl lvl-${lvl}">${lvlM[1]}</span>`;
+    levelTag = lvl;
+    clean = lvlM[2];
+  }
+  // 5) detect [COMPONENT] badge
+  const badgeM = clean.match(/^\[([A-Za-z0-9_-]+)\]\s+(.*)$/);
+  if(badgeM){
+    const tag = badgeM[1].toLowerCase();
+    html += `<span class="badge b-${tag}">${esc(badgeM[1])}</span>`;
+    clean = badgeM[2];
+  }
+  // 6) classify rest text
+  const cleanEsc = esc(clean);
+  const lvl = levelTag === 'error' || /ERROR|EXCEPTION|FileNotFound|❌/i.test(clean) ? 'err'
+            : /^Traceback|^\s*File "|^\s*~|^\s*\^|line \d+, in /i.test(clean) ? 'trace'
+            : levelTag === 'warn' || /WARN|⚠/i.test(clean) ? 'warn'
+            : levelTag === 'debug' ? 'debug'
+            : (badgeM || levelTag === 'info') ? 'info' : 'mut';
+  html += `<span class="line-${lvl}">${cleanEsc}</span>`;
+  return html;
+}
+
+async function doStart(r){
+  const host = state[r].host;
+  const script = document.getElementById(`script-${r}`).value;
+  const port = document.getElementById(`port-${r}`).value;
+  if(!host || !script) return toast('select host + script');
+  toast(`starting ${script} on ${host} (port: ${port||'default'})…`);
+  const j = await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host, role:r, script, port})}).then(x=>x.json());
+  toast(j.ok ? `started ✓ port=${j.port||'default'}` : `start failed: ${j.msg||j.err}`);
+  setTimeout(()=>refreshStatus(r), 1500);
+}
+async function doStop(r){
+  const host = state[r].host;
+  await fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host, role:r})});
+  toast('stop sent');
+  closeStream(r);
+  setTimeout(()=>refreshStatus(r), 1000);
+}
+async function doRestart(r){
+  await doStop(r); setTimeout(()=>doStart(r), 1500);
+}
+async function doRefresh(r){
+  // wyczysc konsole, zamknij stary stream, wymus nowy snapshot
+  document.getElementById(`log-${r}`).innerHTML = '[refreshing…]';
+  closeStream(r);
+  await refreshUsb(r);
+  refreshStatus(r);
+}
+async function openTail(r){
+  const host = state[r].host;
+  await fetch('/api/open-tail',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host, role:r})});
+  toast('wt.exe tail opened');
+}
+function clearLog(r){
+  document.getElementById(`log-${r}`).innerHTML = '';
+}
+function clearAll(){
+  ROLES.forEach(role => clearLog(role.key));
+  toast('konsole wyczyszczone (skrypty biegną dalej)');
+}
+async function pullLog(r){
+  const host = state[r].host;
+  const j = await fetch('/api/pull-log',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host, role:r})}).then(x=>x.json());
+  toast(j.ok ? `pulled (${j.size}B) → ${j.path}` : `pull failed: ${j.err}`);
+}
+async function bothStart(){ doStart('sup'); setTimeout(()=>doStart('gw'), 500); }
+async function bothStop(){ doStop('sup'); doStop('gw'); }
+
+(async function init(){
+  ROLES.forEach(role => document.getElementById(`panel-${role.key}`).innerHTML = panelHTML(role));
+  const j = await fetch('/api/hosts').then(x=>x.json()); hosts = j;
+  ROLES.forEach(role => renderHosts(role.key));
+  setInterval(()=> ROLES.forEach(role => refreshStatus(role.key)), 5000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# Runtime state and logs
+logs/
+*.log
+*.bak
+gw_state.json
+schedule.json
+/tmp/
+
+# Secrets
+.env
+.env.local
+*.token
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backups from launcher port-patcher (kept locally on Debian)
+*_v*.py.bak
