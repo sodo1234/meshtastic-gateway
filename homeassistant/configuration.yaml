@@ -1,0 +1,26 @@
+default_config:
+
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+browser_mod:
+
+input_boolean:
+  lora_override_g1:
+    name: "G1 własny kalendarz"
+    icon: mdi:calendar-account
+    initial: false
+
+  lora_override_g2:
+    name: "G2 własny kalendarz"
+    icon: mdi:calendar-account
+    initial: false
+
+  lora_override_g3:
+    name: "G3 własny kalendarz"
+    icon: mdi:calendar-account
+    initial: false

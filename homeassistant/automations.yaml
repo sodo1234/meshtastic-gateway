@@ -1,0 +1,78 @@
+# =============================================================
+# automations.yaml — LoRa SCADA (cleaned for v37)
+# =============================================================
+# Only automations that communicate with supervisor.py
+# Calendar override toggles: when ON, gateway gets its own calendar
+# =============================================================
+
+- id: lora_override_g1_on
+  alias: "LoRa Override G1 ON"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.lora_override_g1
+      to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/override"
+        payload: '{"gw":"G1","on":true}'
+
+- id: lora_override_g1_off
+  alias: "LoRa Override G1 OFF"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.lora_override_g1
+      to: "off"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/override"
+        payload: '{"gw":"G1","on":false}'
+
+- id: lora_override_g2_on
+  alias: "LoRa Override G2 ON"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.lora_override_g2
+      to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/override"
+        payload: '{"gw":"G2","on":true}'
+
+- id: lora_override_g2_off
+  alias: "LoRa Override G2 OFF"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.lora_override_g2
+      to: "off"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/override"
+        payload: '{"gw":"G2","on":false}'
+
+- id: lora_override_g3_on
+  alias: "LoRa Override G3 ON"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.lora_override_g3
+      to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/override"
+        payload: '{"gw":"G3","on":true}'
+
+- id: lora_override_g3_off
+  alias: "LoRa Override G3 OFF"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.lora_override_g3
+      to: "off"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/override"
+        payload: '{"gw":"G3","on":false}'

@@ -1,0 +1,66 @@
+# =============================================================
+# scripts.yaml — LoRa SCADA (cleaned for v37)
+# =============================================================
+# Only scripts actively used by dashboard or supervisor.py
+# =============================================================
+
+# ── Dashboard button: "SYNC KALENDARZ → BRAMKI" ──
+# Reads HA calendar → publishes events to supervisor → supervisor pushes to gateways
+lora_full_sync:
+  alias: "LoRa Full Sync"
+  sequence:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/clear"
+        payload: '{"target":"GLOBAL"}'
+    - service: calendar.get_events
+      target:
+        entity_id: calendar.lora_global
+      data:
+        duration:
+          days: 90
+      response_variable: result
+    - repeat:
+        for_each: "{{ result['calendar.lora_global'].events }}"
+        sequence:
+          - service: mqtt.publish
+            data:
+              topic: "ha/lora/schedule/add"
+              payload: >-
+                {"target":"GLOBAL","start":"{{ repeat.item.start }}","end":"{{ repeat.item.end }}","note":"{{ repeat.item.summary[:30] | replace('"','') }}"}
+    - delay:
+        seconds: 2
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/sync_targeted"
+        payload: "{}"
+
+# ── Per-gateway calendar sync (when override toggle is ON) ──
+lora_sync_g1_calendar:
+  alias: "LoRa Sync G1 Calendar"
+  sequence:
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/clear"
+        payload: '{"target":"G1"}'
+    - service: calendar.get_events
+      target:
+        entity_id: calendar.lora_g1
+      data:
+        duration:
+          days: 90
+      response_variable: result
+    - repeat:
+        for_each: "{{ result['calendar.lora_g1'].events }}"
+        sequence:
+          - service: mqtt.publish
+            data:
+              topic: "ha/lora/schedule/add"
+              payload: >-
+                {"target":"G1","start":"{{ repeat.item.start }}","end":"{{ repeat.item.end }}","note":"{{ repeat.item.summary[:30] | replace('"','') }}"}
+    - delay:
+        seconds: 2
+    - service: mqtt.publish
+      data:
+        topic: "ha/lora/schedule/sync_targeted"
+        payload: '{"gateways":["G1"]}'
