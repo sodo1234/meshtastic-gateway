@@ -102,21 +102,73 @@ def ensure_tmux(host):
     return rc == 0
 
 
+PORT_PATCHER = r'''
+import re, sys, os, ast
+script, new_port = sys.argv[1], sys.argv[2]
+src = open(script, encoding="utf-8").read()
+orig = src
+
+# Singular gateway: 'mesh_port' / 'meshtastic_port' : 'value'
+src = re.sub(
+    r"""(["'](?:mesh_port|meshtastic_port)["']\s*:\s*)["'][^"']*["']""",
+    lambda m: m.group(1) + repr(new_port), src)
+
+# Supervisor list: 'mesh_ports': [ {"port":"X", ..., "enabled":True, ...}, ... ]
+# Strategy: find first dict literal containing "enabled": True, replace its "port" value.
+def patch_first_enabled(s):
+    list_m = re.search(r"""["']mesh_ports["']\s*:\s*\[""", s)
+    if not list_m: return s
+    # Match each dict literal {...} (no nested {}), check for enabled True, find first
+    out, idx = s, list_m.end()
+    for m in re.finditer(r"\{[^{}]*\}", s[idx:]):
+        block = m.group(0)
+        if re.search(r"""["']enabled["']\s*:\s*True""", block):
+            new_block = re.sub(
+                r"""(["']port["']\s*:\s*)["'][^"']*["']""",
+                lambda mm: mm.group(1) + repr(new_port), block, count=1)
+            return s[:idx+m.start()] + new_block + s[idx+m.end():]
+    return s
+src = patch_first_enabled(src)
+
+if src == orig:
+    print("NO_CHANGE"); sys.exit(0)
+
+# Validate before write
+try: ast.parse(src)
+except SyntaxError as e: print("AST_FAIL:", e); sys.exit(2)
+
+bak = script + ".bak"
+if not os.path.exists(bak): open(bak, "w", encoding="utf-8").write(orig)
+open(script, "w", encoding="utf-8").write(src)
+print("PATCHED")
+'''
+
+
 def patch_script_port(host, script, port):
-    """Patch CONFIG mesh_port / meshtastic_port in target .py to `port`.
-    Idempotent. Keeps .bak only on first patch."""
+    """Patch CONFIG mesh_port / mesh_ports[*].port in target .py to `port`.
+
+    Handles two CONFIG shapes:
+      - Singular (gateway):  'mesh_port': 'path'
+      - List (supervisor):   'mesh_ports': [ {"port": "X", "enabled": True, ...}, ... ]
+                             → replaces port of FIRST entry with enabled=True
+    Idempotent, AST-validates before writing, keeps .bak on first patch.
+    """
     if not port:
         return True, "no port override"
-    # sed: replace value after 'mesh_port' or 'meshtastic_port' keys.
-    # Using '~' as s-command separator (path contains /, pattern contains |, both unsafe).
-    sed = (
-        f"cd {REMOTE_DIR} && "
-        f"[ ! -f {script}.bak ] && cp {script} {script}.bak; "
-        f"sed -i -E \"s~(['\\\"](mesh_port|meshtastic_port)['\\\"][[:space:]]*:[[:space:]]*)['\\\"][^'\\\"]*['\\\"]~\\\\1'{port}'~g\" {script} && "
-        f"grep -E \"(mesh_port|meshtastic_port)\" {script} | head -2"
-    )
-    rc, out, err = ssh(host, sed)
-    return rc == 0, out.strip() or err
+    import shlex
+    # ssh ... python3 - <<EOF — pass patcher via stdin to avoid quoting hell
+    remote_cmd = f"cd {REMOTE_DIR} && python3 - {shlex.quote(script)} {shlex.quote(port)}"
+    full = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            f"{SSH_USER}@{host}", remote_cmd]
+    try:
+        p = subprocess.run(full, input=PORT_PATCHER, capture_output=True, text=True,
+                           timeout=15, encoding='utf-8', errors='replace')
+        out = (p.stdout or "").strip(); err = (p.stderr or "").strip()
+        ok = p.returncode == 0 and ("PATCHED" in out or "NO_CHANGE" in out)
+        return ok, out or err
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
 
 
 GUI_ENV = ("export XDG_RUNTIME_DIR=/run/user/1000; "
