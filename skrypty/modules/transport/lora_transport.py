@@ -24,22 +24,27 @@ from collections import deque
 
 class LoraTransport:
     def __init__(self, ports_cfg, reconnect_cfg=None, on_receive=None, logger=None,
-                 tx_timeout=8, dedup_window=200):
+                 tx_timeout=8, dedup_seconds=6):
         """
         ports_cfg:     list of dicts: [{"port": "/dev/...", "enabled": True,
                                         "label": "ANT-1", "gateways": ["G1"]}, ...]
         reconnect_cfg: {"enabled": True, "interval": 15, "max_backoff": 120}
         on_receive:    callable(text:str) — typically dispatcher.dispatch_raw
+        dedup_seconds: drop a byte-identical RX only if seen within this window.
+                       TIME-based (not count-based): catches Meshtastic's RF-layer
+                       duplicate deliveries (arrive within ~1-3s) WITHOUT swallowing
+                       legitimate repeats like an identical periodic ping/disc_meta.
         """
         self.ports_cfg = ports_cfg or []
         self.reconnect_cfg = reconnect_cfg or {"enabled": True, "interval": 15, "max_backoff": 120}
         self.on_receive = on_receive
         self.log = logger
         self.tx_timeout = tx_timeout
+        self.dedup_seconds = dedup_seconds
 
         self.interfaces = {}              # {label: SerialInterface}
         self.lock = threading.Lock()
-        self._seen_msgs = deque(maxlen=dedup_window)
+        self._seen_msgs = {}              # {md5: last_seen_ts} — time-windowed dedup
         self._reconnect_backoff = {}
         self.gw_routes = {}               # {"G1": "ANT-1", ...}
         self._tx_queue = deque()
@@ -70,10 +75,12 @@ class LoraTransport:
 
     def send(self, text):
         """Broadcast via ALL antennas. Non-blocking (enqueues to TX thread)."""
+        if self.log: self.log.info('TX', f"📤 TX: {text}")
         self._tx_queue.append({'text': text, 'label': None})
 
     def send_to(self, gw, text):
         """Unicast via antenna routed to `gw`. Falls back to broadcast if no route."""
+        if self.log: self.log.info('TX', f"📤 TX→{gw}: {text}")
         label = self.gw_routes.get(gw)
         if label:
             with self.lock:
@@ -179,10 +186,18 @@ class LoraTransport:
         try:
             text = packet.get('decoded', {}).get('text') if isinstance(packet, dict) else None
             if not text: return
+            now = time.time()
             h = hashlib.md5(text.encode()).hexdigest()[:8]
-            if h in self._seen_msgs: return
-            self._seen_msgs.append(h)
-            if self.log: self.log.info('LORA', f"📥 {text[:120]}")
+            last = self._seen_msgs.get(h)
+            self._seen_msgs[h] = now
+            if last is not None and (now - last) < self.dedup_seconds:
+                if self.log:
+                    self.log.debug('RX', f"⏭️ RF-dup ({now - last:.1f}s) odrzucony: {text}")
+                return
+            if len(self._seen_msgs) > 256:                       # prune stale hashes
+                cutoff = now - max(self.dedup_seconds, 10)
+                self._seen_msgs = {k: v for k, v in self._seen_msgs.items() if v >= cutoff}
+            if self.log: self.log.info('RX', f"📥 RX: {text}")
             if self.on_receive: self.on_receive(text)
         except Exception:
             pass

@@ -1,3 +1,6 @@
+# POS task briefs (transient, per-session)
+.pos_build_brief.md
+
 # Runtime state and logs
 logs/
 *.log

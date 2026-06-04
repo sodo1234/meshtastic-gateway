@@ -148,7 +148,7 @@ function panelHTML(role){
       <label>Host</label>
       <select id="host-${r}" onchange="onHostChange('${r}')"></select>
       <label>Script</label>
-      <select id="script-${r}"></select>
+      <select id="script-${r}" onchange="onScriptChange('${r}')"></select>
       <label>USB port</label>
       <select id="port-${r}" title="Wykryte urzadzenia szeregowe (by-id)"></select>
       <label></label>
@@ -160,6 +160,11 @@ function panelHTML(role){
     </div>
     <pre class="log" id="log-${r}">[idle]</pre>
   `;
+}
+
+function onScriptChange(r){
+  closeStream(r);
+  ensureStream(r);
 }
 
 function renderHosts(r){
@@ -179,7 +184,7 @@ async function onHostChange(r){
   // 1) scripts
   const j = await fetch(`/api/scripts?host=${host}`).then(x=>x.json());
   const sel = document.getElementById(`script-${r}`);
-  const defaultName = r==='sup' ? 'supervisor.py' : 'gateway.py';
+  const defaultName = r==='test' ? 'test_step1_transport.py' : r==='sup' ? 'supervisor.py' : 'gateway.py';
   sel.innerHTML = j.scripts.map(s =>
     `<option ${s===defaultName?'selected':''} value="${s}">${s}</option>`).join('');
   // 2) USB devices
@@ -205,9 +210,12 @@ async function refreshUsb(r){
     `<div>• ${d.tty} <span style="color:var(--accent)">${d.label}</span></div>`).join('');
 }
 
+function getScript(r){ return document.getElementById(`script-${r}`)?.value || ''; }
+
 async function refreshStatus(r){
   const host = state[r].host; if(!host) return;
-  const j = await fetch(`/api/status?host=${host}&role=${r}`).then(x=>x.json());
+  const script = getScript(r);
+  const j = await fetch(`/api/status?host=${host}&role=${r}&script=${encodeURIComponent(script)}`).then(x=>x.json());
   const el = document.getElementById(`st-${r}`);
   const tx = document.getElementById(`sttxt-${r}`);
   const prev = el.classList.contains('running');
@@ -217,14 +225,14 @@ async function refreshStatus(r){
     ? `RUNNING [${j.mode||'?'}] pid=${j.pid||'?'} • ${j.log}`
     : `STOPPED • ${j.log}`;
   if(prev && !j.running) toast(`⚠ ${r.toUpperCase()} stopped (crash?) — check log`);
-  // ZAWSZE strumieniuj log (running lub nie) — żebyś widział też traceback po crashu
   ensureStream(r);
 }
 
 function ensureStream(r){
   if(state[r].es) return;
   const host = state[r].host;
-  const es = new EventSource(`/api/stream?host=${host}&role=${r}`);
+  const script = getScript(r);
+  const es = new EventSource(`/api/stream?host=${host}&role=${r}&script=${encodeURIComponent(script)}`);
   const log = document.getElementById(`log-${r}`);
   log.textContent='';
   es.onmessage = (e) => {
@@ -280,19 +288,21 @@ function colorize(line){
 
 async function doStart(r){
   const host = state[r].host;
-  const script = document.getElementById(`script-${r}`).value;
+  const script = getScript(r);
   const port = document.getElementById(`port-${r}`).value;
   if(!host || !script) return toast('select host + script');
-  toast(`starting ${script} on ${host} (port: ${port||'default'})…`);
+  closeStream(r);
+  toast(`starting ${script} on ${host}…`);
   const j = await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body: JSON.stringify({host, role:r, script, port})}).then(x=>x.json());
-  toast(j.ok ? `started ✓ port=${j.port||'default'}` : `start failed: ${j.msg||j.err}`);
+  toast(j.ok ? `started ✓ ${script}` : `start failed: ${j.msg||j.err}`);
   setTimeout(()=>refreshStatus(r), 1500);
 }
 async function doStop(r){
   const host = state[r].host;
+  const script = getScript(r);
   await fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({host, role:r})});
+    body: JSON.stringify({host, role:r, script})});
   toast('stop sent');
   closeStream(r);
   setTimeout(()=>refreshStatus(r), 1000);

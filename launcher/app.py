@@ -12,7 +12,10 @@ LOG_DIR.mkdir(exist_ok=True)
 SSH_USER = "td"
 REMOTE_DIR = "~/meshtastic"
 REMOTE_VENV = "~/meshtastic/venv/bin/python"
-LAN_HOSTS = [("192.168.50.49", "debian-dev")]
+LAN_HOSTS = [
+    ("192.168.50.142", "debian-dev"),
+    ("192.168.50.49", "debian-new"),
+]
 
 # role -> tmux session name + remote log paths (logger + stderr) + script-name hint for pgrep
 ROLE_META = {
@@ -22,23 +25,77 @@ ROLE_META = {
             "stderr_log": "/tmp/supervisor.stderr.log", "pgrep": "supervisor.*\\.py"},
 }
 
+
+def resolve_meta(role, script=""):
+    """Return meta for role, overriding log paths when script is a test_* file."""
+    base = ROLE_META[role]
+    if script and script.startswith("test_"):
+        return {**base,
+                "remote_log": "/tmp/test_transport.log",
+                "stderr_log": "/tmp/test_transport.stderr.log",
+                "pgrep": "test_step[0-9].*\\.py"}
+    return base
+
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 _tail_threads = {}  # key=(host,role) -> {"thread":..., "queue":..., "stop":Event}
 
 
+SSH_BASE_OPTS = [
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=5",
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ServerAliveInterval=10",
+    "-o", "ServerAliveCountMax=2",
+]
+
+# PIDs of long-lived ssh processes spawned by Launcher (SSE streams).
+# Anything NOT in this set is fair game for the janitor.
+_protected_ssh_pids = set()
+_protected_lock = threading.Lock()
+
+
 def ssh(host, cmd, timeout=15, check=False):
     """Run remote cmd over ssh. Returns (rc, stdout, stderr)."""
-    full = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            f"{SSH_USER}@{host}", cmd]
+    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", cmd]
     try:
-        p = subprocess.run(full, capture_output=True, text=True, timeout=timeout,
+        # stdin=DEVNULL: Windows ssh.exe hangs when inherited stdin is a socket
+        # (Flask request threads) — explicit DEVNULL prevents that
+        p = subprocess.run(full, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=timeout,
                            encoding='utf-8', errors='replace')
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return -1, "", "timeout"
+
+
+def _ssh_janitor():
+    """Kill orphan ssh.exe processes not in _protected_ssh_pids.
+    Prevents accumulation from terminated SSE streams where Windows
+    TerminateProcess doesn't propagate cleanly to remote sshd."""
+    import time as _t
+    try:
+        import psutil
+    except ImportError:
+        return  # psutil not installed → janitor disabled
+    while True:
+        _t.sleep(60)
+        try:
+            now = _t.time()
+            with _protected_lock:
+                protected = set(_protected_ssh_pids)
+            for proc in psutil.process_iter(['pid', 'name', 'create_time', 'ppid']):
+                try:
+                    if proc.info['name'] and proc.info['name'].lower() == 'ssh.exe':
+                        if proc.info['pid'] in protected: continue
+                        age = now - proc.info['create_time']
+                        if age > 90 and proc.info['ppid'] == os.getpid():
+                            proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except Exception:
+            pass
 
 
 def discover_tailscale():
@@ -158,9 +215,7 @@ def patch_script_port(host, script, port):
     import shlex
     # ssh ... python3 - <<EOF — pass patcher via stdin to avoid quoting hell
     remote_cmd = f"cd {REMOTE_DIR} && python3 - {shlex.quote(script)} {shlex.quote(port)}"
-    full = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            f"{SSH_USER}@{host}", remote_cmd]
+    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", remote_cmd]
     try:
         p = subprocess.run(full, input=PORT_PATCHER, capture_output=True, text=True,
                            timeout=15, encoding='utf-8', errors='replace')
@@ -202,33 +257,34 @@ def close_gnome_terminals(host, session_title):
     ssh(host, cmd, timeout=5)
 
 
-def start_remote(host, role, script, port=None):
-    meta = ROLE_META[role]
+def start_remote(host, role, script, port=None, extra_args=""):
+    meta = resolve_meta(role, script)
+    is_test = script.startswith("test_")
     session = meta["tmux"]
-    # patch port if provided
-    if port:
+    if port and not is_test:
         ok, msg = patch_script_port(host, script, port)
         if not ok:
             return False, f"port patch failed: {msg}"
-    # kill old session + any manually-started instance of this script + truncate stderr
-    pgrep_pat = meta["pgrep"]
+    # Kill tmux session + ALL python scripts that could hold the serial port
+    # (both production and test scripts for this role)
+    base = ROLE_META[role]
     stderr_log = meta["stderr_log"]
     ssh(host, f"tmux kill-session -t {session} 2>/dev/null; "
-              f"pkill -f 'python.*{pgrep_pat}' 2>/dev/null; "
+              f"pkill -f 'python.*{base['pgrep']}' 2>/dev/null; "
+              f"pkill -f 'python.*test_step' 2>/dev/null; "
               f": > {stderr_log}; true")
-    # python -u = unbuffered; stderr redirected to separate file for crash capture
+    args_str = f" {extra_args}" if extra_args else ""
     cmd = (f"cd {REMOTE_DIR} && "
-           f"tmux new -d -s {session} 'venv/bin/python -u {script} 2>>{stderr_log}'")
+           f"tmux new -d -s {session} 'venv/bin/python -u {script}{args_str} 2>>{stderr_log}'")
     rc, out, err = ssh(host, cmd, timeout=10)
     if rc == 0:
-        # Open visible terminal on Debian's GUI (NoMachine sees it)
         launch_gnome_terminal(host, session, f"{role.upper()} • {script}")
     return rc == 0, (err or out or f"started on {port or 'default port'}")
 
 
-def stop_remote_full(host, role):
+def stop_remote_full(host, role, script=""):
     """Stop tmux + kill script + close attached GUI terminals."""
-    meta = ROLE_META[role]
+    meta = resolve_meta(role, script)
     session = meta["tmux"]
     pgrep_pat = meta["pgrep"]
     close_gnome_terminals(host, session)
@@ -237,16 +293,15 @@ def stop_remote_full(host, role):
     return True
 
 
-def stop_remote(host, role):
-    return stop_remote_full(host, role)
+def stop_remote(host, role, script=""):
+    return stop_remote_full(host, role, script)
 
 
-def status_remote(host, role):
-    meta = ROLE_META[role]
-    # Check both: tmux session (launcher-started) OR pgrep on script name (manual start)
+def status_remote(host, role, script=""):
+    meta = resolve_meta(role, script)
     cmd = (
         f"tmux has-session -t {meta['tmux']} 2>/dev/null && echo TMUX_OK; "
-        f"pgrep -af 'python.*{meta['pgrep']}' | head -1"
+        f"pgrep -af 'python.*{meta['pgrep']}' | grep -v pgrep | head -1"
     )
     rc, out, _ = ssh(host, cmd)
     tmux_ok = "TMUX_OK" in out
@@ -263,14 +318,15 @@ def status_remote(host, role):
     return {"running": running, "pid": pid, "mode": mode, "log": meta["remote_log"]}
 
 
-def pull_log(host, role):
+def pull_log(host, role, script=""):
     """scp remote log → local logs/ with date stamp."""
-    meta = ROLE_META[role]
+    meta = resolve_meta(role, script)
     today = datetime.now().strftime("%Y-%m-%d")
     local = LOG_DIR / f"{role}_{host.replace('.', '_')}_{today}.log"
     cmd = ["scp", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
            f"{SSH_USER}@{host}:{meta['remote_log']}", str(local)]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    p = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True, timeout=30)
     if p.returncode == 0:
         return {"ok": True, "path": str(local), "size": local.stat().st_size}
     return {"ok": False, "err": p.stderr or p.stdout}
@@ -301,24 +357,36 @@ def log_sync_loop():
             pass
 
 
-# ── SSE live tail per (host, role) ──
+# ── SSE live tail per (host, meta) ──
 def tail_generator(host, role):
-    meta = ROLE_META[role]
-    # tail BOTH the script's own log AND the captured stderr — so crashes are visible.
-    # --pid 1 trick removed; we just follow both files (tail -F handles missing files).
+    return tail_generator_meta(host, ROLE_META[role])
+
+
+def tail_generator_meta(host, meta):
     files = f"{meta['remote_log']} {meta['stderr_log']}"
-    cmd = f"touch {meta['stderr_log']} 2>/dev/null; tail -n 80 -F {files} 2>/dev/null"
+    # exec → ssh channel close propagates SIGHUP to tail; --pid=1 dies if shell vanishes
+    cmd = (f"touch {meta['stderr_log']} 2>/dev/null; "
+           f"exec tail -n 80 -F {files} 2>/dev/null")
     proc = subprocess.Popen(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-         f"{SSH_USER}@{host}", cmd],
+        ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", cmd],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         encoding='utf-8', errors='replace')
+    with _protected_lock:
+        _protected_ssh_pids.add(proc.pid)
     try:
         for line in iter(proc.stdout.readline, ""):
             if not line: break
             yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
     finally:
-        proc.terminate()
+        with _protected_lock:
+            _protected_ssh_pids.discard(proc.pid)
+        try: proc.terminate()
+        except Exception: pass
+        try: proc.wait(timeout=2)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
 
 
 # ── Routes ──
@@ -354,36 +422,38 @@ def api_usb():
 def api_status():
     host = request.args.get("host")
     role = request.args.get("role")
+    script = request.args.get("script", "")
     if not host or role not in ROLE_META:
         return jsonify({"error": "host & role required"}), 400
-    return jsonify(status_remote(host, role))
+    return jsonify(status_remote(host, role, script))
 
 
 @app.route("/api/start", methods=["POST"])
 def api_start():
     d = request.get_json()
-    host, role, script, port = d.get("host"), d.get("role"), d.get("script"), d.get("port")
+    host, role, script = d.get("host"), d.get("role"), d.get("script")
+    port, extra_args = d.get("port"), d.get("extra_args", "")
     if not all([host, role, script]) or role not in ROLE_META:
         return jsonify({"ok": False, "err": "host, role, script required"}), 400
     ensure_tmux(host)
-    ok, msg = start_remote(host, role, script, port=port)
+    ok, msg = start_remote(host, role, script, port=port, extra_args=extra_args)
     return jsonify({"ok": ok, "msg": msg, "port": port})
 
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
     d = request.get_json()
-    host, role = d.get("host"), d.get("role")
+    host, role, script = d.get("host"), d.get("role"), d.get("script", "")
     if not host or role not in ROLE_META:
         return jsonify({"ok": False, "err": "host & role required"}), 400
-    stop_remote(host, role)
+    stop_remote(host, role, script)
     return jsonify({"ok": True})
 
 
 @app.route("/api/pull-log", methods=["POST"])
 def api_pull():
     d = request.get_json()
-    return jsonify(pull_log(d.get("host"), d.get("role")))
+    return jsonify(pull_log(d.get("host"), d.get("role"), d.get("script", "")))
 
 
 @app.route("/api/open-tail", methods=["POST"])
@@ -397,12 +467,15 @@ def api_open_tail():
 def api_stream():
     host = request.args.get("host")
     role = request.args.get("role")
+    script = request.args.get("script", "")
     if not host or role not in ROLE_META:
         return Response("host & role required", status=400)
-    return Response(stream_with_context(tail_generator(host, role)),
+    meta = resolve_meta(role, script)
+    return Response(stream_with_context(tail_generator_meta(host, meta)),
                     mimetype="text/event-stream")
 
 
 if __name__ == "__main__":
     threading.Thread(target=log_sync_loop, daemon=True).start()
+    threading.Thread(target=_ssh_janitor, daemon=True).start()
     app.run(host="127.0.0.1", port=8765, debug=False, threaded=True)
