@@ -5,6 +5,10 @@ from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, render_template, request, Response, stream_with_context
 
+# Windows: suppress the console window that ssh.exe/scp.exe/wt.exe would flash
+# on every subprocess call when the launcher has no visible console of its own.
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -64,7 +68,8 @@ def ssh(host, cmd, timeout=15, check=False):
         # (Flask request threads) — explicit DEVNULL prevents that
         p = subprocess.run(full, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=timeout,
-                           encoding='utf-8', errors='replace')
+                           encoding='utf-8', errors='replace',
+                           creationflags=CREATE_NO_WINDOW)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return -1, "", "timeout"
@@ -101,7 +106,8 @@ def _ssh_janitor():
 def discover_tailscale():
     """Return list of (ip, name) for online tailnet Linux peers."""
     try:
-        p = subprocess.run(["tailscale", "status"], capture_output=True, text=True, timeout=5)
+        p = subprocess.run(["tailscale", "status"], capture_output=True, text=True, timeout=5,
+                           creationflags=CREATE_NO_WINDOW)
         out = []
         for line in p.stdout.splitlines():
             parts = line.split()
@@ -218,10 +224,57 @@ def patch_script_port(host, script, port):
     full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", remote_cmd]
     try:
         p = subprocess.run(full, input=PORT_PATCHER, capture_output=True, text=True,
-                           timeout=15, encoding='utf-8', errors='replace')
+                           timeout=15, encoding='utf-8', errors='replace',
+                           creationflags=CREATE_NO_WINDOW)
         out = (p.stdout or "").strip(); err = (p.stderr or "").strip()
         ok = p.returncode == 0 and ("PATCHED" in out or "NO_CHANGE" in out)
         return ok, out or err
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
+
+
+# ── Remote config.py edit (view + save) ──
+# config.py trzyma CONFIG bramki/supervisora (porty, listy urządzeń, tokeny).
+# Edycja przez UI zamiast ręcznego ssh — zapis waliduje AST i robi .bak (jak PORT_PATCHER).
+CONFIG_REMOTE_PATH = f"{REMOTE_DIR}/config.py"
+
+CONFIG_WRITER = r'''
+import sys, os, ast, base64
+path = os.path.expanduser(sys.argv[1])     # Python open() NIE rozwija ~ (tylko shell)
+content = base64.b64decode(sys.argv[2].encode()).decode("utf-8")
+try:
+    ast.parse(content)
+except SyntaxError as e:
+    print("AST_FAIL: line %s: %s" % (e.lineno, e.msg)); sys.exit(2)
+orig = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+open(path + ".bak", "w", encoding="utf-8").write(orig)          # last-known-good przed zapisem
+with open(path, "w", encoding="utf-8", newline="\n") as f:
+    f.write(content)
+print("SAVED %d" % len(content))
+'''
+
+
+def read_remote_config(host):
+    """Return (content, err). Reads {REMOTE_DIR}/config.py over ssh."""
+    rc, out, err = ssh(host, f"cat {CONFIG_REMOTE_PATH}", timeout=15)
+    if rc != 0:
+        return None, (err.strip() or "read failed")
+    return out, None
+
+
+def write_remote_config(host, content):
+    """AST-validate + .bak + write config.py on host. Returns (ok, msg)."""
+    import base64, shlex
+    b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    remote_cmd = f"python3 - {shlex.quote(CONFIG_REMOTE_PATH)} {shlex.quote(b64)}"
+    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", remote_cmd]
+    try:
+        p = subprocess.run(full, input=CONFIG_WRITER, capture_output=True, text=True,
+                           timeout=15, encoding="utf-8", errors="replace",
+                           creationflags=CREATE_NO_WINDOW)
+        out = (p.stdout or "").strip(); err = (p.stderr or "").strip()
+        ok = p.returncode == 0 and out.startswith("SAVED")
+        return ok, (out or err or "unknown error")
     except subprocess.TimeoutExpired:
         return False, "timeout"
 
@@ -326,7 +379,8 @@ def pull_log(host, role, script=""):
     cmd = ["scp", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
            f"{SSH_USER}@{host}:{meta['remote_log']}", str(local)]
     p = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30,
+                       creationflags=CREATE_NO_WINDOW)
     if p.returncode == 0:
         return {"ok": True, "path": str(local), "size": local.stat().st_size}
     return {"ok": False, "err": p.stderr or p.stdout}
@@ -336,8 +390,13 @@ def open_tail_wt(host, role):
     """Open new wt.exe tab with live tail."""
     log = ROLE_META[role]["remote_log"]
     title = f"{role.upper()}-{host}"
-    cmd = f'cmd /c start "" wt.exe new-tab --title {title} ssh {SSH_USER}@{host} "tail -F {log}"'
-    subprocess.Popen(cmd, shell=True)
+    # Launch wt.exe directly (no intermediate `cmd /c start`, which flashed a
+    # console window). wt opens its own GUI tab; CREATE_NO_WINDOW keeps the
+    # launching side windowless.
+    subprocess.Popen(
+        ["wt.exe", "new-tab", "--title", title,
+         "ssh", f"{SSH_USER}@{host}", f"tail -F {log}"],
+        creationflags=CREATE_NO_WINDOW)
     return True
 
 
@@ -371,7 +430,8 @@ def tail_generator_meta(host, meta):
         ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", cmd],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        encoding='utf-8', errors='replace')
+        encoding='utf-8', errors='replace',
+        creationflags=CREATE_NO_WINDOW)
     with _protected_lock:
         _protected_ssh_pids.add(proc.pid)
     try:
@@ -461,6 +521,27 @@ def api_open_tail():
     d = request.get_json()
     open_tail_wt(d.get("host"), d.get("role"))
     return jsonify({"ok": True})
+
+
+@app.route("/api/config")
+def api_config_get():
+    host = request.args.get("host")
+    if not host:
+        return jsonify({"ok": False, "err": "host required"}), 400
+    content, err = read_remote_config(host)
+    if err:
+        return jsonify({"ok": False, "err": err}), 500
+    return jsonify({"ok": True, "content": content, "path": CONFIG_REMOTE_PATH})
+
+
+@app.route("/api/config-save", methods=["POST"])
+def api_config_save():
+    d = request.get_json()
+    host, content = d.get("host"), d.get("content")
+    if not host or content is None:
+        return jsonify({"ok": False, "err": "host & content required"}), 400
+    ok, msg = write_remote_config(host, content)
+    return jsonify({"ok": ok, "msg": msg})
 
 
 @app.route("/api/stream")

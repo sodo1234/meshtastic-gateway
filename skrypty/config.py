@@ -112,6 +112,28 @@ SUPERVISOR_CONFIG.update({
 })
 
 # ═══════════════════════════════════════════════════════════
+# STEP 3: Data (batch monitored/priority + delta + refresh)
+# ═══════════════════════════════════════════════════════════
+
+GATEWAY_CONFIG.update({
+    "data": {
+        "mon_interval": 30,                   # P3 monitored flush (s)
+        "pri_interval": 10,                   # P1 priority flush (s)
+        "max_payload": 120,                   # ≤150B operational; batch frame split
+        "thresholds": {                       # delta gating (v10): below → no LoRa
+            "temperature": 0.5,               # °C
+            "humidity": 2.0,                  # %
+        },
+        # #8 periodic report + #7 gw-side liveness (bramka = autorytet dostępności):
+        "report_interval": 900,               # co tyle s wyślij `b` dla KAŻDEGO monitored
+                                              #   (heartbeat danych 15min, nie tylko delta).
+                                              #   Na live-test obniż np. do 60.
+        "offline_after": 1920,                # cisza z2m > tyle s → available=0 (martwy czujnik).
+                                              #   Domyślnie 2×report+grace (~32min). Live-test: ~150.
+    },
+})
+
+# ═══════════════════════════════════════════════════════════
 # Aktywny config na tej maszynie
 # ═══════════════════════════════════════════════════════════
 

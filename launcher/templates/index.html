@@ -21,6 +21,7 @@
   h1 .accent{color:var(--accent);margin-right:8px;}
   /* GRID */
   .gridwrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;height:calc(100vh - 70px);}
+  .gridwrap.one-col{grid-template-columns:1fr;}        /* układ 1-kolumnowy (panele jeden pod drugim) */
   .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;
          display:flex;flex-direction:column;overflow:hidden;}
   /* PANEL HEADER — uppercase mini-label per lora_hdr */
@@ -106,12 +107,29 @@
   .toast{position:fixed;bottom:14px;right:14px;background:#141414;border:1px solid var(--accent);
          color:var(--accent);padding:10px 16px;border-radius:8px;font-size:11px;
          font-weight:800;letter-spacing:1.5px;text-transform:uppercase;display:none;z-index:99;}
+  /* CONFIG EDITOR modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;
+         align-items:center;justify-content:center;z-index:200;}
+  .modal .box{background:var(--card);border:1px solid var(--border-strong);border-radius:12px;
+              width:min(900px,92vw);height:min(80vh,800px);display:flex;flex-direction:column;overflow:hidden;}
+  .modal .mhead{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;
+                justify-content:space-between;align-items:center;gap:12px;}
+  .modal .mhead .ttl{font-size:11px;font-weight:800;letter-spacing:3px;text-transform:uppercase;color:var(--mut);}
+  .modal .mhead .path{font-family:var(--mono);font-size:11px;color:var(--accent);}
+  .modal textarea{flex:1;background:#000;color:var(--fg);border:none;border-top:1px solid var(--border);
+                  border-bottom:1px solid var(--border);padding:12px 14px;resize:none;
+                  font-family:var(--mono);font-size:12.5px;line-height:1.5;white-space:pre;
+                  tab-size:4;outline:none;}
+  .modal .mfoot{padding:12px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;}
+  .modal .mfoot .cfgstatus{font-family:var(--mono);font-size:11px;color:var(--mut2);flex:1;
+                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 </style>
 </head>
 <body>
 <header>
   <h1><span class="accent">●</span>Meshtastic · Launcher</h1>
   <div style="display:flex;gap:14px;align-items:center;">
+    <button class="clear" id="layout-btn" onclick="toggleLayout()">Układ: 2 kol</button>
     <button class="clear" onclick="clearAll()">Clear consoles</button>
     <span style="color:var(--mut);font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;">localhost:8765</span>
   </div>
@@ -124,6 +142,22 @@
 
 <div class="toast" id="toast"></div>
 
+<div class="modal" id="cfg-modal">
+  <div class="box">
+    <div class="mhead">
+      <span class="ttl">config.py · <span id="cfg-host" style="color:var(--fg)"></span></span>
+      <span class="path" id="cfg-path"></span>
+    </div>
+    <textarea id="cfg-text" spellcheck="false"></textarea>
+    <div class="mfoot">
+      <span class="cfgstatus" id="cfg-status"></span>
+      <button class="clear" onclick="reloadConfig()">↻ Reload</button>
+      <button class="start" onclick="saveConfig()">💾 Save</button>
+      <button class="stop" onclick="closeConfig()">✕ Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const ROLES = [{key:"sup", title:"SUPERVISOR"}, {key:"gw", title:"GATEWAY"}];
 const state = {sup:{host:null,script:null,es:null}, gw:{host:null,script:null,es:null}};
@@ -132,6 +166,20 @@ let hosts = {tailscale:[], lan:[]};
 function toast(msg, ms=2500){
   const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block';
   clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', ms);
+}
+
+// Układ: 1 kolumna (panele jeden pod drugim) lub 2 (obok siebie). Wybór zapamiętany.
+function applyLayout(){
+  const one = localStorage.getItem('layout') === '1';
+  const gw = document.querySelector('.gridwrap');
+  if(gw) gw.classList.toggle('one-col', one);
+  const b = document.getElementById('layout-btn');
+  if(b) b.textContent = one ? 'Układ: 1 kol' : 'Układ: 2 kol';
+}
+function toggleLayout(){
+  const one = localStorage.getItem('layout') === '1';
+  localStorage.setItem('layout', one ? '2' : '1');
+  applyLayout();
 }
 
 function panelHTML(role){
@@ -156,6 +204,7 @@ function panelHTML(role){
       <div class="btnrow">
         <button class="start" onclick="doStart('${r}')">▶ Start</button>
         <button class="stop" onclick="doStop('${r}')">■ Stop</button>
+        <button class="clear" onclick="openConfig('${r}')">⚙ Config</button>
       </div>
     </div>
     <pre class="log" id="log-${r}">[idle]</pre>
@@ -339,7 +388,52 @@ async function pullLog(r){
 async function bothStart(){ doStart('sup'); setTimeout(()=>doStart('gw'), 500); }
 async function bothStop(){ doStop('sup'); doStop('gw'); }
 
+// ── Config editor (remote config.py: view + AST-validated save + .bak) ──
+let cfgHost = null;
+async function loadConfigInto(host){
+  const ta = document.getElementById('cfg-text');
+  const st = document.getElementById('cfg-status');
+  ta.value = 'ładowanie…'; st.textContent = '';
+  const j = await fetch(`/api/config?host=${host}`).then(x=>x.json()).catch(()=>({ok:false,err:'fetch failed'}));
+  if(j.ok){
+    ta.value = j.content;
+    document.getElementById('cfg-path').textContent = j.path;
+    st.textContent = `${j.content.length} B załadowane`;
+  } else {
+    ta.value = '';
+    st.textContent = '✗ błąd odczytu: ' + (j.err||'?');
+  }
+}
+async function openConfig(r){
+  const host = state[r].host;
+  if(!host) return toast('najpierw wybierz host');
+  cfgHost = host;
+  document.getElementById('cfg-host').textContent = host;
+  document.getElementById('cfg-modal').style.display = 'flex';
+  await loadConfigInto(host);
+}
+function reloadConfig(){ if(cfgHost) loadConfigInto(cfgHost); }
+function closeConfig(){ document.getElementById('cfg-modal').style.display = 'none'; cfgHost = null; }
+async function saveConfig(){
+  if(!cfgHost) return;
+  const content = document.getElementById('cfg-text').value;
+  const st = document.getElementById('cfg-status');
+  st.textContent = 'zapisywanie…';
+  const j = await fetch('/api/config-save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host:cfgHost, content})}).then(x=>x.json()).catch(()=>({ok:false,err:'fetch failed'}));
+  if(j.ok){
+    st.textContent = '✓ ' + j.msg + '  ·  .bak zapisany';
+    toast('config zapisany ✓ — zrestartuj skrypt by zadziałał');
+  } else {
+    st.textContent = '✗ ODRZUCONO: ' + (j.msg||j.err);
+    toast('zapis odrzucony (walidacja AST?)');
+  }
+}
+// Esc zamyka modal
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeConfig(); });
+
 (async function init(){
+  applyLayout();
   ROLES.forEach(role => document.getElementById(`panel-${role.key}`).innerHTML = panelHTML(role));
   const j = await fetch('/api/hosts').then(x=>x.json()); hosts = j;
   ROLES.forEach(role => renderHosts(role.key));

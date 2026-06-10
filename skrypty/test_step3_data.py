@@ -1,0 +1,883 @@
+#!/usr/bin/env python3
+"""
+Step 3 Integration Test — Data (batch monitored/priority + delta + refresh)
+
+Builds on Step 2 (HB + discovery + control + VIO) and adds the data layer:
+  - GATEWAY    → reads Z2M device states, computes delta (temp 0.5 / hum 2 / any),
+                 batches monitored (P3, 30s) + priority (P1, 10s) → `b` over LoRa,
+                 any fresh Z2M state ⇒ device online; `req` → on-demand last value
+  - SUPERVISOR → `b` → reverse sid→dev → MERGE into device state → HA entity values,
+                 online cascade (available=ON + last_seen); per-device Refresh button → `req`
+
+PROCEDURA TESTOWA (na sprzęcie):
+  A) Wartości na żywo — zmień temp/hum/baterię urządzenia w Z2M → po ≤30s (monitored)
+     lub ≤10s (priority) encje sensor.lora_g1_<dev>_temp/_humi/_batt pokazują wartość
+  B) Delta/minimalizacja — brak zmian = brak ruchu LoRa; mała zmiana (<0.5°C) nie wysyła nic;
+     log GATEWAY 📦 [MON]/[PRI] tylko gdy realna zmiana
+  C) Merge — wyślij sam delta temp, potem sam delta hum → encja humi NIE kasuje temp
+  D) Online cascade — dowolny `b` z urządzenia → available=ON + last_seen odświeżony
+  E) Refresh on-demand — HA(sup): button "<dev> Refresh" → log GATEWAY '↻ req' → natychmiast `b`
+  F) TX/RX — 📤 TX / 📥 RX dla każdego `b`
+
+Uruchomienie (launcher lub ręcznie):
+  cd skrypty && py test_step3_data.py        # rola z config.py (gateway/supervisor)
+"""
+import logging
+logging.getLogger("meshtastic").setLevel(logging.WARNING)
+logging.getLogger("meshtastic.serial_interface").setLevel(logging.WARNING)
+
+import json, os, signal, sys, time, threading
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+from config import CONFIG, ROLE
+from modules.transport import Dispatcher, MqttTransport, LoraTransport
+from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
+                               GatewayDiscovery, SupervisorDiscovery)
+from modules.data import GatewayData, SupervisorData
+from modules.params import ParamSync
+from modules.anomaly import StagnationEngine, OfflineMonitor
+
+STATE_PREFIX = CONFIG.get('state_prefix', 'lora')
+HA_PREFIX = CONFIG.get('ha_prefix', 'homeassistant')
+
+
+def _safe(s):
+    return str(s).replace(' ', '_').lower()
+
+
+# ── Logger with colors and icons ────────────────────────
+class Log:
+    LEVEL = {
+        'DEBUG': ('\033[36m', '🔍'), 'INFO': ('\033[32m', ''),
+        'WARN':  ('\033[33m', '⚠️'), 'ERROR': ('\033[31m', '❌'),
+    }
+    COMP = {
+        'MAIN': '🚀', 'MQTT': '📡', 'LORA': '📻', 'ANT': '📡',
+        'HA': '🏠', 'HB': '💓', 'DISC': '🔭', 'VIO': '🔘',
+        'DISPATCH': '📨', 'TX': '📤', 'RX': '📥', 'STATS': '📊',
+        'CMD': '⚡', 'BTN': '🔘', 'CTRL': '🎛️', 'DATA': '📊', 'BATCH': '📦',
+    }
+    R = '\033[0m'
+
+    def __init__(self):
+        self._h = RotatingFileHandler(CONFIG['log_file'], maxBytes=2_000_000, backupCount=2)
+        self._h.setFormatter(logging.Formatter('%(message)s'))
+        self._f = logging.getLogger('test_step3')
+        self._f.addHandler(self._h)
+        self._f.setLevel(logging.DEBUG)
+
+    def _w(self, lvl, comp, msg):
+        ts = datetime.now().strftime('%H:%M:%S')
+        color, _ = self.LEVEL.get(lvl, ('', ''))
+        icon = self.COMP.get(comp, '•')
+        print(f"{ts} {color}[{lvl}]{self.R} {icon} [{comp}] {msg}", flush=True)
+        self._f.info(f"{ts} [{lvl}] [{comp}] {msg}")
+
+    def debug(self, c, m): self._w('DEBUG', c, m)
+    def info(self, c, m): self._w('INFO', c, m)
+    def warn(self, c, m): self._w('WARN', c, m)
+    def error(self, c, m): self._w('ERROR', c, m)
+    def close(self):
+        try: self._h.close()
+        except: pass
+
+
+def _make_lora(cfg, log):
+    if 'mesh_port' in cfg:
+        ports = [{"port": cfg['mesh_port'], "enabled": True,
+                  "label": "ANT-1", "gateways": [cfg['id']]}]
+    else:
+        ports = cfg.get('mesh_ports', [])
+    return LoraTransport(ports_cfg=ports,
+                         reconnect_cfg=cfg.get('mesh_reconnect', {}),
+                         logger=log)
+
+
+# ── Gateway mode ────────────────────────────────────────
+def run_gateway(log):
+    running = threading.Event(); running.set()
+    mqtt_cfg = CONFIG['mqtt']
+    tx_delay = CONFIG.get('discovery', {}).get('tx_delay', 4.0)
+    gw_id = CONFIG['id']; gw_lower = gw_id.lower()
+    data_cfg = CONFIG.get('data', {})
+
+    mqtt = MqttTransport(
+        host=mqtt_cfg['host'], port=mqtt_cfg['port'],
+        user=mqtt_cfg['user'], password=mqtt_cfg['pass'],
+        client_id=f"step3_gw_{gw_id}_{int(time.time())}", logger=log)
+
+    lora = _make_lora(CONFIG, log)
+    ha = HAEntities(mqtt, logger=log)
+    vio_config = CONFIG.get('virtual_io', [])
+
+    discovery = GatewayDiscovery(
+        gw_id=gw_id,
+        monitored_names=CONFIG.get('monitored', []),
+        priority_names=CONFIG.get('priority_devices', []),
+        vio_config=vio_config, lora=lora, logger=log,
+        max_payload=CONFIG.get('discovery', {}).get('max_payload', 150))
+
+    # HB: monitored WYŁĄCZNY (bez priority). is_monitored() liczy priority jako monitored
+    # (→ mon=6); tu liczymy mon=monitored\priority (=4), pri=priority (=2), dev=total (=7).
+    # get_devices_summary zwraca REFERENCJE do wewn. dictów → kopiujemy, nie mutujemy w miejscu.
+    def _devices_summary_excl():
+        return {n: {**i, 'monitored': bool(i.get('monitored') and not i.get('priority'))}
+                for n, i in discovery.get_devices_summary().items()}
+
+    heartbeat = GatewayHeartbeat(
+        gw_id=gw_id, devices_fn=_devices_summary_excl,
+        lora=lora, logger=log,
+        interval=CONFIG.get('heartbeat_interval', 120),
+        diag_fn=lambda: {'hash': discovery.disc_hash, 'ph': param_sync.params_hash()})
+
+    # STEP 3: data layer — Z2M → delta → batched `b`
+    data = GatewayData(
+        gw_id=gw_id, discovery=discovery, lora=lora, logger=log,
+        mon_interval=data_cfg.get('mon_interval', 30),
+        pri_interval=data_cfg.get('pri_interval', 10),
+        max_payload=data_cfg.get('max_payload', 120),
+        thresholds=data_cfg.get('thresholds'),
+        send_spacing=CONFIG.get('lora', {}).get('tx_cooldown', 3.0),   # honor LoRa cooldown
+        report_interval=data_cfg.get('report_interval', 0),            # #8 periodic heartbeat
+        offline_after=data_cfg.get('offline_after'))                   # #7 gw-side liveness
+
+    # STEP 3: lokalna encja Zigbee LQI per urządzenie (Z2M nie tworzy jej sam) —
+    # czyta wprost z topicu z2m, więc gateway dashboard ma LQI w pełnej rozdzielczości.
+    lqi_regd = set()
+
+    def reg_gw_lqi(dev):
+        if dev in lqi_regd:
+            return
+        safe = _safe(dev)
+        uid = f"lora_{gw_lower}_{safe}_lqi"
+        mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+            "name": f"{dev} LQI", "object_id": uid, "unique_id": uid,
+            "state_topic": f"zigbee2mqtt/{dev}",
+            "value_template": "{{ value_json.linkquality | default('') }}",
+            "icon": "mdi:signal", "state_class": "measurement"}, separators=(',', ':')),
+            retain=True)
+        lqi_regd.add(dev)
+
+    dev_states = {}
+    pending_st = {}                # {dev: (cap, want, ts)} — cmd→Z2M czeka na realne potwierdzenie
+    vio_states = {v['id']: ('ON' if v.get('default') else 'OFF')
+                  for v in vio_config if v['type'] == 'switch'}
+    gw_stats = {'last_sup_rx_ts': 0.0, 'last_sup_rx': '--',
+                'last_sync': '--', 'time_offset': '--'}
+    SUP_LINK_TIMEOUT = CONFIG.get('sup_link_timeout', 3600)
+
+    def lora_send(obj):
+        lora.send(json.dumps(obj, separators=(',', ':')))
+
+    def for_me(d):
+        g = d.get('g'); return (g is None) or (g == gw_id)
+
+    # STEP 17: parametry (BRAMKA = master) — P1/P2/P3 stagnation + T1/T2/T3 offline mirror
+    param_sync = ParamSync(
+        'gateway', gw_id, mqtt, lora_send, logger=log,
+        persist_path='/tmp/lora_params.json',
+        ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
+        on_change=lambda k, v: log.info('PARAM', f'↻ apply {k}={v} (mechanizm)'))
+
+    # STEP 15: stagnation (bramka) — brak z2m przez P1[h] bateryjne / P2[h] sieciowe
+    stagnation = StagnationEngine(
+        gw_id, discovery, data, lora_send,
+        get_thresholds=lambda: (param_sync.get('P1'), param_sync.get('P2')),
+        logger=log, check_interval=CONFIG.get('data', {}).get('stagnation_check', 60))
+
+    # ── Dispatcher (LoRa RX from supervisor) ──
+    dispatcher = Dispatcher(logger=log)
+    dispatcher.register('ping', lambda d: heartbeat.handle_ping(d))
+
+    def handle_disc_request(d):
+        if not for_me(d): return
+        log.info('CMD', '⚡ Discovery requested')
+        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay),
+                         daemon=True).start()
+    dispatcher.register('disc', handle_disc_request)
+
+    def handle_cmd(d):
+        if not for_me(d): return
+        dev = d.get('d'); cap = d.get('c', 'state'); val = str(d.get('v', '')).upper()
+        if dev in discovery.devices:                       # REALNE urządzenie Zigbee → steruj przez Z2M
+            z2m_cap = cap if cap != 'state' else 'state'
+            mqtt.publish(f'zigbee2mqtt/{dev}/set',
+                         json.dumps({z2m_cap: val}, separators=(',', ':')))
+            pending_st[dev] = (cap, val, time.time())
+            log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → Z2M set (czekam na realne potwierdzenie)')
+        else:                                              # urządzenie wirtualne (vio) — bez Z2M
+            dev_states[dev] = val
+            log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → applied (virtual)')
+            lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': val})
+    dispatcher.register('cmd', handle_cmd)
+
+    def confirm_cmd_from_z2m(topic, payload):
+        """Realny stan z Z2M dla urządzenia, którym właśnie sterowaliśmy → odeślij `st`
+        z PRAWDZIWĄ wartością (nie echo). Dopiero to czyści pending_cmd na supervisorze."""
+        dev = topic[len('zigbee2mqtt/'):]
+        if dev not in pending_st:
+            return
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        cap, _want, _ts = pending_st[dev]
+        z2m_cap = cap if cap != 'state' else 'state'
+        if z2m_cap not in data:
+            return
+        real = str(data[z2m_cap]).upper()
+        pending_st.pop(dev, None)
+        log.info('CTRL', f'✅ {dev} {cap}={real} potwierdzone przez Z2M → st')
+        lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': real})
+
+    def handle_vsw(d):
+        if not for_me(d): return
+        vid = d.get('id'); val = 1 if str(d.get('v')) in ('1', 'ON', 'on', 'True') else 0
+        vio_states[vid] = 'ON' if val else 'OFF'
+        log.info('VIO', f'🔘 VSwitch {vid} → {vio_states[vid]} (z LoRa)')
+        lora_send({'t': 'vsw_st', 'g': gw_id, 'id': vid, 'v': val})
+    dispatcher.register('vsw', handle_vsw)
+
+    def handle_vbtn(d):
+        if not for_me(d): return
+        vid = d.get('id')
+        log.info('VIO', f'🔘 VButton {vid} pressed (z LoRa)')
+        lora_send({'t': 'vbtn_ack', 'g': gw_id, 'id': vid})
+    dispatcher.register('vbtn', handle_vbtn)
+
+    def handle_sync(d):
+        if not for_me(d): return
+        sec = d.get('sec')
+        if sec:
+            offset = int(time.time()) - int(sec)
+            gw_stats['time_offset'] = f'{offset:+d}s'
+            gw_stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
+            log.info('CMD', f'🕐 sync: offset={offset:+d}s')
+    dispatcher.register('sync', handle_sync)
+    dispatcher.register('req', data.handle_req)          # STEP 3: refresh on-demand
+    dispatcher.register('params', param_sync.handle_remote)      # STEP 17: proposal z supervisora
+    dispatcher.register('params_req', param_sync.handle_remote)  # STEP 17: żądanie pełnego stanu
+    dispatcher.register('cfg', lambda d: log.info('RX', 'cfg (passthrough)'))
+    dispatcher.set_fallback(lambda d: log.debug('RX', f'unknown t={d.get("t")}'))
+
+    # ── Local MQTT (gateway broker) ──
+    def on_mqtt(topic, payload):
+        if topic == 'zigbee2mqtt/bridge/devices':
+            discovery.parse_z2m(payload)
+            for dev in discovery.devices:                # STEP 3: lokalne encje LQI
+                reg_gw_lqi(dev)
+        elif topic.startswith('zigbee2mqtt/'):          # STEP 3: device state → delta/batch
+            data.on_z2m(topic, payload)
+            confirm_cmd_from_z2m(topic, payload)         # STEP 8: realne potwierdzenie cmd→st
+        elif topic.startswith(f'{STATE_PREFIX}/params/gateway/set/'):   # STEP 17: edycja z HA bramki
+            param_sync.on_mqtt_set(topic, payload)
+        elif topic.startswith(f'{STATE_PREFIX}/params/gateway/cmd/'):   # przyciski Send Config/Timeout
+            param_sync.on_cmd(topic, payload)
+        elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/ping':
+            log.info('BTN', '🔘 Ping button pressed'); heartbeat.send_heartbeat()
+        elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/discovery':
+            log.info('BTN', '🔘 Discovery button pressed')
+            threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay),
+                             daemon=True).start()
+        elif topic.startswith(f'{STATE_PREFIX}/vio/') and topic.endswith('/state'):
+            vid = topic.split('/')[2]                     # hydratacja: retained stan vswitcha → vio_states
+            if vid in vio_states:
+                vio_states[vid] = 'ON' if payload.upper() in ('ON', '1') else 'OFF'
+        elif topic.startswith(f'{STATE_PREFIX}/vio/') and topic.endswith('/set'):
+            vid = topic.split('/')[2]
+            val = 'ON' if payload.upper() in ('ON', '1') else 'OFF'
+            vio_states[vid] = val
+            mqtt.publish(f'{STATE_PREFIX}/vio/{vid}/state', val, retain=True)
+            log.info('VIO', f'🔘 VSwitch {vid} → {val} (lokalny)')
+        elif topic.startswith(f'{STATE_PREFIX}/vio/') and topic.endswith('/press'):
+            vid = topic.split('/')[2]
+            log.info('VIO', f'🔘 VButton {vid} pressed (lokalny)')
+
+    def on_lora(text):
+        try:
+            t = json.loads(text).get('t', '?')
+            gw_stats['last_sup_rx_ts'] = time.time()
+            gw_stats['last_sup_rx'] = f"{datetime.now().strftime('%H:%M:%S')} ({t})"
+        except Exception:
+            pass
+        dispatcher.dispatch_raw(text)
+
+    mqtt._on_message_cb = on_mqtt
+    lora.on_receive = on_lora
+    mqtt.subscribe('zigbee2mqtt/bridge/devices')
+    mqtt.subscribe('zigbee2mqtt/+')                      # STEP 3: device states
+    mqtt.subscribe(f'{STATE_PREFIX}/gw/{gw_lower}/cmd/#')
+    mqtt.subscribe(f'{STATE_PREFIX}/vio/+/state')   # hydratacja: retained stan vswitchy → vio_states
+    mqtt.subscribe(f'{STATE_PREFIX}/vio/+/set')
+    mqtt.subscribe(f'{STATE_PREFIX}/vio/+/press')
+    mqtt.subscribe(f'{STATE_PREFIX}/params/gateway/set/+')   # STEP 17: edycja parametrów
+    mqtt.subscribe(f'{STATE_PREFIX}/params/gateway/cmd/+')   # przyciski Send Config/Timeout
+
+    log.info('MQTT', f'Connecting {mqtt_cfg["host"]}:{mqtt_cfg["port"]}...')
+    mqtt.start()
+    log.info('MQTT', '✅ Connected' if mqtt.wait_connected(timeout=10) else 'Connection timeout')
+
+    log.info('LORA', 'Connecting...')
+    lora.start()
+    for label, info in lora.get_status().items():
+        log.info('LORA', f'{label}: {"✅ OK" if info["connected"] else "❌ FAIL"}')
+
+    ha.reg_gw_buttons_local(gw_id)
+    ha.reg_gw_local_stats(gw_id)
+    for eid, nm, icon, key in [                           # kafelki hash w Bramce (deviceless)
+            ('param_hash', 'Hash Parametrów', 'mdi:tune-variant', 'param_hash'),
+            ('disc_hash', 'Hash Disc', 'mdi:fingerprint', 'disc_hash')]:
+        uid = f"lora_{gw_lower}_{eid}"
+        mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+            "name": f"GW {gw_id} {nm}", "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gw_lower}/gwstat",
+            "value_template": f"{{{{ value_json.{key} | default('--') }}}}",
+            "icon": icon}, separators=(',', ':')), retain=True)
+    # liczniki total/priority/offline POD urządzeniem LoRa Gateway G1 (user 2026-06-10);
+    # świeże uid 'gwd_' aby HA utworzył je pod device (stare lora_*_gw_total były deviceless+manglowane)
+    _gw_di = {"identifiers": [f"lora_gateway_{gw_lower}"]}
+    for eid, nm, icon, key in [
+            ('gwd_total', 'Total', 'mdi:devices', 'total'),
+            ('gwd_priority', 'Priority', 'mdi:alert-octagon', 'priority'),
+            ('gwd_offline', 'Offline', 'mdi:lan-disconnect', 'offline')]:
+        uid = f"lora_{gw_lower}_{eid}"
+        mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+            "name": nm, "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gw_lower}/gwstat",
+            "value_template": "{{ value_json.%s | default(0) }}" % key,
+            "icon": icon, "device": _gw_di}, separators=(',', ':')), retain=True)
+    for vio in vio_config:
+        if vio['type'] == 'switch':
+            ha.reg_vswitch(gw_id, vio['id'], vio['name'], vio.get('default', 0))
+        else:
+            ha.reg_vbutton(gw_id, vio['id'], vio['name'])
+
+    heartbeat.start()
+    data.start()                                         # STEP 3: start batchers
+    param_sync.register_entities()                       # STEP 17: 6 encji number na HA bramki
+    stagnation.start()                                   # STEP 15: pętla stagnacji
+    # STEP 17: bez pre-instancji — sync parametrów wyzwala hash `ph` w HB/pong (niżej)
+
+    time.sleep(3)
+    if discovery.devices:
+        log.info('DISC', f'✅ {len(discovery.devices)} devices z Z2M')
+        for dev in discovery.devices:                    # STEP 3: lokalne encje LQI
+            reg_gw_lqi(dev)
+        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay),
+                         daemon=True).start()
+    else:
+        log.warn('DISC', 'Brak Z2M devices — wyślę discovery gdy Z2M dostarczy listę')
+
+    log.info('MAIN', '═' * 50)
+    log.info('MAIN', f'GATEWAY {gw_id} running (STEP 3 — DATA)')
+    log.info('MAIN', f'  batch: monitored {data.mon_batch.interval}s / priority {data.pri_batch.interval}s (delta)')
+    log.info('MAIN', f'  Z2M state → online + last_seen   |   req → refresh on-demand')
+    log.info('MAIN', '═' * 50)
+
+    def publish_gwstat():
+        now = time.time()
+        linked = gw_stats['last_sup_rx_ts'] > 0 and (now - gw_stats['last_sup_rx_ts']) < SUP_LINK_TIMEOUT
+        total = len(discovery.devices)
+        prio = sum(1 for d in discovery.devices.values() if d.get('priority'))
+        mon = sum(1 for d in discovery.devices.values()           # wyłączny (bez priority)
+                  if d.get('monitored') and not d.get('priority'))
+        oa = getattr(data, 'offline_after', 0) or 0               # offline = cisza z2m > offline_after
+        offline = 0
+        if oa:
+            for dev in discovery.devices:
+                ts = data.last_msg_ts.get(dev)
+                if ts is not None and (now - ts) > oa:
+                    offline += 1
+                elif ts is None and (now - data._start_ts) > oa:  # nigdy nie raportował po grace
+                    offline += 1
+        last_hb = (datetime.fromtimestamp(heartbeat._last_hb).strftime('%H:%M:%S')
+                   if heartbeat._last_hb else '--')
+        ha.pub_gw_stats(gw_id, {
+            'uptime': int(now - heartbeat.start_time),
+            'total': total, 'monitored': mon, 'priority': prio, 'offline': offline,
+            'last_hb': last_hb,
+            'sup_link': 'ON' if linked else 'OFF', 'sup_last_rx': gw_stats['last_sup_rx'],
+            'time_offset': gw_stats['time_offset'], 'last_sync': gw_stats['last_sync'],
+            'disc_hash': discovery.disc_hash or '--',        # STEP 17: hash disc
+            'param_hash': param_sync.params_hash()})         # STEP 17: hash parametrów
+
+    publish_gwstat()
+
+    def gwstat_loop():
+        while running.is_set():
+            time.sleep(300); publish_gwstat()
+    threading.Thread(target=gwstat_loop, daemon=True).start()
+
+    signal.signal(signal.SIGINT, lambda *_: running.clear())
+    signal.signal(signal.SIGTERM, lambda *_: running.clear())
+    try:
+        while running.is_set(): time.sleep(0.5)
+    except KeyboardInterrupt: pass
+    heartbeat.running = False; stagnation.stop(); data.stop(); lora.stop(); mqtt.stop()
+    log.info('MAIN', 'Stopped.')
+
+
+# ── Supervisor mode ─────────────────────────────────────
+def run_supervisor(log):
+    running = threading.Event(); running.set()
+    mqtt_cfg = CONFIG['mqtt']
+
+    mqtt = MqttTransport(
+        host=mqtt_cfg['host'], port=mqtt_cfg['port'],
+        user=mqtt_cfg['user'], password=mqtt_cfg['pass'],
+        client_id=f"step3_sup_{int(time.time())}", logger=log)
+
+    lora = _make_lora(CONFIG, log)
+    ha = HAEntities(mqtt, logger=log)
+    known_gateways = CONFIG.get('gateways', ['G1'])
+
+    def send_to_all(msg):
+        lora.send(json.dumps(msg, separators=(',', ':')))
+
+    sup_disc = SupervisorDiscovery(
+        ha, logger=log, request_disc_fn=lambda gw: send_to_all({"t": "disc", "g": gw}))
+
+    # STEP 3: data layer — `b` → merged HA state
+    dev_avail = {}                       # {(gw,dev): bool} — REALNY licznik offline (A)
+
+    def _set_avail(gw, dev, on):         # jedno źródło prawdy availability (OfflineMonitor + cascade)
+        dev_avail[(gw, dev)] = on
+        ha.pub_device_avail(gw, dev, on)
+
+    sup_data = SupervisorData(ha, sup_disc, logger=log,
+                              on_avail=lambda gw, dev, av: dev_avail.__setitem__((gw, dev), av))
+    # hydratacja: retained stany encji HA przychodzą PRZED db (lista z LoRa) → buforuj po
+    # (gw,safe) i zahydratuj w on_db gdy znamy nazwy urządzeń (fix klobberu pierwszego `b`).
+    pending_hydrate = {}
+
+    # STEP 17: parametry — MIRROR (bramka = master). gw_id = pierwsza znana bramka.
+    param_sync = ParamSync(
+        'supervisor', known_gateways[0], mqtt, send_to_all, logger=log,
+        persist_path='/tmp/lora_params_sup.json',
+        ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
+        on_change=lambda k, v: log.info('PARAM', f'↻ mirror {k}={v} (offline T1/T2/T3)'))
+
+    # STEP 12: offline monitor (supervisor) — brak wiadomości > T1/T2/T3 min wg typu
+    offline_mon = OfflineMonitor(
+        known_gateways, sup_disc, sup_data,
+        get_timeouts=lambda: {"T1": param_sync.get('T1'), "T2": param_sync.get('T2'),
+                              "T3": param_sync.get('T3')},
+        set_avail_fn=_set_avail,
+        logger=log, check_interval=15, grace=CONFIG.get('offline_grace', 120))
+
+    ctrl_cfg = CONFIG.get('control', {})
+    ctrl_timeout = ctrl_cfg.get('timeout', 15); ctrl_retries = ctrl_cfg.get('retries', 2)
+    pending_cmd = {}; cmd_lock = threading.Lock()
+    refresh_regd = set()                                 # (gw,dev) refresh buttons created
+    ls_regd = set()                                      # (gw,dev) binary last_seen sensors
+
+    def reg_refresh_button(gw, dev):
+        """App-level Refresh button (does NOT touch verified ha_entities).
+        Attaches to the same device card; press → lora/supervisor/req/<gl>/<safe>."""
+        key = (gw, dev)
+        if key in refresh_regd:
+            return
+        gl, safe = gw.lower(), _safe(dev)
+        uid = f"lora_{gl}_{safe}_refresh"
+        mqtt.publish(f"{HA_PREFIX}/button/{uid}/config", json.dumps({
+            "name": f"{dev} Refresh", "object_id": uid, "unique_id": uid,
+            "command_topic": f"{STATE_PREFIX}/supervisor/req/{gl}/{safe}",
+            "device": {"identifiers": [f"lora_{gl}_{safe}"],
+                       "via_device": f"lora_gateway_{gl}"},
+            "icon": "mdi:refresh"}, separators=(',', ':')), retain=True)
+        refresh_regd.add(key)
+
+    def reg_binary_last_seen(gw, dev):
+        """STEP 3 fix: verified reg_binary nie tworzy _last_seen (tylko reg_sensor/
+        reg_switch_dev). Dashboard odwołuje się do sensor.lora_g1_<dev>_last_seen →
+        dla binary (Door/Leak) brakowało encji. Dorejestruj app-level (jak refresh)."""
+        key = (gw, dev)
+        if key in ls_regd:
+            return
+        gl, safe = gw.lower(), _safe(dev)
+        uid = f"lora_{gl}_{safe}_last_seen"
+        mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+            "name": f"{dev} Last Seen", "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
+            "value_template": "{{ value_json.last_seen | default('--') }}",
+            "icon": "mdi:clock-outline",
+            "device": {"identifiers": [f"lora_{gl}_{safe}"],
+                       "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
+            retain=True)
+        ls_regd.add(key)
+
+    lq_regd = set()                                      # (gw,dev) linkquality sensors
+
+    def reg_linkquality(gw, dev):
+        """STEP 3: encja Zigbee LQI (0-255) — dane jadą jako ride-along w `b` (short `q`),
+        supervisor merge'uje do value_json.linkquality. Dla wszystkich urzadzen."""
+        key = (gw, dev)
+        if key in lq_regd:
+            return
+        gl, safe = gw.lower(), _safe(dev)
+        uid = f"lora_{gl}_{safe}_linkquality"
+        mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+            "name": f"{dev} Link Quality", "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
+            "value_template": "{{ value_json.linkquality | default('') }}",
+            "icon": "mdi:signal", "state_class": "measurement",
+            "device": {"identifiers": [f"lora_{gl}_{safe}"],
+                       "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
+            retain=True)
+        lq_regd.add(key)
+
+    contact_regd = set()                                 # (gw,dev) naprawione kontaktrony
+
+    def reg_contact_fix(gw, dev):
+        """STEP 3 fix: verified reg_binary nadaje contact device_class='contact' —
+        NIEPRAWIDŁOWA klasa w HA → encja odrzucana (brak wskazania open/close).
+        Re-publikuj z device_class='opening' + INWERSJA (Z2M contact:true=zamknięte,
+        HA opening ON=otwarte). Ten sam uid → ostatnia konfiguracja wygrywa."""
+        key = (gw, dev)
+        if key in contact_regd:
+            return
+        gl, safe = gw.lower(), _safe(dev)
+        uid = f"lora_{gl}_{safe}_contact"
+        mqtt.publish(f"{HA_PREFIX}/binary_sensor/{uid}/config", json.dumps({
+            "name": f"{dev} Contact", "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
+            "value_template": "{{ 'ON' if not value_json.contact else 'OFF' }}",
+            "device_class": "opening",
+            "device": {"identifiers": [f"lora_{gl}_{safe}"],
+                       "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
+            retain=True)
+        contact_regd.add(key)
+
+    stag_regd = set()                                    # (gw,dev) encje stagnacji
+
+    def reg_stagnant(gw, dev):
+        """STEP 15: binary_sensor stagnacji (problem) — ON gdy bramka zgłosi `sg`."""
+        key = (gw, dev)
+        if key in stag_regd:
+            return
+        gl, safe = gw.lower(), _safe(dev)
+        uid = f"lora_{gl}_{safe}_stagnant"
+        mqtt.publish(f"{HA_PREFIX}/binary_sensor/{uid}/config", json.dumps({
+            "name": f"{dev} Stagnation", "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
+            "value_template": "{{ 'ON' if value_json.stagnant == 'ON' else 'OFF' }}",
+            "device_class": "problem", "icon": "mdi:timer-sand-paused",
+            "device": {"identifiers": [f"lora_{gl}_{safe}"],
+                       "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
+            retain=True)
+        stag_regd.add(key)
+
+    def handle_ab(d):
+        """STEP 15: anomalia z bramki — na razie obsługa stagnacji sg/sc."""
+        gw = d.get('g', '?')
+        for entry in d.get('d', []):
+            if not isinstance(entry, list) or len(entry) < 2:
+                continue
+            sid, code = entry[0], entry[1]
+            dev = sup_data._dev_from_sid(gw, sid)
+            if not dev:
+                continue
+            if code in ('sg', 'sc'):
+                reg_stagnant(gw, dev)
+                on = code == 'sg'
+                cur = sup_data.state.setdefault(gw, {}).setdefault(dev, {})
+                cur['stagnant'] = 'ON' if on else 'OFF'
+                ha.pub_device_state(gw, dev, dict(cur))
+                log.warn('STAG', f'⏳ {gw}/{dev} stagnacja={"ON" if on else "OFF"}')
+
+    gwhash_regd = set()                                  # bramki z zarejestrowanymi encjami hash
+
+    def reg_gw_hashes(gw):
+        """STEP 17: encje hash ZAPISANEGO NA BRAMCE (disc + param) na HA supervisora —
+        z HB/pong. Podpięte pod urządzenie LoRa Gateway Gx (info bramki)."""
+        if gw in gwhash_regd:
+            return
+        gl = gw.lower()
+        di = {"identifiers": [f"lora_gateway_{gl}"]}
+        for eid, nm, icon, key in [
+                ('disc_hash', 'Hash Disc (bramka)', 'mdi:fingerprint', 'disc'),
+                ('param_hash', 'Hash Param (bramka)', 'mdi:tune-variant', 'param')]:
+            uid = f"lora_gw_{gl}_{eid}"
+            mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+                "name": f"GW {gw} {nm}", "object_id": uid, "unique_id": uid,
+                "state_topic": f"{STATE_PREFIX}/gw/{gl}/hashes",
+                "value_template": "{{ value_json.%s | default('--') }}" % key,
+                "icon": icon, "device": di}, separators=(',', ':')), retain=True)
+        gwhash_regd.add(gw)
+
+    wd = CONFIG.get('watchdog', {})
+    sup_hb = SupervisorHeartbeat(
+        ha, logger=log, send_ping_fn=lambda gw: send_to_all({"t": "ping", "g": gw}),
+        devices_provider=sup_disc.devices, gateways=known_gateways,
+        passive_timeout=wd.get('passive_timeout', 2100),
+        ping_timeout=wd.get('ping_timeout', 25), max_retries=wd.get('max_retries', 2))
+
+    # ── Dispatcher (LoRa RX from gateways) ──
+    dispatcher = Dispatcher(logger=log)
+
+    psync_guard = {'ph': None, 'ts': 0}                  # debounce żądań sync parametrów
+
+    def on_hb(d):
+        gw = d.get('g'); sup_hb.handle_hb(d)
+        if gw:
+            ha.reg_gw_controls(gw)
+            reg_gw_hashes(gw)                             # STEP 17: encje hash bramki
+            mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes",
+                         {'disc': d.get('hash', '--'), 'param': d.get('ph', '--')}, retain=True)
+        sup_disc.note_hash(gw, d.get('hash', ''))
+        ph = d.get('ph')                                 # STEP 17: hash parametrów (wskaźnik driftu)
+        if ph and ph != param_sync.params_hash():
+            now = time.time()
+            if psync_guard['ph'] != ph or now - psync_guard['ts'] > 120:
+                psync_guard['ph'] = ph; psync_guard['ts'] = now
+                # model v38: pull dzieje się na starcie i przyciskiem Send — NIE auto,
+                # bo auto-pull klobbersował lokalne edycje przed naciśnięciem Send.
+                log.debug('PARAM', f'⚙️ drift hash bramki={ph} ≠ mirror (Send aby zsync.)')
+    dispatcher.register('hb', on_hb)
+    dispatcher.register('pong', on_hb)
+    dispatcher.register('disc_meta', sup_disc.handle_disc_meta)
+    dispatcher.register('disc_vio', sup_disc.handle_disc_vio)
+
+    def on_db(d):
+        sup_disc.handle_db(d)
+        gw = d.get('g', '?')                             # STEP 3: per-device app-level entities
+        for dev, info in sup_disc.devices(gw).items():
+            buf = pending_hydrate.pop((gw, _safe(dev)), None)   # hydratacja z retained (jeśli był)
+            if buf is not None:
+                sup_data.hydrate(gw, dev, buf)
+            reg_refresh_button(gw, dev)
+            reg_linkquality(gw, dev)                      # Zigbee LQI dla wszystkich
+            reg_stagnant(gw, dev)                         # STEP 15: encja stagnacji
+            if info.get('type') == 'binary_sensor':      # fix: binary brak _last_seen
+                reg_binary_last_seen(gw, dev)
+                if 'c' in (info.get('caps') or ''):       # fix: contact device_class + inwersja
+                    reg_contact_fix(gw, dev)
+        publish_offline_count(gw)                         # A: realny licznik po hydratacji/db
+    dispatcher.register('db', on_db)
+    dispatcher.register('disc_ack', lambda d: log.info('RX', f'disc_ack: {d}'))
+    dispatcher.register('b', sup_data.handle_b)          # STEP 3: batch data → HA
+    dispatcher.register('param_upd', param_sync.handle_remote)   # STEP 17: confirmed z bramki
+    dispatcher.register('ab', handle_ab)                 # STEP 15: anomalie (stagnacja sg/sc)
+
+    def handle_st(d):
+        gw = d.get('g', '?'); dev = d.get('d'); val = str(d.get('v', '')).upper()
+        if dev:
+            with cmd_lock: pending_cmd.pop((gw, dev), None)
+            ha.pub_device_state(gw, dev, {"state": val, "available": "ON"})
+            log.info('CTRL', f'🎛️ st {gw}/{dev} = {val} → odbite w HA (online, cmd OK)')
+    dispatcher.register('st', handle_st)
+
+    def handle_vsw_st(d):
+        gw = d.get('g', '?'); vid = d.get('id')
+        val = 1 if str(d.get('v')) in ('1', 'ON', 'on', 'True') else 0
+        gl, safe = gw.lower(), _safe(vid)
+        mqtt.publish(f'{STATE_PREFIX}/{gl}/vio/{safe}/state', 'ON' if val else 'OFF', retain=True)
+        log.info('VIO', f'🔘 VSwitch {gw}/{vid} = {"ON" if val else "OFF"} → odbite w HA')
+    dispatcher.register('vsw_st', handle_vsw_st)
+    dispatcher.register('vbtn_ack', lambda d: log.info('RX', f'vbtn_ack {d.get("id")}'))
+    dispatcher.set_fallback(lambda d: log.debug('RX', f'passthrough t={d.get("t")}'))
+
+    # ── HA → LoRa bridge ──
+    def on_mqtt(topic, payload):
+        segs = topic.split('/')
+        # hydratacja: retained stan urządzenia lora/<gl>/<safe>/state → bufor (seed po db)
+        if len(segs) == 4 and segs[3] == 'state' and segs[2] != 'vio':
+            try:
+                pending_hydrate[(segs[1].upper(), segs[2])] = json.loads(payload)
+            except Exception:
+                pass
+            return
+        if topic.startswith(f'{STATE_PREFIX}/params/supervisor/set/'):   # STEP 17: edycja z HA sup
+            param_sync.on_mqtt_set(topic, payload); return
+        if topic.startswith(f'{STATE_PREFIX}/params/supervisor/cmd/'):   # przyciski Send Config/Timeout
+            param_sync.on_cmd(topic, payload); return
+        if topic.startswith(f'{STATE_PREFIX}/supervisor/req/'):   # STEP 3: refresh button
+            if len(segs) == 5:
+                gw, safe = segs[3].upper(), segs[4]
+                dev = sup_disc.find_device(gw, safe) or safe
+                log.info('CTRL', f'🎛️ Refresh {gw}/{dev} → req')
+                send_to_all({"t": "req", "g": gw, "d": dev})
+            return
+        if topic.startswith(f'{STATE_PREFIX}/supervisor/cmd/'):
+            rest = segs[3:]
+            if len(rest) == 1:
+                a = rest[0]
+                if a == 'ping_all':
+                    log.info('BTN', '🔘 Ping All (broadcast)')
+                    sup_hb.manual_ping_all(known_gateways,
+                                           send_broadcast_fn=lambda: send_to_all({"t": "ping"}))
+                elif a == 'discovery_all':
+                    log.info('BTN', '🔘 Discovery All'); send_to_all({"t": "disc"})
+                elif a == 'sync_all':
+                    log.info('BTN', '🔘 Sync All'); send_to_all({"t": "sync", "sec": int(time.time())})
+            elif len(rest) == 2:
+                gw, a = rest[0].upper(), rest[1]
+                if a == 'ping':
+                    log.info('BTN', f'🔘 Ping {gw}'); sup_hb.manual_ping(gw)
+                elif a == 'disc':
+                    log.info('BTN', f'🔘 Discovery {gw}'); send_to_all({"t": "disc", "g": gw})
+                elif a == 'sync':
+                    log.info('BTN', f'🔘 Sync {gw}')
+                    send_to_all({"t": "sync", "sec": int(time.time()), "g": gw})
+            return
+        if len(segs) == 5 and segs[2] == 'vio' and segs[4] == 'set':
+            gw, vid = segs[1].upper(), segs[3]
+            val = 1 if payload.upper() in ('ON', '1') else 0
+            # #5 optimistic: odbij stan w HA OD RAZU (klik nie gubi się przez latencję
+            # LoRa / anty-spam) — realny vsw_st potem to potwierdzi/skoryguje.
+            mqtt.publish(f'{STATE_PREFIX}/{gw.lower()}/vio/{_safe(vid)}/state',
+                         'ON' if val else 'OFF', retain=True)
+            log.info('CTRL', f'🎛️ dashboard VSwitch {gw}/{vid} → {"ON" if val else "OFF"} (optimistic)')
+            send_to_all({"t": "vsw", "g": gw, "id": vid, "v": val})
+        elif len(segs) == 5 and segs[2] == 'vio' and segs[4] == 'press':
+            gw, vid = segs[1].upper(), segs[3]
+            log.info('CTRL', f'🎛️ dashboard VButton {gw}/{vid} pressed')
+            send_to_all({"t": "vbtn", "g": gw, "id": vid})
+        elif len(segs) == 4 and segs[3] == 'set':
+            gw, safe = segs[1].upper(), segs[2]
+            dev = sup_disc.find_device(gw, safe) or safe
+            val = payload.upper()
+            msg = {"t": "cmd", "g": gw, "d": dev, "c": "state", "v": val}
+            with cmd_lock:
+                pending_cmd[(gw, dev)] = {'msg': msg, 'since': time.time(),
+                                         'retries_left': ctrl_retries}
+            # #5 optimistic: pokaż żądany stan w HA natychmiast; realny `st` (handle_st)
+            # potem nadpisze potwierdzoną wartością. Bez tego klik wygląda jak "nie złapał".
+            ha.pub_device_state(gw, dev, {"state": val, "available": "ON"})
+            log.info('CTRL', f'🎛️ dashboard {gw}/{dev} → {val} (optimistic, timeout {ctrl_timeout}s)')
+            send_to_all(msg)
+
+    def note_gw_activity(gw):
+        """Bramka ONLINE jeśli przyszła JAKAKOLWIEK wiadomość LoRa z `g` (nie tylko HB/pong).
+        Aktualizuje status NATYCHMIAST. Liczniki z HB zachowane (tylko _ts/last_seen/online)."""
+        g = sup_hb.gateways.get(gw)
+        now = time.time()
+        if g is None:
+            sup_hb.gateways[gw] = {'_ts': now, 'online': True,
+                                   'last_seen': datetime.now().strftime('%H:%M:%S'),
+                                   'uptime': 0, 'devices_total': 0, 'devices_monitored': 0,
+                                   'devices_priority': 0, 'hash': ''}
+            sup_hb.ha.reg_gateway(gw)
+        else:
+            g['_ts'] = now
+            g['last_seen'] = datetime.now().strftime('%H:%M:%S')
+            if not g.get('online'):
+                g['online'] = True
+                sup_hb._cascade_devices(gw, online=True)
+                log.info('HB', f'💚 {gw} ONLINE (wiadomość LoRa)')
+        sup_hb._publish_status(gw)
+
+    def publish_offline_count(gw):
+        """A: REALNY licznik offline = liczba urządzeń bramki z availability=off.
+        Nadpisuje watchdogowe devices_offline (0/total) prawdziwą liczbą per-device."""
+        off = sum(1 for (g, _d), av in dev_avail.items() if g == gw and not av)
+        gd = sup_hb.gateways.get(gw, {})
+        ha.pub_gw_status(gw, {
+            'state': 'online' if gd.get('online') else 'offline',
+            'uptime': gd.get('uptime', 0), 'last_seen': gd.get('last_seen', '--'),
+            'devices_total': gd.get('devices_total', 0),
+            'devices_monitored': gd.get('devices_monitored', 0),
+            'devices_priority': gd.get('devices_priority', 0),
+            'devices_offline': off, 'hash': gd.get('hash', '')})
+
+    def on_lora(text):
+        g = None
+        try:
+            g = json.loads(text).get('g')
+        except Exception:
+            pass
+        if g:
+            note_gw_activity(g)                           # dowolna wiadomość = bramka żyje
+        dispatcher.dispatch_raw(text)                     # handle_b aktualizuje dev_avail
+        if g:
+            publish_offline_count(g)                      # realny licznik offline po aktualizacji
+
+    mqtt._on_message_cb = on_mqtt
+    lora.on_receive = on_lora
+    mqtt.subscribe(f'{STATE_PREFIX}/supervisor/cmd/#')
+    mqtt.subscribe(f'{STATE_PREFIX}/supervisor/req/+/+')   # STEP 3: refresh buttons
+    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/set/+')   # STEP 17: edycja parametrów
+    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/cmd/+')   # przyciski Send Config/Timeout
+    mqtt.subscribe(f'{STATE_PREFIX}/+/+/state')   # hydratacja: retained stany urządzeń (seed merge)
+    mqtt.subscribe(f'{STATE_PREFIX}/+/+/set')
+    mqtt.subscribe(f'{STATE_PREFIX}/+/+/+/set')
+    mqtt.subscribe(f'{STATE_PREFIX}/+/+/+/press')
+
+    log.info('MQTT', f'Connecting {mqtt_cfg["host"]}:{mqtt_cfg["port"]}...')
+    mqtt.start()
+    log.info('MQTT', '✅ Connected' if mqtt.wait_connected(timeout=10) else 'Connection timeout')
+
+    log.info('LORA', 'Connecting...')
+    lora.start()
+    for label, info in lora.get_status().items():
+        log.info('LORA', f'{label}: {"✅ OK" if info["connected"] else "❌ FAIL"}')
+
+    ha.reg_supervisor(); sup_hb.start()
+    param_sync.register_entities()                       # STEP 17: 6 encji number na HA supervisora
+    offline_mon.start()                                  # STEP 12: pętla offline per typ
+    # STEP 17: bez pre-instancji — sync wyzwala porównanie `ph` w on_hb (HB/pong)
+
+    def initial_discovery():
+        time.sleep(8)
+        log.info('CMD', '⚡ startowe discovery')
+        send_to_all({"t": "disc"})
+        time.sleep(2)
+        log.info('PARAM', '⚙️ startowy pull parametrów (params_req → bramka push_all)')
+        param_sync.request()                             # model v38: pull na starcie (nie auto-HB)
+    threading.Thread(target=initial_discovery, daemon=True).start()
+
+    log.info('MAIN', '═' * 50)
+    log.info('MAIN', f'SUPERVISOR running (STEP 3 — DATA) gateways={known_gateways}')
+    log.info('MAIN', f'  b → reverse sid → MERGE → encje (temp/hum/batt/avail/last_seen)')
+    log.info('MAIN', f'  refresh button per urządzenie → req')
+    log.info('MAIN', '═' * 50)
+
+    def control_loop():
+        while running.is_set():
+            time.sleep(3)
+            sup_disc.check_complete(max_try=4)
+            now = time.time()
+            with cmd_lock: items = list(pending_cmd.items())
+            for (gw, dev), p in items:
+                if now - p['since'] < ctrl_timeout: continue
+                if p['retries_left'] > 0:
+                    p['retries_left'] -= 1; p['since'] = now
+                    log.warn('CTRL', f'🔁 brak st {gw}/{dev} — retry (zostało {p["retries_left"]})')
+                    send_to_all(p['msg'])
+                else:
+                    with cmd_lock: pending_cmd.pop((gw, dev), None)
+                    ha.pub_device_avail(gw, dev, False)
+                    log.warn('CTRL', f'💀 {gw}/{dev} brak st → OFFLINE')
+    threading.Thread(target=control_loop, daemon=True, name='control').start()
+
+    signal.signal(signal.SIGINT, lambda *_: running.clear())
+    signal.signal(signal.SIGTERM, lambda *_: running.clear())
+    try:
+        while running.is_set(): time.sleep(0.5)
+    except KeyboardInterrupt: pass
+    sup_hb.running = False; offline_mon.stop(); lora.stop(); mqtt.stop()
+    log.info('MAIN', 'Stopped.')
+
+
+# ── Main ────────────────────────────────────────────────
+def main():
+    log = Log()
+    log.info('MAIN', '═' * 50)
+    log.info('MAIN', 'STEP 3 DATA TEST')
+    log.info('MAIN', f'Role: {ROLE.upper()} ({CONFIG["id"]})')
+    log.info('MAIN', '═' * 50)
+    if ROLE == 'gateway':
+        run_gateway(log)
+    else:
+        run_supervisor(log)
+    log.close()
+
+
+if __name__ == '__main__':
+    main()
