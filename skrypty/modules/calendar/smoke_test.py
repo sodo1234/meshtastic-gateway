@@ -94,10 +94,76 @@ def test_merge():
     print("✅ merge_schedule: po updated_ts (newer wins)")
 
 
+def _frames(slots, chunk_size=140, tid="t1", gw="G1", direction="push"):
+    from modules.calendar import CalendarTransfer as CT
+    b64 = CT.serialize(slots); crc = CT.crc16(b64)
+    chunks = [b64[i:i + chunk_size] for i in range(0, len(b64), chunk_size)] or ['']
+    begin = {"t": "cal_begin", "tid": tid, "g": gw, "dir": direction, "n": len(chunks), "crc": crc}
+    cf = [{"t": "cal_chunk", "tid": tid, "s": i, "d": c} for i, c in enumerate(chunks)]
+    return begin, cf, {"t": "cal_end", "tid": tid}, len(chunks)
+
+
+def test_transfer_serialize_roundtrip():
+    from modules.calendar import CalendarTransfer
+    slots = [[100, 480, 1], [600, 60, 2], [700, 120, 3]]
+    b64 = CalendarTransfer.serialize(slots)
+    assert CalendarTransfer.deserialize(b64) == slots
+    assert len(CalendarTransfer.crc16(b64)) == 4
+    print("✅ transfer serialize(zlib+b64)/deserialize roundtrip + crc")
+
+
+def test_transfer_reassembly_ok():
+    from modules.calendar import CalendarTransfer
+    sent = []; got = []
+    rx = CalendarTransfer(lambda m: sent.append(m), chunk_size=20,
+                          on_received=lambda gw, d, s: got.append((gw, d, s)))
+    slots = [[i * 30, 60, i % 4] for i in range(20)]            # duże → wiele chunków
+    begin, cf, end, n = _frames(slots, chunk_size=20)
+    assert n > 1, "powinno być wiele chunków"
+    rx.dispatch(begin)
+    for c in cf:
+        rx.dispatch(c)
+    res = rx.handle_end(end)
+    assert res and res[2] == slots and got and got[0][2] == slots
+    assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}
+    print("✅ transfer reassembly (wiele chunków) → on_received + ACK ok=1")
+
+
+def test_transfer_missing_chunk_nack():
+    from modules.calendar import CalendarTransfer
+    sent = []; got = []
+    rx = CalendarTransfer(lambda m: sent.append(m), chunk_size=20,
+                          on_received=lambda gw, d, s: got.append(s))
+    slots = [[i * 30, 60, 1] for i in range(15)]
+    begin, cf, end, n = _frames(slots, chunk_size=20)
+    rx.dispatch(begin)
+    for c in cf[:-1]:                                           # pomiń ostatni chunk
+        rx.dispatch(c)
+    assert rx.handle_end(end) is None and not got               # brak → NACK, brak on_received
+    assert sent[-1]["t"] == "cal_ack" and sent[-1]["ok"] == 0 and sent[-1]["miss"]
+    print("✅ transfer brakujący chunk → NACK ok=0+miss, brak on_received")
+
+
+def test_transfer_crc_mismatch():
+    from modules.calendar import CalendarTransfer
+    sent = []
+    rx = CalendarTransfer(lambda m: sent.append(m), chunk_size=200)
+    slots = [[100, 480, 1]]
+    begin, cf, end, n = _frames(slots, chunk_size=200)
+    rx.dispatch(begin)
+    cf[0]["d"] = cf[0]["d"][:-2] + "zz"                          # uszkodź dane
+    rx.dispatch(cf[0])
+    assert rx.handle_end(end) is None
+    assert sent[-1]["ok"] == 0
+    print("✅ transfer CRC mismatch → NACK ok=0")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_detect_mode_length_sorted, test_add_dedup_and_mode,
              test_compact_roundtrip, test_effective_and_override,
-             test_compute_now_and_next, test_merge]
+             test_compute_now_and_next, test_merge,
+             test_transfer_serialize_roundtrip, test_transfer_reassembly_ok,
+             test_transfer_missing_chunk_nack, test_transfer_crc_mismatch]
     failed = 0
     for t in tests:
         try:
