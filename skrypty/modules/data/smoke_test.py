@@ -203,6 +203,36 @@ def test_gateway_periodic_liveness():
     print("✅ GatewayData periodic report + gw-side liveness (available 1→0)")
 
 
+def test_gateway_per_type_offline():
+    """FIX 2026-06-15: offline_after_fn → timeout per typ (T1/T2/T3). Przy tej samej ciszy
+    sensor (krótki timeout) idzie offline, a binary (długi) zostaje online. fn→None = fallback skalar."""
+    from modules.data import GatewayData
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999,
+                     report_interval=1, offline_after=5,
+                     offline_after_fn=lambda t: {"sensor": 5, "binary_sensor": 100}.get(t))
+    gd._start_ts = time.time() - 1000
+    now = time.time()
+    gd.last_msg_ts["Temp 1"] = now - 10          # cisza 10s
+    gd.last_msg_ts["Leak 1"] = now - 10          # cisza 10s
+    gd.states["Temp 1"] = {"temperature": 22.0, "battery": 95}
+    gd.states["Leak 1"] = {"water_leak": False, "battery": 90}
+
+    def avail(sid):
+        for fr in lora.sent:
+            for e in json.loads(fr).get("d", []):
+                if e[0] == sid:
+                    return e[1].get("a")
+        return None
+    lora.sent.clear(); gd.report_liveness()
+    assert avail(0) == 0, "Temp 1 (sensor, 5s) → offline"
+    assert avail(2) == 1, "Leak 1 (binary, 100s) → wciąż online"
+    gd.offline_after_fn = lambda t: None         # fallback → skalar offline_after=5
+    lora.sent.clear(); gd.report_liveness()
+    assert avail(0) == 0, "fallback skalar: sensor offline"
+    print("✅ GatewayData per-typ offline (T1/T2/T3) + fallback skalar")
+
+
 def test_supervisor_handle_b_merge():
     from modules.data import SupervisorData
     ha, disc = FakeHA(), FakeSupDiscovery()
@@ -245,7 +275,7 @@ if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
-             test_gateway_periodic_liveness,
+             test_gateway_periodic_liveness, test_gateway_per_type_offline,
              test_supervisor_handle_b_merge, test_end_to_end]
     failed = 0
     for t in tests:

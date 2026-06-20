@@ -11,15 +11,19 @@ import time
 
 
 class StagnationEngine:
-    def __init__(self, gw_id, discovery, data, lora_send, get_thresholds,
-                 logger=None, check_interval=300):
+    def __init__(self, gw_id, discovery, data, lora_send=None, get_thresholds=None,
+                 logger=None, check_interval=300, emit=None, all_devices=False):
         self.gw_id = gw_id
         self.disc = discovery            # GatewayDiscovery (devices, short_ids, is_monitored)
         self.data = data                 # GatewayData (last_msg_ts)
-        self.send = lora_send            # callable(dict) → LoRa
+        self.send = lora_send            # callable(dict) → LoRa (gdy emit=None: legacy ścieżka `ab`)
         self.get_thresholds = get_thresholds   # callable() → (p1_hours, p2_hours)
         self.log = logger
         self.check_interval = check_interval
+        # STEP 5: emit(sid,code,val) → AnomalyBatcher.add (preferowane); all_devices=True →
+        # stagnacja dla WSZYSTKICH urządzeń (CLAUDE.md), nie tylko monitored.
+        self.emit = emit
+        self.all_devices = all_devices
         self.stagnant = set()            # dev names currently reported stagnant
         self.running = True
 
@@ -44,7 +48,7 @@ class StagnationEngine:
         p1, p2 = self.get_thresholds()
         now = time.time()
         for dev, info in list(self.disc.devices.items()):
-            if not self.disc.is_monitored(dev):
+            if not self.all_devices and not self.disc.is_monitored(dev):
                 continue
             ts = self.data.last_msg_ts.get(dev)
             if ts is None:
@@ -63,11 +67,19 @@ class StagnationEngine:
         if sid is None:
             return
         code = "sg" if on else "sc"
-        self.send({"t": "ab", "g": self.gw_id, "ts": int(time.time()),
-                   "d": [[sid, code, hours]]})
+        if self.emit:                    # STEP 5: przez AnomalyBatcher
+            self.emit(sid, code, hours)
+        elif self.send:                  # legacy: bezpośrednie `ab`
+            self.send({"t": "ab", "g": self.gw_id, "ts": int(time.time()),
+                       "d": [[sid, code, hours]]})
         if self.log:
             self.log.info('STAG', f'{"⚠️" if on else "✅"} {dev} '
                           f'{"STAGNACJA" if on else "recovery"} (próg {hours}h)')
 
     def stagnant_devices(self):
         return set(self.stagnant)
+
+    def snapshot(self):
+        """[(sid,'sg',None)] dla dump_anom — aktualnie stagnujące."""
+        return [(self.disc.short_ids.get(d), "sg", None) for d in self.stagnant
+                if self.disc.short_ids.get(d) is not None]

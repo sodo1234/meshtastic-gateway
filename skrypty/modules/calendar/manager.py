@@ -203,7 +203,11 @@ class ScheduleManager:
             st = self.BASE_EPOCH + start_min * 60
             et = st + dur_min * 60
             out.append({
-                "id": f"s{start_min}",
+                # id musi rozróżniać sloty o tym samym starcie (np. PRZERWA wewnątrz
+                # PRODUKCJI) — granularność (start,dur) = klucz kompaktu po stronie mastera.
+                # Sam start_min kolidował → merge nadpisywał slot → utrata danych + wieczny
+                # drift hasha → re-sync w kółko. Mode poza id (zmiana trybu = update, nie sierota).
+                "id": f"s{start_min}_{dur_min}",
                 "start": datetime.fromtimestamp(st).strftime('%Y-%m-%d %H:%M:%S'),
                 "end": datetime.fromtimestamp(et).strftime('%Y-%m-%d %H:%M:%S'),
                 "mode": mode, "note": self.mode_names.get(mode, f"MODE_{mode}"),

@@ -31,3 +31,11 @@ desktop.ini
 
 # Backups from launcher port-patcher (kept locally on Debian)
 *_v*.py.bak
+
+# Sekrety per-host (nigdy do repo)
+secrets.env
+skrypty/secrets.env
+
+# backupy in-place (sekrety/stany)
+*.bak
+*.bak-*

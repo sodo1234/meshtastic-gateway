@@ -48,9 +48,11 @@ _tail_threads = {}  # key=(host,role) -> {"thread":..., "queue":..., "stop":Even
 
 SSH_BASE_OPTS = [
     "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=5",
+    # ConnectTimeout 5→20: relay Tailscale ("fra") bywa laggy — 5s ucinało połączenie przed
+    # handshakiem → status fałszywie "stopped". 20s daje relay czas na ustanowienie TCP/banner.
+    "-o", "ConnectTimeout=20",
     "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "ServerAliveInterval=10",
+    "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=2",
 ]
 
@@ -60,9 +62,46 @@ _protected_ssh_pids = set()
 _protected_lock = threading.Lock()
 
 
-def ssh(host, cmd, timeout=15, check=False):
-    """Run remote cmd over ssh. Returns (rc, stdout, stderr)."""
-    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", cmd]
+_host_ip_cache = {"map": {}, "ts": 0.0}
+_host_ip_lock = threading.Lock()
+
+
+def _host_ip_map():
+    """Cache nazwa→IP (Tailscale wszystkie peery, też offline + LAN), TTL 60s.
+    SSH po IP omija MagicDNS, które przez laggy relay zawodzi (nazwa 'gateway' nie resolwuje)."""
+    with _host_ip_lock:
+        if time.time() - _host_ip_cache["ts"] < 60 and _host_ip_cache["map"]:
+            return _host_ip_cache["map"]
+        m = {}
+        try:
+            p = subprocess.run(["tailscale", "status"], capture_output=True, text=True,
+                               timeout=5, creationflags=CREATE_NO_WINDOW)
+            for line in p.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] and parts[0][0].isdigit():
+                    m[parts[1]] = parts[0]            # name → ip (niezależnie od online/offline)
+        except Exception:
+            pass
+        for ip, name in LAN_HOSTS:
+            m.setdefault(name, ip)
+        if m:
+            _host_ip_cache["map"] = m
+            _host_ip_cache["ts"] = time.time()
+        return m or _host_ip_cache["map"]
+
+
+def _resolve_host(host):
+    """Nazwa Tailscale/LAN → IP (pewniejsze niż MagicDNS). IP/nieznane → bez zmian."""
+    if not host or host[0].isdigit():
+        return host
+    return _host_ip_map().get(host, host)
+
+
+def ssh(host, cmd, timeout=35, check=False):
+    """Run remote cmd over ssh. Returns (rc, stdout, stderr).
+    timeout 15→35: musi przekroczyć ConnectTimeout(20)+czas komendy, inaczej subprocess
+    ubija ssh w trakcie nawiązywania połączenia przez laggy relay → fałszywe 'stopped'."""
+    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{_resolve_host(host)}", cmd]
     try:
         # stdin=DEVNULL: Windows ssh.exe hangs when inherited stdin is a socket
         # (Flask request threads) — explicit DEVNULL prevents that
@@ -221,7 +260,7 @@ def patch_script_port(host, script, port):
     import shlex
     # ssh ... python3 - <<EOF — pass patcher via stdin to avoid quoting hell
     remote_cmd = f"cd {REMOTE_DIR} && python3 - {shlex.quote(script)} {shlex.quote(port)}"
-    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", remote_cmd]
+    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{_resolve_host(host)}", remote_cmd]
     try:
         p = subprocess.run(full, input=PORT_PATCHER, capture_output=True, text=True,
                            timeout=15, encoding='utf-8', errors='replace',
@@ -267,7 +306,7 @@ def write_remote_config(host, content):
     import base64, shlex
     b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
     remote_cmd = f"python3 - {shlex.quote(CONFIG_REMOTE_PATH)} {shlex.quote(b64)}"
-    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", remote_cmd]
+    full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{_resolve_host(host)}", remote_cmd]
     try:
         p = subprocess.run(full, input=CONFIG_WRITER, capture_output=True, text=True,
                            timeout=15, encoding="utf-8", errors="replace",
@@ -356,7 +395,13 @@ def status_remote(host, role, script=""):
         f"tmux has-session -t {meta['tmux']} 2>/dev/null && echo TMUX_OK; "
         f"pgrep -af 'python.*{meta['pgrep']}' | grep -v pgrep | head -1"
     )
-    rc, out, _ = ssh(host, cmd)
+    # Retry x2: laggy relay potrafi zerwać/timeoutować pojedynczy SSH → fałszywe 'stopped'.
+    # Pusty wynik (brak TMUX_OK i pid) = prawdopodobnie błąd łącza, nie martwy proces → spróbuj jeszcze raz.
+    out = ""
+    for _ in range(2):
+        rc, out, _ = ssh(host, cmd)
+        if "TMUX_OK" in out or any(l.strip()[:1].isdigit() for l in out.splitlines() if l.strip()):
+            break
     tmux_ok = "TMUX_OK" in out
     pid = None
     mode = None
@@ -377,7 +422,7 @@ def pull_log(host, role, script=""):
     today = datetime.now().strftime("%Y-%m-%d")
     local = LOG_DIR / f"{role}_{host.replace('.', '_')}_{today}.log"
     cmd = ["scp", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
-           f"{SSH_USER}@{host}:{meta['remote_log']}", str(local)]
+           f"{SSH_USER}@{_resolve_host(host)}:{meta['remote_log']}", str(local)]
     p = subprocess.run(cmd, stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, timeout=30,
                        creationflags=CREATE_NO_WINDOW)
@@ -395,7 +440,7 @@ def open_tail_wt(host, role):
     # launching side windowless.
     subprocess.Popen(
         ["wt.exe", "new-tab", "--title", title,
-         "ssh", f"{SSH_USER}@{host}", f"tail -F {log}"],
+         "ssh", f"{SSH_USER}@{_resolve_host(host)}", f"tail -F {log}"],
         creationflags=CREATE_NO_WINDOW)
     return True
 
@@ -427,7 +472,7 @@ def tail_generator_meta(host, meta):
     cmd = (f"touch {meta['stderr_log']} 2>/dev/null; "
            f"exec tail -n 80 -F {files} 2>/dev/null")
     proc = subprocess.Popen(
-        ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{host}", cmd],
+        ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{_resolve_host(host)}", cmd],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         encoding='utf-8', errors='replace',

@@ -27,7 +27,7 @@ class GatewayData:
     def __init__(self, gw_id, discovery, lora, logger=None,
                  mon_interval=30, pri_interval=10, max_payload=150,
                  thresholds=None, send_spacing=0,
-                 report_interval=0, offline_after=None):
+                 report_interval=0, offline_after=None, offline_after_fn=None):
         self.gw_id = gw_id
         self.disc = discovery          # GatewayDiscovery — short_ids, is_monitored, devices
         self.lora = lora
@@ -43,6 +43,11 @@ class GatewayData:
         self.report_interval = report_interval
         self.offline_after = offline_after if offline_after is not None \
             else (report_interval * 2 + 120 if report_interval else 0)
+        # opcjonalny per-typ timeout offline (CLAUDE.md: T1 switch/light, T2 temp/hum,
+        # T3 door/leak/motion). callable(dtype)->sekundy. None → skalar self.offline_after
+        # (ścieżka step 3 bez zmian). Naprawia fałszywe offline urządzeń bateryjnych,
+        # które meldują rzadziej niż domyślne ~32 min.
+        self.offline_after_fn = offline_after_fn
         self.states = {}               # {dev: last full Z2M state dict}
         self.last_seen = {}            # {dev: "date HH:MM:SS"}
         self.last_msg_ts = {}          # {dev: epoch} — dowolna wiadomość z2m (dla stagnation)
@@ -137,8 +142,10 @@ class GatewayData:
         """Co report_interval wyślij `b` dla każdego monitored urządzenia:
         available=1 + ostatnie wartości (heartbeat danych, #8) gdy z2m świeży,
         available=0 (#7 martwy/zacichły) gdy cisza > offline_after po grace."""
-        # pierwszy tick po jednym interwale (start dał już discovery+retained szansę)
-        waited = 0.0
+        # Pierwszy tick PO grace (60s) — szybko ustala availability po starcie/restarcie
+        # (inaczej 15-min okno bez heartbeatu dostępności). Potem co report_interval.
+        first_grace = min(60.0, self.report_interval)
+        waited = self.report_interval - first_grace
         while self._report_running:
             time.sleep(1.0)
             waited += 1.0
@@ -151,20 +158,39 @@ class GatewayData:
                 if self.log:
                     self.log.warn('DATA', f'report_liveness błąd: {e}')
 
+    def _oa_for(self, dtype):
+        """Timeout offline [s] dla typu urządzenia. Per-typ (T1/T2/T3) jeśli podano
+        offline_after_fn; inaczej skalar self.offline_after (ścieżka step 3)."""
+        if self.offline_after_fn:
+            try:
+                v = self.offline_after_fn(dtype)
+                if v:
+                    return v
+            except Exception:
+                pass
+        return self.offline_after
+
     def report_liveness(self):
+        """Okresowy heartbeat dostępności = JEDYNE źródło offline (bramka autorytetem, CLAUDE.md).
+        UNIFIKACJA 2026-06-20: pokrywa WSZYSTKIE urządzenia (nie tylko monitored), bo urządzenia
+        event-driven (door/switch) inaczej nigdy nie dostają update'u availability → supervisor
+        utyka. Dla non-monitored wysyłamy TYLKO bit `a:` (puste caps, ~minimalny payload — szanuje
+        LoRa), pełne wartości tylko dla monitored (heartbeat danych #8)."""
         now = time.time()
         for dev, info in list(self.disc.devices.items()):
-            if not self.disc.is_monitored(dev):
-                continue
+            monitored = self.disc.is_monitored(dev)
+            oa = self._oa_for(info.get('type', 'sensor'))   # per-typ T1/T2/T3 (lub skalar)
             ts = self.last_msg_ts.get(dev)
             seen = ts is not None
-            if not seen and (now - self._start_ts) < self.offline_after:
+            if not seen and (now - self._start_ts) < oa:
                 continue                                 # grace startowy — z2m nie retainuje stanu
-            alive = seen and (now - ts) < self.offline_after
+            alive = seen and (now - ts) < oa
             if alive:
-                dtype = info.get('type', 'sensor')
-                full = {k: self.states[dev][k] for k in TYPE_CAPS.get(dtype, ())
-                        if k in self.states.get(dev, {})}
+                full = {}
+                if monitored:                            # pełne wartości tylko dla monitored
+                    dtype = info.get('type', 'sensor')
+                    full = {k: self.states[dev][k] for k in TYPE_CAPS.get(dtype, ())
+                            if k in self.states.get(dev, {})}
                 self._enqueue(dev, full, force=True, available=True)
                 if self._alive.get(dev) is False and self.log:
                     self.log.info('DATA', f'🟢 {dev} ONLINE (z2m wrócił)')
@@ -173,7 +199,7 @@ class GatewayData:
                 if self._alive.get(dev) is not False and self.log:
                     silence = int(now - ts) if seen else -1
                     self.log.warn('DATA', f'💀 {dev} OFFLINE (cisza z2m '
-                                  f'{silence}s > {self.offline_after}s) → available=0')
+                                  f'{silence}s > {oa}s) → available=0')
                 self._enqueue(dev, {}, force=True, available=False)
                 self._alive[dev] = False
 

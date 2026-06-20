@@ -1,10 +1,13 @@
-"""CalendarTransfer — chunkowany transfer harmonogramu przez LoRa (STEP 4 / krok 16).
+"""CalendarTransfer — chunkowany, NIEZAWODNY transfer harmonogramu przez LoRa (STEP 4 / krok 16).
 
-Port CalendarTransfer z supervisor_v38.py z wstrzykiwaniem (send_fn, on_received).
-Protokół:  cal_begin(tid,n,crc) → cal_chunk(s,d)×n → cal_end(tid) → cal_ack(ok,miss)
+Per-chunk ACK (stop-and-wait) — odporny na stratne łącze. ACK stosujemy TYLKO tu (transfer
+zserializowanego/skompresowanego harmonogramu): każdy chunk potwierdzany osobnym `cal_cack`;
+nadawca retransmituje dany chunk aż do potwierdzenia (lub limitu), dopiero potem następny.
+Na końcu `cal_end` + finalny `cal_ack` (weryfikacja CRC całości).
+
+Protokół:  cal_begin(tid,n,crc) → [ cal_chunk(s,d) ↔ cal_cack(s) ]×n → cal_end(tid) → cal_ack(ok)
   - serializacja: json(slots) → zlib(9) → base64 → chunki po chunk_size
-  - CRC = md5(b64)[:4]; brakujące chunki → NACK(ok=0,miss) → retransmit
-  - cal_end z retry (gubienie sch_e w eterze → deadlock bez tego)
+  - CRC = md5(b64)[:4]; finalny cal_ack(ok=1) potwierdza poprawne złożenie
 Slots = format compact [[start_min,dur_min,mode],...] z ScheduleManager.
 """
 import base64
@@ -18,15 +21,20 @@ import zlib
 
 
 class CalendarTransfer:
-    def __init__(self, send_fn, chunk_size=140, chunk_delay=6.0,
-                 on_received=None, logger=None):
+    def __init__(self, send_fn, chunk_size=90, chunk_delay=3.0,
+                 on_received=None, logger=None,
+                 chunk_ack_timeout=12.0, chunk_retries=6, end_retries=4):
         self.send = send_fn              # callable(dict) → wyślij ramkę LoRa
         self.chunk_size = chunk_size
-        self.chunk_delay = chunk_delay
+        self.chunk_delay = chunk_delay   # odstęp startowy / cooldown LoRa
         self.on_received = on_received   # callback(gw, direction, slots) po udanym odbiorze
         self.log = logger
+        self.chunk_ack_timeout = chunk_ack_timeout   # ile czekać na cal_cack zanim retransmit
+        self.chunk_retries = chunk_retries           # ile retransmisji chunku
+        self.end_retries = end_retries               # ile retransmisji cal_end (finalny ACK)
         self.incoming = {}
         self.outgoing = {}
+        self.completed = {}              # tid → ts ukończonych odbiorów (idempotentny re-ACK)
         self.lock = threading.Lock()
 
     # ── helpers ─────────────────────────────────────────
@@ -51,7 +59,7 @@ class CalendarTransfer:
         if self.log:
             getattr(self.log, lvl, self.log.info)(tag, msg)
 
-    # ── wysyłka (master → odbiorca) ─────────────────────
+    # ── wysyłka (master → odbiorca), stop-and-wait per chunk ────
     def start_send(self, gw, direction, slots):
         b64 = self.serialize(slots)
         crc = self.crc16(b64)
@@ -59,34 +67,66 @@ class CalendarTransfer:
         tid = self.gen_tid()
         with self.lock:
             self.outgoing[tid] = {'chunks': chunks, 'gw': gw, 'dir': direction,
-                                  'ts': time.time(), 'ack_received': False}
+                                  'ts': time.time(), 'acked': set(), 'done': False}
         self.send({"t": "cal_begin", "tid": tid, "g": gw, "dir": direction,
                    "n": len(chunks), "crc": crc})
         self._log('info', 'SYNC', f"📤 Begin {direction} [{gw}] tid={tid} chunks={len(chunks)} ({len(b64)}B)")
 
-        def _run():
-            for i, chunk in enumerate(chunks):
-                time.sleep(self.chunk_delay)
-                self.send({"t": "cal_chunk", "tid": tid, "s": i, "d": chunk})
-            for attempt in range(3):                       # cal_end z retry (gubienie w eterze)
-                time.sleep(self.chunk_delay)
-                with self.lock:
-                    if tid not in self.outgoing:
-                        return
-                self.send({"t": "cal_end", "tid": tid})
-                if attempt > 0:
-                    self._log('warn', 'SYNC', f"⚠️ cal_end retry tid={tid} {attempt + 1}/3")
-                time.sleep(15)
+        def _wait_flag(check):
+            waited = 0.0
+            while waited < self.chunk_ack_timeout:
+                time.sleep(0.4)
+                waited += 0.4
                 with self.lock:
                     info = self.outgoing.get(tid)
-                    if info is None or info.get('ack_received'):
+                    if info is None:
+                        return None              # anulowane
+                    if check(info):
+                        return True
+            return False
+
+        def _run():
+            time.sleep(self.chunk_delay)
+            for i, chunk in enumerate(chunks):
+                ok = False
+                for attempt in range(self.chunk_retries + 1):
+                    self.send({"t": "cal_chunk", "tid": tid, "s": i, "d": chunk})
+                    res = _wait_flag(lambda inf: i in inf['acked'])
+                    if res is None:
                         return
-            self._log('error', 'SYNC', f"❌ tid={tid} brak odpowiedzi po 3 cal_end — rezygnacja")
+                    if res:
+                        ok = True
+                        break
+                    if attempt < self.chunk_retries:
+                        self._log('warn', 'SYNC', f"🔁 chunk {i}/{len(chunks)} brak cack tid={tid} — "
+                                  f"retry {attempt + 1}/{self.chunk_retries}")
+                if not ok:
+                    self._log('error', 'SYNC', f"❌ chunk {i} tid={tid} bez potwierdzenia → przerwane")
+                    with self.lock:
+                        self.outgoing.pop(tid, None)
+                    return
+            # wszystkie chunki potwierdzone → cal_end + finalny ACK (CRC)
+            for attempt in range(self.end_retries):
+                self.send({"t": "cal_end", "tid": tid})
+                res = _wait_flag(lambda inf: inf.get('done'))
+                if res is None or res:
+                    return
+                self._log('warn', 'SYNC', f"⚠️ cal_end retry tid={tid} {attempt + 1}/{self.end_retries}")
+            self._log('error', 'SYNC', f"❌ tid={tid} brak finalnego ACK po {self.end_retries} cal_end — rezygnacja")
             with self.lock:
                 self.outgoing.pop(tid, None)
 
         threading.Thread(target=_run, daemon=True, name=f"cal-tx-{tid}").start()
         return tid
+
+    def handle_cack(self, data):
+        """Per-chunk ACK od odbiorcy → odblokuj wysyłkę kolejnego chunku."""
+        tid = data.get('tid')
+        s = data.get('s')
+        with self.lock:
+            info = self.outgoing.get(tid)
+            if info is not None and s is not None:
+                info['acked'].add(s)
 
     # ── odbiór ──────────────────────────────────────────
     def handle_begin(self, data):
@@ -99,16 +139,24 @@ class CalendarTransfer:
 
     def handle_chunk(self, data):
         tid = data.get('tid')
+        s = data.get('s', 0)
         with self.lock:
             if tid in self.incoming:
-                self.incoming[tid]['chunks'][data.get('s', 0)] = data.get('d', '')
+                self.incoming[tid]['chunks'][s] = data.get('d', '')
                 self.incoming[tid]['ts'] = time.time()
+        # PER-CHUNK ACK — potwierdź odbiór tego chunku (idempotentnie, też dla retransmisji)
+        self.send({"t": "cal_cack", "tid": tid, "s": s})
 
     def handle_end(self, data):
         tid = data.get('tid')
         with self.lock:
             info = self.incoming.get(tid)
+            done_before = tid in self.completed
         if not info:
+            # Już złożone wcześniej: finalny cal_ack mógł zginąć na RF, nadawca retransmituje
+            # cal_end → re-ACK idempotentnie (bez tego master "rezygnuje" mimo poprawnego odbioru).
+            if done_before:
+                self.send({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})
             return None
         missing = [i for i in range(info['total']) if i not in info['chunks']]
         if missing:
@@ -126,6 +174,10 @@ class CalendarTransfer:
             return None
         with self.lock:
             self.incoming.pop(tid, None)
+            self.completed[tid] = time.time()
+            if len(self.completed) > 32:                  # przytnij najstarsze (bounded)
+                for old in sorted(self.completed, key=self.completed.get)[:-16]:
+                    self.completed.pop(old, None)
         self.send({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})
         try:
             slots = self.deserialize(b64)
@@ -138,6 +190,7 @@ class CalendarTransfer:
         return info['gw'], info['dir'], slots
 
     def handle_ack(self, data):
+        """Finalny ACK (po cal_end). ok=1 → koniec. ok=0 → fallback retransmit miss + cal_end."""
         tid = data.get('tid')
         ok = data.get('ok', 0)
         miss = data.get('miss', [])
@@ -146,12 +199,11 @@ class CalendarTransfer:
             if not info:
                 return
             if ok == 1:
+                info['done'] = True
                 self.outgoing.pop(tid, None)
                 self._log('info', 'SYNC', f"✅ ACK ok tid={tid}")
                 return
-            info['ack_received'] = True
             chunks = info['chunks']
-        # NACK → retransmit brakujących + ponowny cal_end
         self._log('warn', 'SYNC', f"🔁 NACK tid={tid} retransmit {miss}")
         for i in miss:
             if 0 <= i < len(chunks):
@@ -169,3 +221,5 @@ class CalendarTransfer:
             self.handle_end(data)
         elif t == 'cal_ack':
             self.handle_ack(data)
+        elif t == 'cal_cack':
+            self.handle_cack(data)

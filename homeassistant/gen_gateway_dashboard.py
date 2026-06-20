@@ -54,8 +54,12 @@ TEMPLATES = {
                  {"justify-self": "start"}]}},
     "lora_stat": {"template": "lora_base", "show_state": True, "styles": {
         "card": [{"padding": "14px 16px"}, {"height": "88px"}],
-        # state: jedna linia z ellipsis + zarezerwowane miejsce na ikonę (prawy górny róg),
-        # żeby długie wartości (hash/uptime/timestamp) nie wchodziły pod ikonę ani na nazwę.
+        # Ikona w OSOBNEJ kolumnie grida (nie absolute) → długie wartości (hash/uptime/
+        # timestamp) NIGDY nie wchodzą pod ikonę. Układ: [nazwa | ikona] / [stan | ikona].
+        "grid": [{"grid-template-areas": '"n i" "s i"'},
+                 {"grid-template-columns": "1fr 22px"},
+                 {"grid-template-rows": "auto auto"},
+                 {"align-items": "center"}, {"column-gap": "10px"}],
         "state": [{"font-size": "19px"}, {"font-weight": 800},
                   {"font-variant-numeric": "tabular-nums"}, {"justify-self": "start"},
                   {"color": "#e5e5e5"}, {"white-space": "nowrap"}, {"overflow": "hidden"},
@@ -63,10 +67,9 @@ TEMPLATES = {
         "name": [{"font-size": "8px"}, {"font-weight": 700}, {"color": "#525252"},
                  {"letter-spacing": "2px"}, {"justify-self": "start"}, {"margin-bottom": "6px"},
                  {"white-space": "nowrap"}, {"overflow": "hidden"}, {"text-overflow": "ellipsis"},
-                 {"max-width": "calc(100% - 24px)"}],
+                 {"max-width": "100%"}],
         "icon": [{"width": "18px"}, {"color": "#525252"}],
-        "img_cell": [{"justify-self": "end"}, {"position": "absolute"},
-                     {"top": "14px"}, {"right": "14px"}]}},
+        "img_cell": [{"justify-self": "center"}, {"align-self": "center"}]}},
     # przycisk akcji (Send Config / Send Timeout) — jednolinijkowy, bez nachodzenia
     "lora_btn": {"template": "lora_base", "show_state": False, "styles": {
         "card": [{"padding": "14px 12px"}, {"height": "58px"}],
@@ -156,7 +159,9 @@ def link_card():
 # offline gdy brak raportu z2m > tyle s (= gateway data.offline_after). Martwy czujnik
 # trzyma w Z2M ostatnią wartość (state != unavailable), więc liczymy WIEK ostatniego
 # raportu z last_updated — to samo kryterium co gw-side liveness wysyłany do supervisora.
-OFFLINE_S = 1920
+OFFLINE_S = 1920   # = GatewayData.offline_after (z2m-cisza) → dashboard ZGODNY z flagą `a:`
+# wysyłaną do supervisora. force_update=True na LQI bumpuje last_reported co raport z2m,
+# więc świeżość jest prawdziwa. (Wcześniej 7200 rozjeżdżał dashboard z supervisorem.)
 
 
 def _fresh_js(lqi_eid):
@@ -394,6 +399,61 @@ def offline_count_tile():
                        "custom_fields": {"content": [{"justify-self": "start"}]}}}
 
 
+# ── HARMONOGRAM / KALENDARZ (STEP 4 — krok 16) ──
+# Encje publikowane przez bramkę (test_step4/5): tryb produkcji + next change + hash + sloty,
+# przyciski push/pull harmonogramu, oraz lokalny kalendarz odtworzony z ICS.
+SCHED_MODE       = "sensor.lora_gateway_g1_gw_g1_tryb"
+SCHED_MODE_NEXT  = "sensor.lora_gateway_g1_gw_g1_tryb_nastepna_zmiana"
+SCHED_SLOTS      = "sensor.lora_gateway_g1_gw_g1_harmonogram_slotow"
+SCHED_HASH       = "sensor.lora_gateway_g1_gw_g1_hash_kalendarza"
+SCHED_BTN_PUSH   = "button.lora_gateway_g1_gw_g1_push_schedule_up"
+SCHED_BTN_SYNC   = "button.lora_gateway_g1_gw_g1_sync_schedule"
+SCHED_CALENDAR   = "calendar.lora_g1"
+GW_MODE          = "sensor.lora_gateway_g1_gw_g1_tryb_pracy_bramki"  # STEP 5: day/night/all-time
+
+
+def gw_mode_card():
+    """STEP 5: tryb pracy bramki (Całodobowa/Dzienna/Nocna) + czy aktywna (supresja offline)."""
+    content = (
+        "[[[ var s=states['" + GW_MODE + "'];var lbl=s?s.state:'--';"
+        "var a=s&&s.attributes?s.attributes:{};var ga=a.ga===undefined?1:a.ga;"
+        "var act=a.active||(ga?'aktywna':'wstrzymana');var col=ga?'#4ade80':'#fbbf24';"
+        "return `<div style=\"display:flex;flex-direction:column;gap:6px;width:100%;\">"
+        "<span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;\">TRYB PRACY BRAMKI</span>"
+        "<span style=\"font-size:19px;font-weight:800;color:#e5e5e5;\">${lbl}</span>"
+        "<span style=\"font-size:11px;font-weight:700;color:${col};\">● ${act}</span>"
+        "</div>`; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": GW_MODE,
+            "show_icon": False, "show_name": False, "show_state": False,
+            "tap_action": {"action": "more-info"}, "custom_fields": {"content": content},
+            "styles": {"card": [{"padding": "14px 16px"}, {"height": "100px"}],
+                       "custom_fields": {"content": [{"justify-self": "start"}]}}}
+
+
+def schedule_view():
+    """Widok Harmonogram: bieżący tryb produkcji + synchronizacja + lokalny kalendarz G1."""
+    return {"path": "lora-schedule", "title": "Harmonogram", "icon": "mdi:calendar-clock",
+            "cards": [{"type": "vertical-stack", "cards": [
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "TRYB PRACY"},
+                gw_mode_card(),
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "HARMONOGRAM PRODUKCJI"},
+                {"type": "horizontal-stack", "cards": [
+                    stat_tile(SCHED_MODE, "TRYB", "mdi:factory"),
+                    stat_tile(SCHED_MODE_NEXT, "NASTĘPNA ZMIANA", "mdi:clock-outline")]},
+                {"type": "horizontal-stack", "cards": [
+                    stat_tile(SCHED_SLOTS, "SLOTY", "mdi:calendar-multiple"),
+                    stat_tile(SCHED_HASH, "HASH KALENDARZA", "mdi:fingerprint")]},
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "SYNCHRONIZACJA"},
+                {"type": "horizontal-stack", "cards": [
+                    send_button("Pobierz (Sync)", SCHED_BTN_SYNC, "mdi:calendar-sync", "#4ade80"),
+                    send_button("Wyślij w górę", SCHED_BTN_PUSH, "mdi:upload", "#22d3ee")]},
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "KALENDARZ G1 (LOKALNY)"},
+                {"type": "calendar", "initial_view": "listWeek", "entities": [SCHED_CALENDAR],
+                 "card_mod": {"style": "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;"
+                                       "border-radius:12px;box-shadow:none;overflow:hidden;}"}},
+            ]}]}
+
+
 def build_config():
     control = {"path": "lora-control", "title": "Sterowanie", "icon": "mdi:lightbulb",
                "type": "masonry", "cards": [
@@ -432,7 +492,7 @@ def build_config():
                *other_section(),
            ]}]}
     return {"title": "LoRa Gateway G1", "button_card_templates": TEMPLATES,
-            "views": [gwv, control, alarms, sensors]}
+            "views": [gwv, schedule_view(), control, alarms, sensors]}
 
 
 async def deploy():
