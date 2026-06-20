@@ -142,7 +142,7 @@ GATEWAY_CONFIG.update({
         "ics_path": "/var/lib/homeassistant/homeassistant/.storage/local_calendar.g1.ics",
     },
     "calendar": {
-        "chunk_size": 90,         # ≤90B = niezawodny próg tego łącza LoRa (lekcja RF); transfer chunkuje b64
+        "chunk_size": 60,         # ≤90B = niezawodny próg tego łącza LoRa (lekcja RF); transfer chunkuje b64
         "chunk_delay": 6.0,       # s między chunkami (honor cooldown LoRa)
         "window_days": 14,        # okno harmonogramu kompaktowanego do LoRa
         "gw_calendar_id": "",     # REVERSE: encja kalendarza lokalnego bramki ('' = pchaj effective)
@@ -151,7 +151,7 @@ GATEWAY_CONFIG.update({
         # retransmituje zanim ACK dotrze i zapycha łącze. Round-trip czysty ~6-10s, pod
         # obciążeniem/po reconnect ~30-60s → 30s + mało retry.
         "chunk_ack_timeout": 30.0,  # s czekania na cal_cack przed retransmisją chunku
-        "chunk_retries": 2,         # maks. retransmisji chunku (max 3 wysyłki/chunk)
+        "chunk_retries": 5,         # maks. retransmisji chunku (max 3 wysyłki/chunk)
         "end_retries": 3,           # maks. retransmisji cal_end (finalny ACK)
     },
     "slotting": {
@@ -165,7 +165,7 @@ SUPERVISOR_CONFIG.update({
     "mode_names": _MODE_NAMES,
     "ha_api": {"url": HA_URL, "token": HA_TOKEN},
     "calendar": {
-        "chunk_size": 90,         # ≤90B = niezawodny próg tego łącza LoRa (lekcja RF)
+        "chunk_size": 60,         # ≤90B = niezawodny próg tego łącza LoRa (lekcja RF)
         "chunk_delay": 6.0,
         "window_days": 14,
         "calendar_id": "calendar.lora_global",   # encja HA czytana jako GLOBAL
@@ -173,7 +173,7 @@ SUPERVISOR_CONFIG.update({
         "enabled_gateways": ["G1"],               # do których bramek push harmonogramu
         # ANTY-SPAM (2026-06-16) — patrz komentarz w GATEWAY_CONFIG.calendar.
         "chunk_ack_timeout": 30.0,  # s czekania na cal_cack przed retransmisją (round-trip LoRa)
-        "chunk_retries": 2,         # maks. retransmisji chunku
+        "chunk_retries": 5,         # maks. retransmisji chunku
         "end_retries": 3,           # maks. retransmisji cal_end
     },
     "slotting": {
