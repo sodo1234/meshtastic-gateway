@@ -211,6 +211,26 @@ def run_gateway(log):
             retain=True)
         lqi_regd.add(dev)
 
+    # UNIFIKACJA: encja dostępności per-urządzenie na LOKALNYM HA bramki — publikowana z
+    # TEGO SAMEGO źródła (GatewayData.on_avail) co flaga `a:` do supervisora. Dashboard
+    # czyta tę encję zamiast heurystyki LQI → bramka == supervisor (jedno źródło prawdy).
+    avail_regd = set()
+
+    def publish_gw_avail(dev, available):
+        safe = _safe(dev)
+        uid = f"lora_{gw_lower}_{safe}_available"
+        if dev not in avail_regd:
+            mqtt.publish(f"{HA_PREFIX}/binary_sensor/{uid}/config", json.dumps({
+                "name": f"{dev} Available", "object_id": uid, "unique_id": uid,
+                "state_topic": f"{STATE_PREFIX}/{gw_lower}/{safe}/avail",
+                "payload_on": "1", "payload_off": "0", "device_class": "connectivity",
+                "device": {"identifiers": [f"lora_{gw_lower}_{safe}"]}},
+                separators=(',', ':')), retain=True)
+            avail_regd.add(dev)
+        mqtt.publish(f"{STATE_PREFIX}/{gw_lower}/{safe}/avail", "1" if available else "0", retain=True)
+
+    data.on_avail = publish_gw_avail   # GatewayData zgłasza zmiany dostępności tutaj
+
     dev_states = {}
     pending_st = {}                # {dev: (cap, want, ts)} — cmd→Z2M czeka na realne potwierdzenie
     last_fwd_state = {}            # {dev: (cap, val)} — ostatnio przesłany `st` (dedup zmian zewn.)

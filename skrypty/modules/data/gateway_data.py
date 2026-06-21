@@ -27,11 +27,18 @@ class GatewayData:
     def __init__(self, gw_id, discovery, lora, logger=None,
                  mon_interval=30, pri_interval=10, max_payload=150,
                  thresholds=None, send_spacing=0,
-                 report_interval=0, offline_after=None, offline_after_fn=None):
+                 report_interval=0, offline_after=None, offline_after_fn=None,
+                 on_avail=None):
         self.gw_id = gw_id
         self.disc = discovery          # GatewayDiscovery — short_ids, is_monitored, devices
         self.lora = lora
         self.log = logger
+        # UNIFIKACJA: callback(dev, available_bool) przy ZMIANIE dostępności — to TO SAMO
+        # źródło co flaga `a:` wysyłana do supervisora. Bramka publikuje z tego encję
+        # binary_sensor ...available do lokalnego HA → dashboard czyta JEDNO źródło
+        # (koniec rozjazdu LQI-heurystyka vs supervisor).
+        self.on_avail = on_avail
+        self._avail_pub = {}           # {dev: bool} ostatnio opublikowana dostępność (dedup)
         self.thresholds = thresholds
         self.send_spacing = send_spacing   # s between outbound `b` frames (LoRa cooldown).
                                            # 0 = send synchronously (tests); >0 = paced TX thread.
@@ -126,6 +133,13 @@ class GatewayData:
         sid = self.disc.short_ids.get(dev)
         if sid is None:
             return
+        # UNIFIKACJA: zgłoś zmianę dostępności (to samo źródło co `a:`) → encja na lokalnym HA
+        if self.on_avail is not None and self._avail_pub.get(dev) != available:
+            self._avail_pub[dev] = available
+            try:
+                self.on_avail(dev, available)
+            except Exception:
+                pass
         cd = dict(caps_dict)
         if available:
             lq = self.linkquality.get(dev)  # ride-along: LQI nie wyzwala batcha, ale jedzie z delta

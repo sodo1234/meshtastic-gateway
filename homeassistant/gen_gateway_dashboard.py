@@ -164,12 +164,22 @@ OFFLINE_S = 1920   # = GatewayData.offline_after (z2m-cisza) → dashboard ZGODN
 # więc świeżość jest prawdziwa. (Wcześniej 7200 rozjeżdżał dashboard z supervisorem.)
 
 
+def _avail_eid(lqi_eid):
+    """sensor.<slug>_lqi → binary_sensor.<slug>_available (encja publikowana przez bramkę
+    z GatewayData.on_avail = TO SAMO źródło co flaga `a:` do supervisora)."""
+    slug = lqi_eid[len("sensor."):-len("_lqi")]
+    return f"binary_sensor.{slug}_available"
+
+
 def _fresh_js(lqi_eid):
-    # Świeżość liczona z encji LQI (linkquality) — zmienia się przy KAŻDYM raporcie z2m
-    # (dowolny param = żyje), więc frontend dostaje push i kafel odświeża się LIVE.
-    # last_reported = każdy raport (też ta sama wartość); fallback last_updated (starszy HA).
-    return (f"var fe=states['{lqi_eid}'];var fts=fe&&(fe.last_reported||fe.last_updated);"
-            f"var fresh=fts&&((Date.now()-new Date(fts).getTime())/1000<{OFFLINE_S});")
+    # UNIFIKACJA: 'fresh'/online z encji ...available bramki (jedno źródło z `a:` → zgodność
+    # z supervisorem; koniec rozjazdu LQI-heurystyka vs supervisor). Fallback: gdy encji jeszcze
+    # nie ma (start) → świeżość LQI, by nie pokazywać fałszywego offline.
+    ae = _avail_eid(lqi_eid)
+    return (f"var ae=states['{ae}'];"
+            f"var fe=states['{lqi_eid}'];var fts=fe&&(fe.last_reported||fe.last_updated);"
+            f"var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<{OFFLINE_S});"
+            "var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;")
 
 
 def online_js(eid, lqi_eid):
@@ -378,22 +388,26 @@ def param_section():
 
 
 def offline_count_tile():
-    """Licznik OFFLINE liczony JS-em po TYCH SAMYCH encjach co kafle (wiek last_updated),
-    więc zawsze zgadza się z liczbą kafli pokazujących offline (Temp 1/2 + Leak/Door)."""
-    eids = ([f"sensor.{slug}_lqi" for _, slug in TEMPS]      # te same urządzenia co czerwone kafle:
-            + [f"sensor.{_slug(a[0])}_lqi" for a in ALARMS]   # temp + alarm + switch
-            + [f"sensor.{_slug(n)}_lqi" for n, _ in SWITCHES])
-    arr = json.dumps(eids)
-    content = ("[[[ var eids=" + arr + ";var off=0;eids.forEach(function(id){var e=states[id];"
-               "var ts=e&&(e.last_reported||e.last_updated);"
-               "if(!e||!ts||((Date.now()-new Date(ts).getTime())/1000>=" + str(OFFLINE_S) + "))off++;});"
+    """Licznik OFFLINE z encji ...available (TO SAMO źródło co `a:`/supervisor) — zgodny z
+    kaflami i z licznikiem supervisora. Fallback wieku LQI gdy encji jeszcze nie ma (start)."""
+    avs = ([f"binary_sensor.{slug}_available" for _, slug in TEMPS]
+           + [f"binary_sensor.{_slug(a[0])}_available" for a in ALARMS]
+           + [f"binary_sensor.{_slug(n)}_available" for n, _ in SWITCHES])
+    lqs = ([f"sensor.{slug}_lqi" for _, slug in TEMPS]
+           + [f"sensor.{_slug(a[0])}_lqi" for a in ALARMS]
+           + [f"sensor.{_slug(n)}_lqi" for n, _ in SWITCHES])
+    content = ("[[[ var av=" + json.dumps(avs) + ";var lq=" + json.dumps(lqs) + ";var off=0;"
+               "for(var i=0;i<av.length;i++){var a=states[av[i]];"
+               "if(a&&a.state!=='unavailable'&&a.state!=='unknown'){if(a.state!=='on')off++;}"
+               "else{var e=states[lq[i]];var ts=e&&(e.last_reported||e.last_updated);"
+               "if(!e||!ts||((Date.now()-new Date(ts).getTime())/1000>=" + str(OFFLINE_S) + "))off++;}}"
                "var col=off>0?'#f87171':'#525252';"
                "return `<div style=\"display:flex;flex-direction:column;justify-content:center;height:100%;\">"
                "<span style=\"font-size:19px;font-weight:800;color:${col};\">${off}</span>"
                "<span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;"
                "margin-top:6px;\">OFFLINE</span></div>`; ]]]")
     return {"type": "custom:button-card", "template": "lora_base", "show_icon": False,
-            "show_name": False, "show_state": False, "entity": eids[0],
+            "show_name": False, "show_state": False, "entity": avs[0],
             "tap_action": {"action": "none"}, "custom_fields": {"content": content},
             "styles": {"card": [{"padding": "14px 16px"}, {"height": "88px"}],
                        "custom_fields": {"content": [{"justify-self": "start"}]}}}
