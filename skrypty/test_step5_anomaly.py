@@ -714,16 +714,21 @@ def run_supervisor(log):
     # STEP 3: data layer — `b` → merged HA state
     dev_avail = {}                       # {(gw,dev): bool} — REALNY licznik offline (A)
 
-    def _set_avail(gw, dev, on):         # JEDNO źródło prawdy: dev_avail + encja + LISTA offline
+    # ack_offline: urządzenia offline RĘCZNIE wyczyszczone (acknowledged) — anomalia NIE wraca
+    # przez reconcile, dopóki urządzenie nie wróci online i nie padnie PONOWNIE (nowe zdarzenie).
+    # Rozdziela AVAILABILITY (live truth, encja *_available zawsze prawdziwa) od ANOMALII (alert,
+    # ack-owalny). Fix: clear realnie-offline urządzenia działa (wcześniej reconcile re-dodawał).
+    ack_offline = set()                  # {(gw,dev)}
+
+    def _set_avail(gw, dev, on):         # availability = ZAWSZE live truth; anomalia = na transition (chyba że ack)
         prev = dev_avail.get((gw, dev))
         dev_avail[(gw, dev)] = on
         ha.pub_device_avail(gw, dev, on)
-        # UNIFIKACJA: lista offline == availability. Każde przejście stanu (batch `a:`, do/dn,
-        # cmd-failure) utrzymuje kubełek 'offline' w anomaly_store → licznik=lista=*_available.
         if prev != on:
             if on:
+                ack_offline.discard((gw, dev))           # recovery → kasuj ack (re-alert gdy znów padnie)
                 anomaly_store.remove_one(gw, dev, 'offline')
-            else:
+            elif (gw, dev) not in ack_offline:           # offline transition → anomalia (jeśli nie ack)
                 anomaly_store.add_offline(gw, dev)
 
     # on_avail (batch `a:`) ROUTOWANE przez _set_avail → trafia też do listy offline (kluczowy fix
@@ -913,13 +918,15 @@ def run_supervisor(log):
     off_sync_guard = {}                                   # gw → ts (debounce reconcile po drift offline-hash)
 
     def reconcile_availability(gw):
-        """Zsynchronizuj LISTĘ offline z dev_avail (źródło = batch `a:` z bramki + cmd-failure).
-        dev_avail jest prawdą (ciągły sygnał z2m); lista offline ma ją tylko odzwierciedlać."""
+        """Reconcile listy offline z dev_avail (łapie zgubione `do`/`dn`). Recovery → usuń+kasuj ack.
+        Offline → dodaj anomalię TYLKO jeśli NIE acknowledged (ack_offline). Encja *_available i tak
+        zawsze odzwierciedla dev_avail (live truth, niezależnie od ack)."""
         for dev in list(sup_disc.devices(gw).keys()):
             on = dev_avail.get((gw, dev), True) and ((gw, dev) not in cmd_failed)
             if on:
+                ack_offline.discard((gw, dev))
                 anomaly_store.remove_one(gw, dev, 'offline')
-            else:
+            elif (gw, dev) not in ack_offline:
                 anomaly_store.add_offline(gw, dev)
         publish_offline_count(gw)
 
@@ -1241,10 +1248,11 @@ def run_supervisor(log):
                     try:                                   # payload JSON {gw,dev,bucket}
                         info = json.loads(payload)
                         cg, cd = info['gw'], info['dev']; cb = info.get('bucket', 'offline')
+                        if cb == 'offline':                # ACK: nie wracaj przez reconcile aż do recovery
+                            cmd_failed.discard((cg, cd)); ack_offline.add((cg, cd))
                         n = anomaly_store.remove_one(cg, cd, cb)
-                        if cb == 'offline':                # ręczny clear offline → też cmd-failure + reconcile
-                            cmd_failed.discard((cg, cd)); reconcile_availability(cg)
-                        log.info('ANOM', f'🗑️ clear ręczny {cg}/{cd} [{cb}] n={n}')
+                        publish_offline_count(cg)
+                        log.info('ANOM', f'🗑️ clear ręczny {cg}/{cd} [{cb}] n={n} (ack)')
                     except Exception as e:
                         log.warn('ANOM', f'clear_anomaly bad payload {payload!r}: {e}')
                 elif a in ('clear_offline', 'clear_battery', 'clear_other'):  # CLEAR-ALL kubełka
@@ -1252,11 +1260,10 @@ def run_supervisor(log):
                     for g in known_gateways:
                         for it in list(anomaly_store.items(g, bucket)):
                             if bucket == 'offline':
-                                cmd_failed.discard((g, it['dev']))
+                                cmd_failed.discard((g, it['dev'])); ack_offline.add((g, it['dev']))
                             anomaly_store.remove_one(g, it['dev'], bucket)
-                        if bucket == 'offline':
-                            reconcile_availability(g)
-                    log.info('BTN', f'🔘 Clear all [{bucket}]')
+                        publish_offline_count(g)
+                    log.info('BTN', f'🔘 Clear all [{bucket}] (ack)')
             elif len(rest) == 2:
                 gw, a = rest[0].upper(), rest[1]
                 if a == 'ping':

@@ -26,7 +26,7 @@ TILES = {
     "sensor.lora_gateway_g1_gw_g1_offline_anomalies":
         ("offline", "OFFLINE", "#f87171", "button.lora_supervisor_clear_offline"),
     "sensor.lora_gateway_g1_gw_g1_battery_anomalies":
-        ("battery", "BATERIA", "#fbbf24", "button.lora_supervisor_clear_battery"),
+        ("battery", "BATERIA", "#fbbf24", "button.clear_battery"),
     "sensor.lora_gateway_g1_gw_g1_other_anomalies":
         ("other", "INNE", "#22d3ee", "button.lora_supervisor_clear_other"),
 }
@@ -50,13 +50,13 @@ def _row(eid, i, bucket, color):
         "var ts=it.detected_at?new Date(it.detected_at):(it.since?new Date(it.since*1000):null);"
         "var tss=ts?(('0'+ts.getDate()).slice(-2)+'.'+('0'+(ts.getMonth()+1)).slice(-2)+' '+"
         "('0'+ts.getHours()).slice(-2)+':'+('0'+ts.getMinutes()).slice(-2)):'—';"
-        "return `<div style=\"display:flex;justify-content:space-between;align-items:center;width:100%;\">"
-        "<div style=\"display:flex;flex-direction:column;gap:2px;\">"
-        "<span style=\"color:#e5e5e5;font-weight:700;font-size:13px;\">${it.dev}</span>"
-        "<span style=\"color:#737373;font-size:10px;\">${it.gw} · " + "${typ}" + "</span></div>"
-        "<div style=\"display:flex;align-items:center;gap:10px;\">"
-        "<span style=\"color:#525252;font-size:10px;white-space:nowrap;\">${tss}</span>"
-        "<span style=\"color:" + color + ";font-size:14px;font-weight:800;\">✕</span></div></div>`; ]]]")
+        "return `<div style=\"display:flex;justify-content:space-between;align-items:center;"
+        "width:100%;box-sizing:border-box;gap:12px;\">"
+        "<div style=\"display:flex;flex-direction:column;gap:3px;flex:1 1 auto;min-width:0;\">"
+        "<span style=\"color:#e5e5e5;font-weight:700;font-size:14px;\">${it.dev}</span>"
+        "<span style=\"color:#737373;font-size:11px;\">${it.gw} · ${typ} · ${tss}</span></div>"
+        "<span style=\"color:" + color + ";font-size:18px;font-weight:800;flex:0 0 auto;\">✕</span>"
+        "</div>`; ]]]")
     # height 0 gdy brak items[i] (ukrycie pustych wierszy)
     height = ("[[[ var it=(states['" + eid + "'].attributes.items||[])[" + str(i) + "];"
               "return it?'auto':'0px'; ]]]")
@@ -71,11 +71,12 @@ def _row(eid, i, bucket, color):
         "type": "custom:button-card", "entity": eid, "show_icon": False,
         "show_name": False, "show_state": False,
         "custom_fields": {"content": content},
+        # mqtt.publish z payloadem z items[i]. service_data+data (kompat. starsze/nowsze HA).
         "tap_action": {"action": "call-service", "service": "mqtt.publish",
-                       "service_data": {"topic": "lora/supervisor/cmd/clear_anomaly",
-                                        "payload": payload}},
+                       "service_data": {"topic": "lora/supervisor/cmd/clear_anomaly", "payload": payload},
+                       "data": {"topic": "lora/supervisor/cmd/clear_anomaly", "payload": payload}},
         "styles": {"card": [{"background": "#0a0a0a"}, {"box-shadow": "none"},
-                            {"border-bottom": border}, {"border-radius": "0"},
+                            {"border-bottom": border}, {"border-radius": "0"}, {"width": "100%"},
                             {"padding": pad}, {"height": height}, {"overflow": "hidden"}],
                    "custom_fields": {"content": [{"width": "100%"}]}}}
 
@@ -112,9 +113,8 @@ def _patch(card):
         data["title"] = f"Anomalie — {title}"
         data["content"] = _popup_content(e, bucket, title, color, cb)
         data["dismissable"] = True
-        data.setdefault("style", {"--popup-min-width": "460px",
-                                  "--popup-background-color": "#0a0a0a",
-                                  "--popup-border-radius": "12px"})
+        data["style"] = {"--popup-min-width": "560px", "--popup-max-width": "640px",
+                         "--popup-background-color": "#0a0a0a", "--popup-border-radius": "12px"}
         return True
     for c in (card.get("cards") or []):
         _patch(c)
