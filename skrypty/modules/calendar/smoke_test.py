@@ -117,7 +117,8 @@ def _frames(slots, chunk_size=140, tid="t1", gw="G1", direction="push"):
     chunks = [b64[i:i + chunk_size] for i in range(0, len(b64), chunk_size)] or ['']
     begin = {"t": "cal_begin", "tid": tid, "g": gw, "dir": direction, "n": len(chunks), "crc": crc}
     cf = [{"t": "cal_chunk", "tid": tid, "s": i, "d": c} for i, c in enumerate(chunks)]
-    return begin, cf, {"t": "cal_end", "tid": tid}, len(chunks)
+    end = {"t": "cal_end", "tid": tid, "n": len(chunks), "crc": crc, "g": gw, "dir": direction}
+    return begin, cf, end, len(chunks)
 
 
 def test_transfer_serialize_roundtrip():
@@ -180,6 +181,43 @@ def test_transfer_duplicate_end_reack():
     assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}  # ...ale re-ACK ok=1
     assert len(got) == 1                                        # on_received tylko raz (bez duplikatu)
     print("✅ transfer duplikat cal_end → idempotentny re-ACK ok=1 (bez ponownego on_received)")
+
+
+def test_transfer_lost_begin_recovers():
+    """cal_begin zgubiony na RF: chunki przychodzą bez wpisu incoming. Odbiorca MUSI odtworzyć
+    wpis z chunków-sierot i sfinalizować z n/crc niesionych redundantnie w cal_end (bez tego
+    handle_end po cichu wraca None, a master 'rezygnuje' mimo dostarczonych chunków = bug PULL)."""
+    from modules.calendar import CalendarTransfer
+    sent = []; got = []
+    rx = CalendarTransfer(lambda m: sent.append(m), chunk_size=20,
+                          on_received=lambda gw, d, s: got.append((gw, d, s)))
+    slots = [[i * 30, 60, i % 4] for i in range(20)]
+    begin, cf, end, n = _frames(slots, chunk_size=20, gw="G1", direction="gw_push")
+    assert n > 1
+    # POMIJAMY begin — symulacja straty na RF
+    for c in cf:
+        rx.dispatch(c)
+    res = rx.handle_end(end)
+    assert res and res[2] == slots, "odtworzenie z chunków-sierot + cal_end powinno złożyć sloty"
+    assert res[0] == "G1" and res[1] == "gw_push", "gw/dir z redundantnego cal_end"
+    assert got and got[0][2] == slots
+    assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}
+    print("✅ transfer zgubiony cal_begin → odtworzenie z chunków + cal_end(n/crc/g/dir) → ACK ok=1")
+
+
+def test_transfer_lost_begin_and_chunk_nack():
+    """Begin zgubiony + jeden chunk zgubiony → handle_end z n z cal_end wykrywa brak → NACK ok=0."""
+    from modules.calendar import CalendarTransfer
+    sent = []; got = []
+    rx = CalendarTransfer(lambda m: sent.append(m), chunk_size=20,
+                          on_received=lambda gw, d, s: got.append(s))
+    slots = [[i * 30, 60, 1] for i in range(15)]
+    begin, cf, end, n = _frames(slots, chunk_size=20)
+    for c in cf[:-1]:                                           # bez begin i bez ostatniego chunku
+        rx.dispatch(c)
+    assert rx.handle_end(end) is None and not got
+    assert sent[-1]["t"] == "cal_ack" and sent[-1]["ok"] == 0 and sent[-1]["miss"]
+    print("✅ transfer zgubiony begin + brakujący chunk → NACK ok=0+miss (n z cal_end)")
 
 
 def test_transfer_crc_mismatch():
@@ -313,6 +351,7 @@ if __name__ == "__main__":
              test_compute_now_and_next, test_merge, test_expand_overlapping_same_start,
              test_transfer_serialize_roundtrip, test_transfer_reassembly_ok,
              test_transfer_missing_chunk_nack, test_transfer_duplicate_end_reack,
+             test_transfer_lost_begin_recovers, test_transfer_lost_begin_and_chunk_nack,
              test_transfer_crc_mismatch,
              test_build_ics, test_parse_ha_events, test_calendar_e2e_push,
              test_calendar_e2e_reverse]

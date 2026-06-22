@@ -67,7 +67,7 @@ class CalendarTransfer:
         tid = self.gen_tid()
         with self.lock:
             self.outgoing[tid] = {'chunks': chunks, 'gw': gw, 'dir': direction,
-                                  'ts': time.time(), 'acked': set(), 'done': False}
+                                  'crc': crc, 'ts': time.time(), 'acked': set(), 'done': False}
         self.send({"t": "cal_begin", "tid": tid, "g": gw, "dir": direction,
                    "n": len(chunks), "crc": crc})
         self._log('info', 'SYNC', f"📤 Begin {direction} [{gw}] tid={tid} chunks={len(chunks)} ({len(b64)}B)")
@@ -105,9 +105,12 @@ class CalendarTransfer:
                     with self.lock:
                         self.outgoing.pop(tid, None)
                     return
-            # wszystkie chunki potwierdzone → cal_end + finalny ACK (CRC)
+            # wszystkie chunki potwierdzone → cal_end + finalny ACK (CRC).
+            # cal_end niesie REDUNDANTNIE n/crc/g/dir — gdy cal_begin zginął na RF,
+            # odbiorca odtwarza wpis z chunków-sierot i finalizuje bez nowego round-tripu.
             for attempt in range(self.end_retries):
-                self.send({"t": "cal_end", "tid": tid})
+                self.send({"t": "cal_end", "tid": tid, "n": len(chunks),
+                           "crc": crc, "g": gw, "dir": direction})
                 res = _wait_flag(lambda inf: inf.get('done'))
                 if res is None or res:
                     return
@@ -141,9 +144,16 @@ class CalendarTransfer:
         tid = data.get('tid')
         s = data.get('s', 0)
         with self.lock:
-            if tid in self.incoming:
-                self.incoming[tid]['chunks'][s] = data.get('d', '')
-                self.incoming[tid]['ts'] = time.time()
+            if tid not in self.incoming:
+                # cal_begin zgubiony na RF → odtwórz wpis z chunku-sieroty.
+                # total/crc/gw/dir uzupełni cal_end (niesie je redundantnie). Bez tego
+                # chunk byłby porzucony, a cal_cack i tak wysłany = nadawca myśli że dotarł.
+                self.incoming[tid] = {'chunks': {}, 'total': None, 'crc': None,
+                                      'gw': '?', 'dir': 'push', 'ts': time.time(),
+                                      'no_begin': True}
+                self._log('warn', 'SYNC', f"⚠️ chunk {s} tid={tid} bez cal_begin (zgubiony na RF) → odtwarzam z cal_end")
+            self.incoming[tid]['chunks'][s] = data.get('d', '')
+            self.incoming[tid]['ts'] = time.time()
         # PER-CHUNK ACK — potwierdź odbiór tego chunku (idempotentnie, też dla retransmisji)
         self.send({"t": "cal_cack", "tid": tid, "s": s})
 
@@ -152,12 +162,25 @@ class CalendarTransfer:
         with self.lock:
             info = self.incoming.get(tid)
             done_before = tid in self.completed
+            if not info and not done_before and data.get('n') is not None:
+                # cal_begin ORAZ wszystkie chunki zgubione, ale cal_end niesie n/crc → odtwórz
+                # pusty wpis, by handle_end policzył braki i poprawnie NACK-nął cały transfer.
+                info = {'chunks': {}, 'total': None, 'crc': None,
+                        'gw': '?', 'dir': 'push', 'ts': time.time(), 'no_begin': True}
+                self.incoming[tid] = info
         if not info:
             # Już złożone wcześniej: finalny cal_ack mógł zginąć na RF, nadawca retransmituje
             # cal_end → re-ACK idempotentnie (bez tego master "rezygnuje" mimo poprawnego odbioru).
             if done_before:
                 self.send({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})
             return None
+        # Begin zgubiony → uzupełnij total/crc/gw/dir z redundantnych pól cal_end.
+        if info.get('total') is None:
+            info['total'] = data.get('n', 0)
+            info['crc'] = data.get('crc', '')
+        if info.get('gw', '?') == '?' and data.get('g'):
+            info['gw'] = data['g']
+            info['dir'] = data.get('dir', info['dir'])
         missing = [i for i in range(info['total']) if i not in info['chunks']]
         if missing:
             self._log('warn', 'SYNC', f"⚠️ tid={tid} brakujące chunki: {missing[:5]}")
@@ -204,11 +227,15 @@ class CalendarTransfer:
                 self._log('info', 'SYNC', f"✅ ACK ok tid={tid}")
                 return
             chunks = info['chunks']
+            crc = info.get('crc', '')
+            gw = info.get('gw', '?')
+            direction = info.get('dir', 'push')
         self._log('warn', 'SYNC', f"🔁 NACK tid={tid} retransmit {miss}")
         for i in miss:
             if 0 <= i < len(chunks):
                 self.send({"t": "cal_chunk", "tid": tid, "s": i, "d": chunks[i]})
-        self.send({"t": "cal_end", "tid": tid})
+        self.send({"t": "cal_end", "tid": tid, "n": len(chunks),
+                   "crc": crc, "g": gw, "dir": direction})
 
     # ── router (z dispatchera app) ──────────────────────
     def dispatch(self, data):

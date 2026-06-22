@@ -163,7 +163,14 @@ GATEWAY_CONFIG.update({
 
 SUPERVISOR_CONFIG.update({
     "mode_names": _MODE_NAMES,
-    "ha_api": {"url": HA_URL, "token": HA_TOKEN},
+    "ha_api": {
+        "url": HA_URL,
+        "token": HA_TOKEN,
+        # REVERSE mirror (gw_push → calendar.lora_<gw>): zapis ICS do storage HA supervisora
+        # (jak bramka — REST /api/calendars POST jest read-only=405). {gw}=lower nazwa bramki.
+        # Wymaga zapisu dla usera `td` w .storage (chmod 777 jak na bramce).
+        "mirror_ics_path": "/var/lib/homeassistant/homeassistant/.storage/local_calendar.lora_{gw}.ics",
+    },
     "calendar": {
         "chunk_size": 60,         # ≤90B = niezawodny próg tego łącza LoRa (lekcja RF)
         "chunk_delay": 6.0,

@@ -58,6 +58,9 @@ class SupervisorData:
         cur = self.state.setdefault(gw, {})
         if dev not in cur and isinstance(fields, dict) and fields:
             cur[dev] = dict(fields)
+            # zasiej też cache ha_entities → pub_device_avail nie skasuje capów przed 1. `b`
+            if hasattr(self.ha, 'seed_device_cache'):
+                self.ha.seed_device_cache(gw, dev, fields)
             if self.on_avail and 'available' in fields:   # zasiej licznik offline z retained
                 self.on_avail(gw, dev, str(fields['available']).upper() == 'ON')
             if self.log:

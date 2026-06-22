@@ -762,13 +762,25 @@ def run_supervisor(log):
     def on_calendar_received_sup(gw, direction, compact):
         """REVERSE (gw_push): bramka raportuje swój harmonogram → MIRROR na calendar.lora_<gw>
         (tylko podgląd na HA supervisora; master = calendar.lora_global). Brak sprzężenia w
-        scheduler/expected_cal_hash → brak pętli push↔pull."""
+        scheduler/expected_cal_hash → brak pętli push↔pull.
+
+        Zapis: ICS do storage HA supervisora (jak bramka) — REST /api/calendars POST=405
+        (read-only). Fallback do write_ha_calendar gdy brak mirror_ics_path."""
         full = scheduler.expand_compact(compact)
+        mirror_tmpl = ha_cfg.get('mirror_ics_path', '')
         log.info('CAL', f'📥 gw_push {gw}: {len(full)} slotów → mirror calendar.lora_{gw.lower()}')
-        threading.Thread(target=lambda: write_ha_calendar(
-            ha_cfg.get('url', ''), ha_cfg.get('token', ''),
-            f"calendar.lora_{gw.lower()}", full, mode_names, logger=log),
-            daemon=True, name=f'ha-cal-{gw}').start()
+        if mirror_tmpl:
+            ics_path = mirror_tmpl.format(gw=gw.lower())
+            content = build_ics(full, mode_names, cal_name=f"LoRa {gw}")
+            def _write():
+                if write_ics_atomic(ics_path, content, logger=log):
+                    reload_local_calendar(ha_cfg.get('url', ''), ha_cfg.get('token', ''), logger=log)
+            threading.Thread(target=_write, daemon=True, name=f'ha-cal-{gw}').start()
+        else:
+            threading.Thread(target=lambda: write_ha_calendar(
+                ha_cfg.get('url', ''), ha_cfg.get('token', ''),
+                f"calendar.lora_{gw.lower()}", full, mode_names, logger=log),
+                daemon=True, name=f'ha-cal-{gw}').start()
     cal_transfer.on_received = on_calendar_received_sup  # STEP 4: odbiór reverse (gw→sup)
 
     # ── STEP 4: safe window (krok 7) — TX do bramki tylko gdy słyszeliśmy ją w oknie ──

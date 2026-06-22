@@ -17,6 +17,7 @@ class HAEntities:
         self.mqtt = mqtt
         self.log = logger
         self._registered = set()
+        self._dev_state = {}       # {(gw,dev): last full fields} — by avail-only nie kasował last_seen/capów
 
     def _safe(self, s):
         return s.replace(' ', '_').lower()
@@ -149,15 +150,29 @@ class HAEntities:
 
     # ── Device availability (offline cascade) ───────────
     def pub_device_avail(self, gw, dev, online):
-        """Mark a device available/unavailable on the supervisor's HA broker."""
+        """Mark a device available/unavailable on the supervisor's HA broker.
+
+        Retained state topic jest WSPÓŁDZIELONY z pub_device_state. Goły {available}
+        full-replace kasował last_seen/temp/humi/batt (dashboard pokazywał '--' i tracił
+        wartości). FIX: merge `available` w ostatni opublikowany stan — zachowaj capy."""
+        avail = "ON" if online else "OFF"
+        fields = dict(self._dev_state.get((gw, dev), {}))
+        fields['available'] = avail
+        self._dev_state[(gw, dev)] = fields
         gl, safe = gw.lower(), self._safe(dev)
         self.mqtt.publish(
             f"{STATE_PREFIX}/{gl}/{safe}/state",
-            json.dumps({"available": "ON" if online else "OFF"}, separators=(',', ':')),
-            retain=True)
+            json.dumps(fields, separators=(',', ':')), retain=True)
+
+    def seed_device_cache(self, gw, dev, fields):
+        """Zasiej cache stanu z RETAINED (hydratacja startowa) — by pierwsza zmiana
+        availability po restarcie nie skasowała capów/last_seen zanim przyjdzie pierwszy `b`."""
+        if isinstance(fields, dict) and fields:
+            self._dev_state.setdefault((gw, dev), dict(fields))
 
     def pub_device_state(self, gw, dev, fields):
         """Merge-ish publish of a device state JSON (step2: full replace)."""
+        self._dev_state[(gw, dev)] = dict(fields)       # cache dla pub_device_avail (zachowanie capów)
         gl, safe = gw.lower(), self._safe(dev)
         self.mqtt.publish(
             f"{STATE_PREFIX}/{gl}/{safe}/state",

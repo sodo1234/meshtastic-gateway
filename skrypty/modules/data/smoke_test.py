@@ -271,12 +271,48 @@ def test_end_to_end():
     print("✅ end-to-end: Z2M → delta → `b` → supervisor → merged HA state")
 
 
+def test_avail_preserves_last_seen():
+    """REGRESSION: pub_device_avail (goły {available}) full-replace kasował last_seen + capy
+    na WSPÓŁDZIELONYM retained topicu → dashboard supervisora pokazywał '--' dla wszystkich.
+    FIX: avail merguje się w ostatni opublikowany stan. Test na PRAWDZIWYM HAEntities."""
+    import json as _json
+    from modules.protocol.ha_entities import HAEntities, STATE_PREFIX
+
+    class FakeMqtt:
+        def __init__(self): self.retained = {}
+        def publish(self, topic, payload, retain=False): self.retained[topic] = payload
+
+    mq = FakeMqtt()
+    ha = HAEntities(mq)
+    topic = f"{STATE_PREFIX}/g1/temp_1/state"
+    # pełny stan z danych (jak handle_b → pub_device_state)
+    ha.pub_device_state("G1", "Temp 1", {"available": "ON", "temperature": 22.5,
+                                         "battery": 95, "last_seen": "22.06 21:00:00"})
+    # urządzenie pada → avail OFF (offline detection, BEZ nowego `b`)
+    ha.pub_device_avail("G1", "Temp 1", False)
+    st = _json.loads(mq.retained[topic])
+    assert st["available"] == "OFF", st
+    assert st["last_seen"] == "22.06 21:00:00", st     # ZACHOWANE (był bug: znikało → '--')
+    assert st["temperature"] == 22.5 and st["battery"] == 95, st
+    # avail przed jakimkolwiek `b` (cache pusty) → publikuje samo {available}, bez wywrotki
+    ha.pub_device_avail("G1", "Test 1", True)
+    st2 = _json.loads(mq.retained[f"{STATE_PREFIX}/g1/test_1/state"])
+    assert st2 == {"available": "ON"}, st2
+    # seed z hydratacji → następny avail zachowuje zasiane capy
+    ha.seed_device_cache("G1", "Door 1", {"available": "ON", "contact": False, "last_seen": "20.06 10:00:00"})
+    ha.pub_device_avail("G1", "Door 1", False)
+    st3 = _json.loads(mq.retained[f"{STATE_PREFIX}/g1/door_1/state"])
+    assert st3["last_seen"] == "20.06 10:00:00" and st3["available"] == "OFF", st3
+    print("✅ pub_device_avail merguje (nie kasuje) last_seen/capy + seed z hydratacji")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
              test_gateway_periodic_liveness, test_gateway_per_type_offline,
-             test_supervisor_handle_b_merge, test_end_to_end]
+             test_supervisor_handle_b_merge, test_end_to_end,
+             test_avail_preserves_last_seen]
     failed = 0
     for t in tests:
         try:
