@@ -39,6 +39,7 @@ class GatewayData:
         # (koniec rozjazdu LQI-heurystyka vs supervisor).
         self.on_avail = on_avail
         self._avail_pub = {}           # {dev: bool} ostatnio opublikowana dostępność (dedup)
+        self._z2m_avail = {}           # {dev: bool} z2m native availability (autorytet gdy włączone)
         self.thresholds = thresholds
         self.send_spacing = send_spacing   # s between outbound `b` frames (LoRa cooldown).
                                            # 0 = send synchronously (tests); >0 = paced TX thread.
@@ -97,6 +98,37 @@ class GatewayData:
     def subscribe(self, mqtt):
         """Subscribe to all Z2M device topics on the gateway's local broker."""
         mqtt.subscribe("zigbee2mqtt/+")
+
+    # ── z2m native availability (FAZA 2) ────────────────
+    def on_z2m_availability(self, topic, payload):
+        """`zigbee2mqtt/<device>/availability` = online/offline (active-ping routerów / passive).
+        AUTORYTET dostępności gdy z2m availability włączone — naprawia switche (mains nie
+        raportują stanu bez zmiany, ale z2m pinguje → wie czy żyją). Payload: 'online'/'offline'
+        albo JSON {"state":"online"}. Brak tych topiców = fallback na timeout (report_liveness)."""
+        if not topic.endswith("/availability"):
+            return
+        dev = topic[len("zigbee2mqtt/"):-len("/availability")]
+        if dev not in self.disc.devices:
+            return
+        p = (payload or "").strip()
+        if p.startswith("{"):
+            try:
+                p = json.loads(p).get("state", "")
+            except Exception:
+                pass
+        online = (p == "online")
+        self._z2m_avail[dev] = online              # autorytet dla report_liveness
+        if online:                                 # z2m widzi urządzenie żywe → reset zegara
+            self.last_msg_ts[dev] = time.time()
+        full = {}
+        if online and self.disc.is_monitored(dev):
+            dtype = self.disc.devices[dev].get('type', 'sensor')
+            full = {k: self.states[dev][k] for k in TYPE_CAPS.get(dtype, ())
+                    if k in self.states.get(dev, {})}
+        self._enqueue(dev, full, force=True, available=online)
+        if self._alive.get(dev) != online and self.log:
+            self.log.info('DATA', f"{'🟢' if online else '💀'} {dev} z2m availability={p}")
+        self._alive[dev] = online
 
     # ── ingest ──────────────────────────────────────────
     def on_z2m(self, topic, payload):
@@ -196,9 +228,14 @@ class GatewayData:
             oa = self._oa_for(info.get('type', 'sensor'))   # per-typ T1/T2/T3 (lub skalar)
             ts = self.last_msg_ts.get(dev)
             seen = ts is not None
-            if not seen and (now - self._start_ts) < oa:
-                continue                                 # grace startowy — z2m nie retainuje stanu
-            alive = seen and (now - ts) < oa
+            # FAZA 2: z2m native availability = AUTORYTET (gdy włączone). Naprawia switche/mains,
+            # które nie raportują bez zmiany stanu, ale z2m pinguje → wie czy żyją. Brak = timeout.
+            if dev in self._z2m_avail:
+                alive = self._z2m_avail[dev]
+            else:
+                if not seen and (now - self._start_ts) < oa:
+                    continue                             # grace startowy — z2m nie retainuje stanu
+                alive = seen and (now - ts) < oa
             if alive:
                 full = {}
                 if monitored:                            # pełne wartości tylko dla monitored

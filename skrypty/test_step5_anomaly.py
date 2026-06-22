@@ -476,6 +476,8 @@ def run_gateway(log):
             discovery.parse_z2m(payload)
             for dev in discovery.devices:                # STEP 3: lokalne encje LQI
                 reg_gw_lqi(dev)
+        elif topic.endswith('/availability'):           # FAZA 2: z2m native availability (autorytet)
+            data.on_z2m_availability(topic, payload)
         elif topic.startswith('zigbee2mqtt/'):          # STEP 3: device state → delta/batch
             data.on_z2m(topic, payload)
             propagate_state_from_z2m(topic, payload)     # STEP 4: cmd ORAZ zmiana zewn. → st (online+licznik)
@@ -522,6 +524,7 @@ def run_gateway(log):
     lora.on_receive = on_lora
     mqtt.subscribe('zigbee2mqtt/bridge/devices')
     mqtt.subscribe('zigbee2mqtt/+')                      # STEP 3: device states
+    mqtt.subscribe('zigbee2mqtt/+/availability')         # FAZA 2: z2m native availability
     mqtt.subscribe(f'{STATE_PREFIX}/gw/{gw_lower}/cmd/#')
     mqtt.subscribe(f'{STATE_PREFIX}/vio/+/state')   # hydratacja: retained stan vswitchy → vio_states
     mqtt.subscribe(f'{STATE_PREFIX}/vio/+/set')
