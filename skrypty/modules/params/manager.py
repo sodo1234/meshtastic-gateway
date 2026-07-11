@@ -31,20 +31,37 @@ PARAM_DEFS = {
            "name": "Offline temp/hum", "icon": "mdi:thermometer-alert"},
     "T3": {"default": 120, "min": 1, "max": 1440, "step": 1, "unit": "min",
            "name": "Offline door/leak/motion", "icon": "mdi:door-closed-lock"},
+    # Progi anomalii (gateway = master) — silniki temphum/battery czytają na żywo przez
+    # get_thresholds()→param_sync.get(); strojenie z dashboardu zamiast SSH+restart config.py.
+    "TH": {"default": 35,  "min": -40, "max": 125, "step": 1, "unit": "°C",
+           "name": "Próg temp. wysoka", "icon": "mdi:thermometer-high"},
+    "TL": {"default": 10,  "min": -40, "max": 125, "step": 1, "unit": "°C",
+           "name": "Próg temp. niska", "icon": "mdi:thermometer-low"},
+    "HH": {"default": 70,  "min": 0, "max": 100, "step": 1, "unit": "%",
+           "name": "Próg wilg. wysoka", "icon": "mdi:water-percent-alert"},
+    "HL": {"default": 20,  "min": 0, "max": 100, "step": 1, "unit": "%",
+           "name": "Próg wilg. niska", "icon": "mdi:water-off"},
+    "BL": {"default": 25,  "min": 1, "max": 100, "step": 1, "unit": "%",
+           "name": "Próg bateria niska", "icon": "mdi:battery-low"},
+    "BC": {"default": 15,  "min": 1, "max": 100, "step": 1, "unit": "%",
+           "name": "Próg bateria krytyczna", "icon": "mdi:battery-alert"},
 }
-PARAM_ORDER = ["P1", "P2", "P3", "T1", "T2", "T3"]
-# Dwie grupy wysyłki (przyciski jak v38 send_config) — model edytuj→Send (nie auto):
+PARAM_ORDER = ["P1", "P2", "P3", "T1", "T2", "T3", "TH", "TL", "HH", "HL", "BL", "BC"]
+# Trzy grupy wysyłki (przyciski jak v38 send_config) — model edytuj→Send (nie auto):
 CONFIG_KEYS = ["P1", "P2", "P3"]      # przycisk „Send Config"  (stagnation + raportowanie)
 TIMEOUT_KEYS = ["T1", "T2", "T3"]     # przycisk „Send Timeout" (offline switch/sensor/binary)
+THRESHOLD_KEYS = ["TH", "TL", "HH", "HL", "BL", "BC"]   # „Send Progi" (temp/hum/bateria)
 SEND_BUTTONS = [
-    ("send_config",  "Wyślij Config",  "mdi:cog-sync",  CONFIG_KEYS),
-    ("send_timeout", "Wyślij Timeout", "mdi:timer-cog", TIMEOUT_KEYS),
+    ("send_config",    "Wyślij Config",  "mdi:cog-sync",   CONFIG_KEYS),
+    ("send_timeout",   "Wyślij Timeout", "mdi:timer-cog",  TIMEOUT_KEYS),
+    ("send_threshold", "Wyślij Progi",   "mdi:gauge",      THRESHOLD_KEYS),
 ]
 
 
 class ParamSync:
     def __init__(self, role, gw_id, mqtt, send_fn, logger=None, persist_path=None,
-                 ha_prefix="homeassistant", state_prefix="lora", on_change=None):
+                 ha_prefix="homeassistant", state_prefix="lora", on_change=None,
+                 seed=None):
         assert role in ("gateway", "supervisor")
         self.role = role                 # 'gateway' = master | 'supervisor' = mirror
         self.gw_id = gw_id
@@ -56,6 +73,12 @@ class ParamSync:
         self.sp = state_prefix
         self.on_change = on_change       # callable(key, value) — apply to mechanism
         self.values = {k: PARAM_DEFS[k]["default"] for k in PARAM_ORDER}
+        # seed: wartości startowe z config (np. progi anomalii) — nadpisują DEFAULT, ale
+        # persisted (edycje usera z dashboardu) wygrywają (kolejność: default→seed→_load).
+        if seed:
+            for k, v in seed.items():
+                if k in self.values and v is not None:
+                    self.values[k] = self._clamp(k, v)
         self._load()
 
     # ── persistence ─────────────────────────────────────
@@ -92,8 +115,14 @@ class ParamSync:
     def _device(self):
         """Wszystkie encje (number + przyciski Send) wpięte pod urządzenie
         LoRa Gateway G1 na OBU HA (bramki i supervisora) — user 2026-06-10.
-        Na supervisorze gw_id = pierwsza bramka, więc identyfikator ten sam."""
-        return {"identifiers": [f"lora_gateway_{self.gw_id.lower()}"]}
+        Na supervisorze gw_id = pierwsza bramka, więc identyfikator ten sam.
+        FIX 2026-07-07 (audyt): device block MUSI mieć `name` — HA odrzuca discovery
+        tworzące NOWE urządzenie bez nazwy (objaw: 12 configów lora_g2_param_* retained
+        w brokerze, zero encji w HA, panel PARAMETRY bramki „Nie znaleziono encji").
+        Stare g1 działały, bo device istniał już w registry z wcześniejszej rejestracji."""
+        return {"identifiers": [f"lora_gateway_{self.gw_id.lower()}"],
+                "name": f"LoRa Gateway {self.gw_id}",
+                "manufacturer": "LoRa SCADA", "model": "Gateway Params"}
 
     def register_entities(self):
         device = self._device()
@@ -127,7 +156,8 @@ class ParamSync:
 
     def subscribe(self):
         self.mqtt.subscribe(f"{self.sp}/params/{self.role}/set/+")
-        self.mqtt.subscribe(f"{self.sp}/params/{self.role}/cmd/+")    # przyciski Send
+        # cmd/# (nie +): łapie i `cmd/send_x` (broadcast/self) i `cmd/<gw>/send_x` (per-bramka, supervisor).
+        self.mqtt.subscribe(f"{self.sp}/params/{self.role}/cmd/#")    # przyciski Send (per-gw)
 
     def _publish_states(self):
         for key in PARAM_ORDER:
@@ -165,30 +195,42 @@ class ParamSync:
                           f"(lokalnie — naciśnij Send aby wysłać)")
 
     # ── wysyłka grupowa (przyciski Send, jak v38 send_config) ──
+    _GROUPS = None   # lazy: eid → (keys, label)
+
     def on_cmd(self, topic, payload=None):
-        """Wire z app on_mqtt: lora/params/<role>/cmd/<send_config|send_timeout>."""
-        eid = topic.rsplit('/', 1)[-1]
-        if eid == "send_config":
-            self.send_config()
-        elif eid == "send_timeout":
-            self.send_timeout()
+        """Wire z app on_mqtt: lora/params/<role>/cmd/[<gw>/]<send_config|send_timeout|send_threshold>.
+        SUPERVISOR: opcjonalny segment <gw> → wyślij progi/timeouty TYLKO do tej bramki (wymóg usera:
+        params/timeouty per-bramka). Brak segmentu = do self.gw_id (kompat wstecz / przyciski ParamSync)."""
+        if ParamSync._GROUPS is None:
+            ParamSync._GROUPS = {"send_config": (CONFIG_KEYS, "Config"),
+                                 "send_timeout": (TIMEOUT_KEYS, "Timeout"),
+                                 "send_threshold": (THRESHOLD_KEYS, "Progi")}
+        tail = topic.split(f"/params/{self.role}/cmd/", 1)[-1].split('/')  # (<gw>,) <eid>
+        target_gw = tail[0].upper() if len(tail) == 2 else None
+        grp = ParamSync._GROUPS.get(tail[-1])
+        if grp:
+            self._send_group(grp[0], grp[1], target_gw)
 
-    def send_config(self):
-        self._send_group(CONFIG_KEYS, "Config")
+    def send_config(self, target_gw=None):
+        self._send_group(CONFIG_KEYS, "Config", target_gw)
 
-    def send_timeout(self):
-        self._send_group(TIMEOUT_KEYS, "Timeout")
+    def send_timeout(self, target_gw=None):
+        self._send_group(TIMEOUT_KEYS, "Timeout", target_gw)
 
-    def _send_group(self, keys, label):
+    def send_threshold(self, target_gw=None):
+        self._send_group(THRESHOLD_KEYS, "Progi", target_gw)
+
+    def _send_group(self, keys, label, target_gw=None):
         d = {k: self.values[k] for k in keys}
         if self.role == "gateway":                       # master → broadcast potwierdzonej prawdy
             self.send({"t": "param_upd", "g": self.gw_id, "d": d})
             if self.log:
                 self.log.info('PARAM', f"⚙️➡️ Send {label} (master→broadcast): {d}")
-        else:                                            # mirror → proposal do mastera
-            self.send({"t": "params", "g": self.gw_id, "d": d})
+        else:                                            # mirror → proposal do KONKRETNEJ bramki (per-gw)
+            gw = target_gw or self.gw_id
+            self.send({"t": "params", "g": gw, "d": d})
             if self.log:
-                self.log.info('PARAM', f"⚙️➡️ Send {label} (proposal→master): {d}")
+                self.log.info('PARAM', f"⚙️➡️ Send {label} → {gw} (proposal per-gw): {d}")
 
     # ── remote (LoRa) ───────────────────────────────────
     def handle_remote(self, data):

@@ -118,6 +118,80 @@ def write_ha_calendar(url, token, calendar_id, slots, mode_names,
         return (0, 0)
 
 
+def sync_ha_calendar_ws(url, token, calendar_id, slots, mode_names,
+                        days=90, timeout=10, logger=None):
+    """I/O (BRAMKA, F2 fix): FIZYCZNIE zsynchronizuj encję local_calendar z harmonogramem przez
+    HA WebSocket (calendar/event/delete) + usługę (calendar.create_event) — NIE przez zapis pliku
+    ICS. Plik `.storage/local_calendar.*.ics` jest root:root 644, proces bramki (td) nie ma praw →
+    zapis ICS zawodzi po cichu. REST DELETE=404, service delete_event=400 → jedyna droga usunięcia
+    to WS command. create_event (service) działa i HA sam zapisuje plik jako root. (deleted, created)."""
+    import asyncio
+    def _log(lvl, msg):
+        if logger:
+            getattr(logger, lvl, logger.info)('CAL', msg)
+    if not token:
+        _log('info', f"📅 {calendar_id} → brak HA tokenu, pomijam sync WS")
+        return (0, 0)
+    base = url.rstrip('/')
+    H = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    win_start = time.strftime('%Y-%m-%dT00:00:00')
+    win_end = time.strftime('%Y-%m-%dT23:59:59', time.localtime(time.time() + days * 86400))
+    try:
+        req = urllib.request.Request(
+            f"{base}/api/calendars/{calendar_id}?start={win_start}&end={win_end}", headers=H)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            existing = json.loads(r.read())
+    except Exception as e:
+        _log('error', f"❌ GET {calendar_id}: {e}")
+        return (0, 0)
+    uids = [e.get('uid') for e in existing if e.get('uid')]
+    ws_url = base.replace('https://', 'wss://').replace('http://', 'ws://') + '/api/websocket'
+    deleted = 0
+
+    async def _del():
+        nonlocal deleted
+        import websockets
+        async with websockets.connect(ws_url, max_size=None, open_timeout=timeout) as ws:
+            await ws.recv()                                    # auth_required
+            await ws.send(json.dumps({"type": "auth", "access_token": token}))
+            if json.loads(await ws.recv()).get("type") != "auth_ok":
+                _log('warn', f"WS auth FAIL {calendar_id}")
+                return
+            i = 0
+            for uid in uids:
+                i += 1
+                await ws.send(json.dumps({"id": i, "type": "calendar/event/delete",
+                                          "entity_id": calendar_id, "uid": uid}))
+                if json.loads(await ws.recv()).get("success"):
+                    deleted += 1
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_del())
+        finally:
+            loop.close()
+    except Exception as e:
+        _log('warn', f"⚠️ WS delete {calendar_id}: {e}")
+    created = 0
+    for slot in slots:
+        mode = slot.get('mode', 0)
+        body = json.dumps({
+            "entity_id": calendar_id,
+            "summary": mode_names.get(mode, f"MODE_{mode}"),
+            "start_date_time": str(slot.get('start', ''))[:19].replace('T', ' '),
+            "end_date_time": str(slot.get('end', ''))[:19].replace('T', ' '),
+        }).encode()
+        try:
+            pr = urllib.request.Request(
+                f"{base}/api/services/calendar/create_event", data=body, headers=H, method='POST')
+            urllib.request.urlopen(pr, timeout=timeout)
+            created += 1
+        except Exception as e:
+            _log('warn', f"create_event {calendar_id}: {e}")
+    _log('info', f"✅ HA {calendar_id} (WS sync): skasowano {deleted}, utworzono {created}")
+    return (deleted, created)
+
+
 def reload_local_calendar(url, token, timeout=10, logger=None):
     """I/O (bramka): przeładuj integrację local_calendar po zapisie ICS, by HA wczytał plik."""
     def _log(lvl, msg):

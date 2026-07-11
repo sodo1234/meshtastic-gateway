@@ -14,6 +14,7 @@ Features (preserved from v38):
 """
 import glob
 import hashlib
+import json
 import os
 import threading
 import time
@@ -24,7 +25,7 @@ from collections import deque
 
 class LoraTransport:
     def __init__(self, ports_cfg, reconnect_cfg=None, on_receive=None, logger=None,
-                 tx_timeout=8, dedup_seconds=6):
+                 tx_timeout=8, dedup_seconds=6, tx_cooldown=2.0, tx_hard_timeout=90):
         """
         ports_cfg:     list of dicts: [{"port": "/dev/...", "enabled": True,
                                         "label": "ANT-1", "gateways": ["G1"]}, ...]
@@ -40,7 +41,18 @@ class LoraTransport:
         self.on_receive = on_receive
         self.log = logger
         self.tx_timeout = tx_timeout
+        self.tx_hard_timeout = tx_hard_timeout
         self.dedup_seconds = dedup_seconds
+        # F3 fix: minimalny odstęp między pakietami LoRa (duty cycle / cooldown radia). Bez tego
+        # wątek TX słał back-to-back → burst komend (klik-klik) przepełniał kolejkę Meshtastic i
+        # pakiety ginęły. Dławi TYLKO bursty; ruch już rozstawiony (transfery czekają na cack) nie
+        # dostaje dodatkowego opóźnienia bo odstęp od ostatniego TX i tak > cooldown.
+        self.tx_cooldown = tx_cooldown
+        self._last_tx = 0.0
+        # ARBITER (2026-07-06): podczas transferu-pliku (arbiter.busy) ODŁÓŻ ruch nie-transferowy
+        # (b/ab/disc_vio/disc_meta/hb) — inaczej bramka nadaje i przez half-duplex NIE SŁYSZY cacka
+        # → transfer pada → mapa niekompletna → sterowanie. Transfery+odpowiedzi przechodzą od razu.
+        self.arbiter = None
 
         self.interfaces = {}              # {label: SerialInterface}
         self.lock = threading.Lock()
@@ -50,13 +62,55 @@ class LoraTransport:
         self._tx_queue = deque()
         self._tx_thread = None
         self.running = True
+        self._last_rx_ts = time.time()
+        # AUTO-RECOVERY USB: zwis CP2102 / extendera (Unitek) → programowy „replug" (USBDEVFS_RESET,
+        # uprawnienia z udev/plugdev) zamiast ręcznego odpięcia-wpięcia + restartu skryptu.
+        rc = self.reconnect_cfg
+        self.usb_reset_enabled = rc.get('usb_reset', True)
+        self.usb_reset_after = rc.get('usb_reset_after', 2)   # po N nieudanych reconnectach → reset USB
+        self.rx_timeout = rc.get('rx_timeout', 0)             # 0=off; >0 = brak RX > Ns gdy connected ⇒ wedge → reset
 
     # ── public API ──
+    @staticmethod
+    def _is_net(acfg):
+        """Czy antena idzie po SIECI (TCP) zamiast USB — wybór UNIWERSALNY, per-antena:
+          - jawnie:  "transport": "tcp"   (albo "usb")
+          - albo ze schematu portu: "port": "tcp://host[:port]"
+          - USB (domyślnie): "port": "/dev/serial/by-id/..."
+        Rozwiązuje pad 30 m USB-po-skrętce (Unitek) → [[reference-meshtastic-launcher-antenna]].
+        Endpoint TCP: Heltec na WiFi (Meshtastic TCP API, domyślnie 4403)."""
+        tr = str(acfg.get('transport', '')).lower()
+        if tr == 'tcp':
+            return True
+        if tr == 'usb':
+            return False
+        p = acfg.get('port', '')
+        return isinstance(p, str) and p.startswith('tcp://')
+
+    @staticmethod
+    def _tcp_host_port(acfg):
+        """(host, port) dla anteny TCP. Źródło: host/tcp_port jawnie, albo z 'tcp://host:port'."""
+        p = acfg.get('port', '') or ''
+        rest = p[len('tcp://'):] if p.startswith('tcp://') else p
+        host = (acfg.get('host') or rest.split(':')[0]).strip()
+        if acfg.get('tcp_port'):
+            tcp_port = int(acfg['tcp_port'])
+        elif ':' in rest:
+            tcp_port = int(rest.split(':', 1)[1])
+        else:
+            tcp_port = 4403
+        return host, tcp_port
+
     def start(self):
         """Subscribe to meshtastic RX, connect all enabled antennas, spawn TX + reconnect loops."""
         import meshtastic.serial_interface  # noqa: F401  — needed by _connect_one via module-level ref below
         from pubsub import pub
         self._meshtastic = meshtastic.serial_interface
+        try:
+            import meshtastic.tcp_interface
+            self._meshtastic_tcp = meshtastic.tcp_interface   # antena po IP (tcp://)
+        except Exception:
+            self._meshtastic_tcp = None
         pub.subscribe(self._mesh_rx, "meshtastic.receive.text")
         for acfg in self.ports_cfg:
             if acfg.get('enabled', False):
@@ -75,6 +129,11 @@ class LoraTransport:
 
     def send(self, text):
         """Broadcast via ALL antennas. Non-blocking (enqueues to TX thread)."""
+        # F2 guard: LoRa/Meshtastic max ~220B/pakiet. Większy = odrzucony/ucięty (cicha awaria).
+        # Ostrzegamy GŁOŚNO — łapie bugi typu clear-all enumerujący setki urządzeń w 1 pakiecie.
+        n = len(text.encode('utf-8')) if isinstance(text, str) else len(text)
+        if n > 220 and self.log:
+            self.log.warn('TX', f"⚠️ OVERSIZE {n}B > 220B — Meshtastic ODRZUCI/UTNIE (pakiet nie chunkowany!): {text[:70]}…")
         if self.log: self.log.info('TX', f"📤 TX: {text}")
         self._tx_queue.append({'text': text, 'label': None})
 
@@ -97,8 +156,9 @@ class LoraTransport:
         with self.lock:
             for acfg in self.ports_cfg:
                 label = acfg['label']
+                _p = acfg.get('port') or ("tcp://%s:%d" % self._tcp_host_port(acfg) if self._is_net(acfg) else '')
                 out[label] = {
-                    "port": acfg['port'],
+                    "port": _p,
                     "enabled": acfg.get('enabled', False),
                     "connected": label in self.interfaces,
                 }
@@ -114,11 +174,19 @@ class LoraTransport:
 
     # ── connection management ──
     def _connect_one(self, acfg):
-        label, port = acfg['label'], acfg['port']
+        label = acfg['label']; port = acfg.get('port', '')
         try:
-            iface = self._meshtastic.SerialInterface(devPath=port)
+            if self._is_net(acfg):                          # antena po sieci (serial-over-IP)
+                if not self._meshtastic_tcp:
+                    raise RuntimeError("meshtastic.tcp_interface niedostępny")
+                host, tcp_port = self._tcp_host_port(acfg)
+                iface = self._meshtastic_tcp.TCPInterface(hostname=host, portNumber=tcp_port)
+                port = f"tcp://{host}:{tcp_port}"            # do logów/statusu
+            else:
+                iface = self._meshtastic.SerialInterface(devPath=port)
             with self.lock: self.interfaces[label] = iface
             self._reconnect_backoff[label] = 0
+            self._last_rx_ts = time.time()                  # świeże okno RX-watchdog po (re)connect
             if self.log: self.log.info('ANT', f"✅ {label} ({port}) connected")
             return True
         except Exception as e:
@@ -146,36 +214,94 @@ class LoraTransport:
         except Exception: pass
         time.sleep(1)
 
+    def _resolve_usb_devnode(self, port):
+        """Serial port (/dev/ttyUSBx lub by-id) → ścieżka usbfs /dev/bus/usb/BBB/DDD (do USBDEVFS_RESET).
+        Idzie po sysfs w górę aż znajdzie busnum/devnum urządzenia USB."""
+        try:
+            real = os.path.realpath(port)                  # by-id → /dev/ttyUSBx
+            name = os.path.basename(real)
+            dev = os.path.realpath(f'/sys/class/tty/{name}/device')
+            for _ in range(5):                             # ttyUSB→iface→urządzenie USB (parent z busnum)
+                bn, dn = os.path.join(dev, 'busnum'), os.path.join(dev, 'devnum')
+                if os.path.exists(bn) and os.path.exists(dn):
+                    return '/dev/bus/usb/%03d/%03d' % (int(open(bn).read()), int(open(dn).read()))
+                parent = os.path.dirname(dev)
+                if parent == dev:
+                    break
+                dev = parent
+        except Exception:
+            pass
+        return None
+
+    def _usb_reset(self, port):
+        """Programowy „replug": USBDEVFS_RESET na urządzeniu USB portu. Czyści zwis CP2102/extendera
+        bez fizycznego odpinania. Uprawnienia: udev daje grupie plugdev zapis do usbfs (99-meshtastic-cp2102)."""
+        node = self._resolve_usb_devnode(port)
+        if not node or not os.path.exists(node):
+            if self.log: self.log.warn('ANT', f"⚠️ USB reset: brak usbfs dla {port} (urządzenie znikło z magistrali?)")
+            return False
+        try:
+            import fcntl
+            USBDEVFS_RESET = ord('U') << 8 | 20            # _IO('U', 20)
+            fd = os.open(node, os.O_WRONLY)
+            try:
+                fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+            finally:
+                os.close(fd)
+            if self.log: self.log.info('ANT', f"🔌 USB reset (programowy replug) {node} — czyszczę zwis anteny")
+            time.sleep(2)                                  # re-enumeracja
+            return True
+        except PermissionError:
+            if self.log: self.log.error('ANT', f"❌ USB reset {node}: brak uprawnień (udev rule + grupa plugdev?)")
+            return False
+        except Exception as e:
+            if self.log: self.log.error('ANT', f"❌ USB reset {node}: {e}")
+            return False
+
     def _reconnect_loop(self):
         while self.running:
             time.sleep(5)
+            now = time.time()
             for acfg in self.ports_cfg:
                 if not acfg.get('enabled', False): continue
-                label, port = acfg['label'], acfg['port']
+                label, port = acfg['label'], acfg.get('port', '')
+                is_net = self._is_net(acfg)
                 with self.lock: connected = label in self.interfaces
                 if connected:
+                    # ZWIS: health-check rzuca wyjątek LUB brak RX > rx_timeout (gdy connected).
+                    wedged = (not is_net and self.rx_timeout > 0
+                              and (now - self._last_rx_ts) > self.rx_timeout)
                     try:
                         iface = self.interfaces.get(label)
                         if iface and hasattr(iface, 'localNode'):
                             _ = iface.localNode
                     except Exception:
-                        if self.log: self.log.warn('ANT', f"⚠️ {label} unhealthy, force-closing")
+                        wedged = True
+                    if wedged:
+                        if self.log: self.log.warn('ANT', f"⚠️ {label} ZWIS (unhealthy / brak RX>{self.rx_timeout}s) — force-close + reset USB")
                         with self.lock: old = self.interfaces.pop(label, None)
                         if old:
                             try: old.close()
                             except Exception: pass
-                        self._force_release_port(port)
+                        if not is_net:
+                            self._force_release_port(port)
+                            if self.usb_reset_enabled:
+                                self._usb_reset(port)        # programowy „replug" od razu przy zwisie
                 else:
                     backoff = self._reconnect_backoff.get(label, 0)
                     interval = min(self.reconnect_cfg['interval'] * (2 ** backoff),
                                    self.reconnect_cfg['max_backoff'])
                     time.sleep(interval)
-                    if not os.path.exists(port):
+                    # AUTO-RECOVERY: po N nieudanych reconnectach (port wisi / Errno 11/5) → programowy replug USB
+                    if not is_net and self.usb_reset_enabled and backoff >= self.usb_reset_after:
+                        self._usb_reset(port)
+                    if not is_net and not os.path.exists(port):
                         if self.log: self.log.debug('ANT', f"⚠️ {label} port {port} not found (USB disconnected)")
                         self._reconnect_backoff[label] = min(backoff + 1, 6)
                         continue
-                    if self.log: self.log.info('ANT', f"🔄 Reconnecting {label} ({port})...")
-                    self._force_release_port(port)
+                    if self.log: self.log.info('ANT', f"🔄 Reconnecting {label} ({port or self._tcp_host_port(acfg)})...")
+                    if not is_net:                              # force-release dotyczy tylko USB/serial
+                        self._force_release_port(port)
                     if self._connect_one(acfg):
                         self._reconnect_backoff[label] = 0
                     else:
@@ -187,6 +313,7 @@ class LoraTransport:
             text = packet.get('decoded', {}).get('text') if isinstance(packet, dict) else None
             if not text: return
             now = time.time()
+            self._last_rx_ts = now                          # watchdog zwisu: ostatni żywy RX
             h = hashlib.md5(text.encode()).hexdigest()[:8]
             last = self._seen_msgs.get(h)
             self._seen_msgs[h] = now
@@ -203,12 +330,46 @@ class LoraTransport:
             pass
 
     # ── TX path ──
+    # ruch odkładany podczas transferu-pliku (bulk/periodic; NIE odpowiedzi/komendy/transfery)
+    _DEFER_DURING_XFER = {'b', 'ab', 'disc_vio', 'disc_meta', 'hb'}
+
+    def _job_type(self, text):
+        try:
+            return json.loads(text).get('t', '')
+        except Exception:
+            return ''
+
+    def _pop_first_sendable(self):
+        """Podczas transferu: wybierz pierwszy job NIE-odkładany (transfer/odpowiedź/komenda),
+        zostaw ruch bulk w kolejce (bramka milczy → słyszy cack). None = tylko bulk → milcz."""
+        with self.lock:
+            for i, job in enumerate(self._tx_queue):
+                if self._job_type(job['text']) not in self._DEFER_DURING_XFER:
+                    self._tx_queue.rotate(-i)
+                    j = self._tx_queue.popleft()
+                    self._tx_queue.rotate(i)
+                    return j
+        return None
+
     def _tx_loop(self):
         """Dedicated TX thread. Per-send timeout — main loop never blocks on sendText()."""
         while self.running:
             if not self._tx_queue:
                 time.sleep(0.05); continue
-            job = self._tx_queue.popleft()
+            # ARBITER: podczas transferu przepuść tylko transfer/odpowiedzi, odłóż bulk (half-duplex).
+            job = None
+            if self.arbiter is not None and self.arbiter.busy():
+                job = self._pop_first_sendable()
+                if job is None:
+                    time.sleep(0.15); continue          # tylko bulk w kolejce → milcz, słuchaj cacka
+            # F3: wymuś min. odstęp od ostatniego TX (LoRa cooldown) — dławi bursty, chroni przed
+            # przepełnieniem kolejki Meshtastic i gubieniem pakietów.
+            if self.tx_cooldown > 0:
+                gap = time.monotonic() - self._last_tx
+                if gap < self.tx_cooldown:
+                    time.sleep(self.tx_cooldown - gap)
+            if job is None:
+                job = self._tx_queue.popleft()
             text, target_label = job['text'], job.get('label')
             if target_label:
                 with self.lock: iface = self.interfaces.get(target_label)
@@ -219,6 +380,7 @@ class LoraTransport:
                     self._tx_broadcast(text)
             else:
                 self._tx_broadcast(text)
+            self._last_tx = time.monotonic()      # F3: znacznik do min-spacingu następnego TX
 
     def _tx_broadcast(self, text):
         with self.lock: ifaces = list(self.interfaces.items())
@@ -230,7 +392,12 @@ class LoraTransport:
             self.log.error('ANT', "❌ No antenna available for TX!")
 
     def _tx_with_timeout(self, label, iface, text):
-        """Run iface.sendText() in sub-thread with timeout. Kill antenna if blocked."""
+        """Run iface.sendText() in sub-thread with timeout. Kill antenna if blocked.
+        BACKPRESSURE (2026-07-11, root-cause 3-dniowej pętli): sendText BLOKUJE legalnie, gdy
+        kolejka TX radia pełna (duty cycle EU 10% dławi opróżnianie przy burstach) — to flow
+        control, NIE zwis. Ubicie interfejsu po tx_timeout=8s tworzyło pętlę: burst → block →
+        force-close → reconnect → burst → block… (sup głuchy dla bramki przez 3 dni). Teraz:
+        po tx_timeout WARN + czekamy dalej do tx_hard_timeout (łącznie) — dopiero wtedy zwis."""
         result, error = [False], [None]
         def _do():
             try:
@@ -240,8 +407,15 @@ class LoraTransport:
         t = threading.Thread(target=_do, daemon=True)
         t.start(); t.join(timeout=self.tx_timeout)
         if t.is_alive():
+            hard = max(getattr(self, 'tx_hard_timeout', 90) - self.tx_timeout, 1)
             if self.log:
-                self.log.error('ANT', f"❌ TX {label}: sendText() blocked >{self.tx_timeout}s — force-closing")
+                self.log.warn('ANT', f"⏳ TX {label}: sendText() >{self.tx_timeout}s — backpressure "
+                                     f"(kolejka radia/duty-cycle), czekam do {self.tx_timeout + hard}s")
+            t.join(timeout=hard)
+        if t.is_alive():
+            if self.log:
+                self.log.error('ANT', f"❌ TX {label}: sendText() blocked "
+                                      f">{getattr(self, 'tx_hard_timeout', 90)}s — force-closing")
             with self.lock: dead = self.interfaces.pop(label, None)
             if dead:
                 try: dead.close()

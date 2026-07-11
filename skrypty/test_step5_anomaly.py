@@ -37,7 +37,7 @@ import logging
 logging.getLogger("meshtastic").setLevel(logging.WARNING)
 logging.getLogger("meshtastic.serial_interface").setLevel(logging.WARNING)
 
-import json, os, signal, sys, time, threading
+import hashlib, json, os, signal, sys, time, threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -46,15 +46,21 @@ sys.path.insert(0, SCRIPT_DIR)
 
 from config import CONFIG, ROLE
 from modules.transport import Dispatcher, MqttTransport, LoraTransport
+from modules.transport.tx_queue import PriorityTxQueue
 from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
                                GatewayDiscovery, SupervisorDiscovery)
 from modules.data import GatewayData, SupervisorData
 from modules.params import ParamSync
 from modules.anomaly import (StagnationEngine, OfflineMonitor, GatewayOfflineAnomaly,
-                             BatteryMonitor, AnomalyBatcher, AnomalyStore)
+                             BatteryMonitor, TempHumMonitor, AnomalyBatcher, AnomalyStore)
+from modules.anomaly.ha_v10 import AnomalyHAv10Bridge   # most: store → encje HA per-anomalia (v10)
+from modules.anomaly.ha_publish import AnomalyBucketPublisher  # bramka publikuje kubełki anomalii na SWOJE HA
+from modules.anomaly.reconciler import AnomalyReconciler  # FAZA 1: anomalie jako plik (ansnap blob)
 from modules.calendar import (ScheduleManager, CalendarTransfer, build_ics,
                               write_ics_atomic, fetch_ha_calendar, write_ha_calendar,
-                              reload_local_calendar)
+                              reload_local_calendar, sync_ha_calendar_ws)
+from modules.transport.reliable_transfer import ReliableTransfer  # bulk (mass_offline z2m-down)
+from modules.transport.channel import ChannelArbiter  # arbitraż półdupleksu: transfer-plik > wolumen
 from modules.slotting import SlotScheduler, SafeWindow
 from modules.gateway_mode import GatewayMode
 
@@ -128,6 +134,9 @@ def run_gateway(log):
         client_id=f"step3_gw_{gw_id}_{int(time.time())}", logger=log)
 
     lora = _make_lora(CONFIG, log)
+    CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
+    #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
+    #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
     ha = HAEntities(mqtt, logger=log)
     vio_config = CONFIG.get('virtual_io', [])
 
@@ -153,6 +162,12 @@ def run_gateway(log):
                          'cal': scheduler.schedule_hash(gw_id, cal_cfg.get('window_days', 14)),
                          'm': cal_state['mode'],        # STEP 4: hash kalendarza + bieżący tryb
                          'oh': _offline_hash(),         # UNIFIKACJA: hash zbioru offline → drift→reconcile
+                         'tq': _time_quality(),         # STEP 5+: jakość czasu (synced/holdover/unsynced)
+                         # AH-GATE (2026-07-07): hash stanu anomalii nadanego supervisorowi — sup
+                         # porównuje ze swoim i żąda dump TYLKO przy rozjeździe (koniec ślepych
+                         # pełnych ansnap co dump_interval). an_reconciler zdefiniowany niżej,
+                         # wywołanie dopiero po starcie HB (wzorzec jak param_sync wyżej).
+                         **({'ah': an_reconciler._last_hash} if an_reconciler._last_hash else {}),
                          **gw_mode.state()})            # STEP 5: gm=tryb, ga=aktywna (supresja offline)
 
     # ── STEP 4: slotowanie (krok 7) — batch `b` nadawany TYLKO w oknie tej bramki ──
@@ -188,6 +203,7 @@ def run_gateway(log):
         thresholds=data_cfg.get('thresholds'),
         send_spacing=CONFIG.get('lora', {}).get('tx_cooldown', 3.0),   # honor LoRa cooldown
         report_interval=data_cfg.get('report_interval', 0),            # #8 periodic heartbeat
+        report_full_every=data_cfg.get('report_full_every', 1),        # (d) delta availability: pełny sweep co N-ty
         offline_after=data_cfg.get('offline_after'))                   # #7 gw-side liveness
 
     # STEP 3: lokalna encja Zigbee LQI per urządzenie (Z2M nie tworzy jej sam) —
@@ -234,11 +250,49 @@ def run_gateway(log):
     dev_states = {}
     pending_st = {}                # {dev: (cap, want, ts)} — cmd→Z2M czeka na realne potwierdzenie
     last_fwd_state = {}            # {dev: (cap, val)} — ostatnio przesłany `st` (dedup zmian zewn.)
+    st_burst = []                  # znaczniki czasu ostatnich st (burst-guard: restart z2m → flood)
     vio_states = {v['id']: ('ON' if v.get('default') else 'OFF')
                   for v in vio_config if v['type'] == 'switch'}
     gw_stats = {'last_sup_rx_ts': 0.0, 'last_sup_rx': '--',
-                'last_sync': '--', 'time_offset': '--'}
+                'last_sync': '--', 'time_offset': '--', '_last_sync_ts': 0.0}
     SUP_LINK_TIMEOUT = CONFIG.get('sup_link_timeout', 3600)
+
+    # ── STEP 5+: jakość czasu — restart bez RTC/internetu = zegar Debiana niepewny do 1. sync ──
+    # synced  : sync od supervisora < 2h temu
+    # holdover: ostatni sync 2-48h temu (zegar leci dalej, ale nie świeżo potwierdzony)
+    # unsynced: brak sync w tym uruchomieniu (PO RESTARCIE — czas podejrzany, tryb ostrożnie)
+    # stale   : > 48h bez sync
+    TQ_LABEL = {'synced': 'Zsynchronizowany ✅', 'ntp': 'Zsynchronizowany (NTP) 🛰️',
+                'holdover': 'Holdover (stary sync) 🕓',
+                'unsynced': 'Niezsynchronizowany ⚠️', 'stale': 'Przeterminowany ❌'}
+
+    _ntp_cache = {'ok': None, 'ts': 0.0}
+
+    def _ntp_synced():
+        """Czy zegar systemowy jest zsynchronizowany przez NTP (internet). Cache 5 min —
+        bramki z internetem mają wiarygodny czas NIEZALEŻNIE od LoRa-sync z supervisora."""
+        if _ntp_cache['ok'] is not None and time.time() - _ntp_cache['ts'] < 300:
+            return _ntp_cache['ok']
+        ok = False
+        try:
+            import subprocess
+            out = subprocess.run(['timedatectl', 'show', '-p', 'NTPSynchronized', '--value'],
+                                 capture_output=True, text=True, timeout=3).stdout.strip()
+            ok = (out == 'yes')
+        except Exception:
+            ok = False
+        _ntp_cache['ok'] = ok; _ntp_cache['ts'] = time.time()
+        return ok
+
+    def _time_quality():
+        lst = gw_stats.get('_last_sync_ts', 0)
+        if lst and time.time() - lst < 2 * 3600:
+            return 'synced'                          # świeży sync od supervisora (LoRa)
+        if _ntp_synced():
+            return 'ntp'                             # zegar wiarygodny z NTP mimo braku LoRa-sync
+        if lst and time.time() - lst < 48 * 3600:
+            return 'holdover'
+        return 'unsynced'                            # brak NTP i brak/stary sync = czas podejrzany
 
     def lora_send(obj):
         lora.send(json.dumps(obj, separators=(',', ':')))
@@ -246,12 +300,27 @@ def run_gateway(log):
     def for_me(d):
         g = d.get('g'); return (g is None) or (g == gw_id)
 
+    # ── ChannelArbiter (Faza 0 rebuild): półdupleks LoRa — transfer-plik (kalendarz/devmap/
+    #    ansnap) ma PIERWSZEŃSTWO; wolumen `b`/`ab` CZEKA aż kanał wolny. Koniec kolizji
+    #    chunk↔cack pod ruchem (root cause zawieszania transferów przy 200+ dev). ──
+    arbiter = ChannelArbiter(logger=log)
+    lora.arbiter = arbiter                       # KLUCZ (2026-07-06): TX bulk (b/disc_vio/hb) odkładany
+                                                 # podczas transferu → bramka słyszy cacki (half-duplex)
+    data.arbiter = arbiter                       # spaced sender `_out` też respektuje transfer (busy)
+    data.mon_batch.arbiter = arbiter
+    data.pri_batch.arbiter = arbiter
+
     # STEP 17: parametry (BRAMKA = master) — P1/P2/P3 stagnation + T1/T2/T3 offline mirror
+    # + TH/TL/HH/HL/BL/BC progi anomalii (seed z config.py, dalej strojone z dashboardu na żywo)
+    _an_seed = CONFIG.get('anomaly', {})
     param_sync = ParamSync(
         'gateway', gw_id, mqtt, lora_send, logger=log,
-        persist_path='/tmp/lora_params.json',
+        persist_path=CONFIG.get('state', {}).get('params_path', '/tmp/lora_params.json'),
         ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
-        on_change=lambda k, v: log.info('PARAM', f'↻ apply {k}={v} (mechanizm)'))
+        on_change=lambda k, v: log.info('PARAM', f'↻ apply {k}={v} (mechanizm)'),
+        seed={'TH': _an_seed.get('temp_high'), 'TL': _an_seed.get('temp_low'),
+              'HH': _an_seed.get('hum_high'), 'HL': _an_seed.get('hum_low'),
+              'BL': _an_seed.get('battery_low', 25), 'BC': _an_seed.get('battery_critical', 15)})
 
     # FIX offline (2026-06-15): per-typ timeout offline z T1/T2/T3 (minuty→sek) zamiast
     # jednego 1920s. Mapa typu HA → param (CLAUDE.md: T1 switch/light, T2 temp/hum sensor,
@@ -275,7 +344,55 @@ def run_gateway(log):
     an_cfg = CONFIG.get('anomaly', {})
     anomaly_batcher = AnomalyBatcher(
         gw_id, lora_send, interval=an_cfg.get('flush_interval', 30),
-        max_payload=an_cfg.get('max_payload', 150), logger=log)
+        max_payload=an_cfg.get('max_payload', 150), logger=log, arbiter=arbiter)
+
+    # ── BRAMKA = SOURCE OF TRUTH ANOMALII: lokalny store + publikacja na SWOJE HA ──
+    # Store karmiony z TEGO SAMEGO strumienia co LoRa (`tee` na anomaly_batcher.add): każdy emit
+    # silnika (offline/battery/temphum/stagnacja) + dump trafia i do supervisora (LoRa) i do
+    # lokalnego store → publish sensor.lora_an_g1_{offline,battery,other} (count+items+NAZWY,
+    # resolve sid→nazwa z discovery.short_rev) + liczniki devices_*. Recovery (dn/bo/to/ho)
+    # auto-czyści (handle_ab). on_change → publikacja kubełków (1:1 sup) + encje v10 (per-wpis clear).
+    gw_anom_store = AnomalyStore(
+        resolve_dev=lambda g, sid: discovery.short_rev.get(sid),
+        persist_path=an_cfg.get('gw_persist_path', '/tmp/lora_anomaly_gw.json'), logger=log)
+    gw_anom_pub = AnomalyBucketPublisher(gw_anom_store, mqtt, HA_PREFIX, STATE_PREFIX, logger=log)
+    gw_anom_v10 = AnomalyHAv10Bridge(gw_anom_store, mqtt, HA_PREFIX, STATE_PREFIX, logger=log)
+    # DEBOUNCE leading+trailing (2026-07-08): pierwsza zmiana publikuje NATYCHMIAST (klik clear w
+    # popupie → wiersz i licznik znikają od razu, ~0.3s zamiast 1s), a kolejne w oknie 1s koalescują
+    # do 1 trailing (przy starcie ~161 offline naraz nadal 1 publikacja — chroni broker/HA + O(n²) v10).
+    _anom_pub = {'cooldown': False, 'pending': False}
+    _anom_pub_lock = threading.Lock()
+    def _do_pub_gw_anom(g):
+        try:
+            gw_anom_pub.publish(g); gw_anom_v10.publish(g)
+        except Exception as e:
+            log.warn('ANOM', f'publish gw anom: {e}')
+    def _anom_cooldown_end(g):
+        with _anom_pub_lock:
+            pend = _anom_pub['pending']; _anom_pub['pending'] = False
+            if not pend:
+                _anom_pub['cooldown'] = False; return
+        _do_pub_gw_anom(g)                                      # trailing: publikuj stan finalny burstu
+        t = threading.Timer(1.0, _anom_cooldown_end, args=(g,)); t.daemon = True; t.start()
+    def _publish_gw_anom(g):
+        fire = False
+        with _anom_pub_lock:
+            if not _anom_pub['cooldown']:
+                _anom_pub['cooldown'] = True; fire = True
+            else:
+                _anom_pub['pending'] = True
+        if fire:                                                # leading: pierwsza zmiana od razu
+            _do_pub_gw_anom(g)
+            t = threading.Timer(1.0, _anom_cooldown_end, args=(g,)); t.daemon = True; t.start()
+    gw_anom_store.on_change = _publish_gw_anom
+
+    def _emit_anom(sid, code, value=None):
+        # FAZA 1 (2026-07-03): UPLINK NIE per-anomalia `ab` — AnomalyReconciler wysyła AUTORYTATYWNY
+        # blob `ansnap` (cała aktywna lista, 1 skompresowany transfer) przy ZMIANIE hasha. Tu tylko
+        # karmimy LOKALNY store (źródło blobu + encje HA bramki); on_change → send_snapshot() (niżej).
+        entry = [sid, code] if value is None else [sid, code, value]
+        gw_anom_store.handle_ab({'g': gw_id, 'd': [entry]})
+    anomaly_batcher.add = _emit_anom                     # silniki (niżej) łapią przez emit=
 
     def _offline_min_for(dtype):                         # minuty per typ (T1/T2/T3) dla anomalii offline
         key = {'switch': 'T1', 'light': 'T1', 'sensor': 'T2',
@@ -300,8 +417,18 @@ def run_gateway(log):
         gw_id, discovery,
         get_battery=lambda dev: data.states.get(dev, {}).get('battery'),
         emit=anomaly_batcher.add,
-        get_thresholds=lambda: (an_cfg.get('battery_low', 25), an_cfg.get('battery_critical', 15)),
+        get_thresholds=lambda: (param_sync.get('BL'), param_sync.get('BC')),  # progi z dashboardu (live)
         logger=log, check_interval=an_cfg.get('battery_check', 300))
+
+    # STEP 5 (krok 14): temp/hum high/low dla WSZYSTKICH urządzeń bramki (override usera 2026-06-25)
+    temphum_mon = TempHumMonitor(
+        gw_id, discovery,
+        get_state=lambda dev: data.states.get(dev, {}),
+        emit=anomaly_batcher.add,
+        get_thresholds=lambda: {                              # progi z dashboardu (live, bez restartu)
+            'temp_low': param_sync.get('TL'), 'temp_high': param_sync.get('TH'),
+            'hum_low': param_sync.get('HL'), 'hum_high': param_sync.get('HH')},
+        logger=log, check_interval=an_cfg.get('temphum_check', 60))
 
     # STEP 5: stagnacja ALL devices, emit przez batcher (zamiast bezpośredniego `ab`)
     stagnation = StagnationEngine(
@@ -312,11 +439,18 @@ def run_gateway(log):
     def handle_dump_anom(d):                              # STEP 5: live re-check → pełny zrzut anomalii
         if d.get('g') not in (gw_id, None):
             return
-        snap = offline_anom.snapshot() + battery_mon.snapshot() + stagnation.snapshot()
-        log.info('ANOM', f'🔄 dump_anom: {len(snap)} aktualnych anomalii → ab')
-        for sid, code, val in snap:
-            anomaly_batcher.add(sid, code, val)
-        anomaly_batcher.flush()
+        # FAZA 1 + fix responsywności: dump = ŚWIEŻA detekcja. Silniki latchują stan i sprawdzają
+        # na własnym interwale (battery 300s / temphum 60s / offline 30s) — sam reconciler.snapshot()
+        # zwróciłby STARY latch. Więc najpierw wymuś check() (świeży odczyt + emit przejść), dopiero
+        # potem reconciler re-scan (snapshot już aktualny) + ansnap. „Dump" = prawdziwe wymuś-re-scan.
+        for _eng in (offline_anom, battery_mon, temphum_mon, stagnation):
+            try:
+                if hasattr(_eng, 'check'):
+                    _eng.check()
+            except Exception as _e:
+                log.warn('ANOM', f'dump check {type(_eng).__name__}: {_e}')
+        an_reconciler.request(diagnostic=True, force_send=True)
+        log.info('ANOM', '🔄 dump_anom → force check silników + reconciler ansnap')
 
     # ── STEP 4: kalendarz (krok 16) — bramka odbiera harmonogram → ICS + tryb ──
     cal_cfg = CONFIG.get('calendar', {})
@@ -324,7 +458,7 @@ def run_gateway(log):
     mode_names = {int(k): v for k, v in CONFIG.get('mode_names', {}).items()}
     win_days = cal_cfg.get('window_days', 14)
     scheduler = ScheduleManager(mode_names=mode_names, gateways=[gw_id], logger=log,
-                                persist_path='/tmp/lora_schedule_gw.json')
+                                persist_path=CONFIG.get('state', {}).get('schedule_path', '/tmp/lora_schedule_gw.json'))
     cal_state = {'mode': 0, 'next': 0, 'src': 'none'}
 
     def publish_calstat():
@@ -342,28 +476,108 @@ def run_gateway(log):
     def on_calendar_received(gw, direction, compact):
         """on_received CalendarTransfer: compact [[start_min,dur,mode]] → merge → ICS + tryb."""
         full = scheduler.expand_compact(compact)
-        n = scheduler.merge_schedule(gw_id, full)
-        log.info('CAL', f'📅 odebrano {len(full)} slotów ({direction}) → merge ({n} zmian)')
+        if direction == 'cal':                           # autorytatywny push global → LUSTRO (nie akumuluj)
+            n = scheduler.replace_schedule(gw_id, full)
+            log.info('CAL', f'📅 odebrano {len(full)} slotów ({direction}) → replace ({n} po podmianie)')
+        else:                                            # inne kierunki (np. lokalne) → dotychczasowy merge
+            n = scheduler.merge_schedule(gw_id, full)
+            log.info('CAL', f'📅 odebrano {len(full)} slotów ({direction}) → merge ({n} zmian)')
         slots = scheduler.get_effective_schedule(gw_id)
-        ics_path = ha_cfg.get('ics_path', '')
-        if ics_path:
-            content = build_ics(slots, mode_names, cal_name=f"LoRa {gw_id}")
-            if write_ics_atomic(ics_path, content, logger=log):
-                threading.Thread(target=lambda: reload_local_calendar(
-                    ha_cfg.get('url', ''), ha_cfg.get('token', ''), logger=log),
-                    daemon=True, name='ics-reload').start()
+        # F2 fix (2026-07-03): FIZYCZNY zapis kalendarza przez HA WS (delete) + service (create_event),
+        # NIE przez plik ICS. Plik `.storage/local_calendar.*.ics` jest root:root — bramka (td) nie ma
+        # praw zapisu → ICS zawodził po cichu. Encja: config `cal_entity` lub `calendar.lora_<gw>`.
+        cal_entity = ha_cfg.get('cal_entity') or f"calendar.lora_{gw_lower}"
+        if ha_cfg.get('token'):
+            threading.Thread(target=lambda: sync_ha_calendar_ws(
+                ha_cfg.get('url', ''), ha_cfg.get('token', ''), cal_entity, slots, mode_names,
+                days=win_days, logger=log), daemon=True, name='cal-ws-sync').start()
         else:
-            log.info('CAL', '📅 brak ics_path → tylko encja trybu (bez zapisu kalendarza HA)')
+            log.info('CAL', '📅 brak HA tokenu → tylko encja trybu (bez zapisu kalendarza HA)')
         publish_calstat()
 
     # cal_* idą surowym lora (natychmiast) — transfer ma własny CRC+retransmit
     cal_transfer = CalendarTransfer(
-        send_fn=lora_send, chunk_size=cal_cfg.get('chunk_size', 140),
+        send_fn=lora_send, chunk_size=cal_cfg.get('chunk_size', 60),
         chunk_delay=cal_cfg.get('chunk_delay', 6.0),
         chunk_ack_timeout=cal_cfg.get('chunk_ack_timeout', 30.0),   # anty-spam: round-trip LoRa
         chunk_retries=cal_cfg.get('chunk_retries', 2),
         end_retries=cal_cfg.get('end_retries', 3),
-        on_received=on_calendar_received, logger=log)
+        on_received=on_calendar_received, logger=log,
+        arbiter=arbiter, accept_gw=gw_id)      # multi-gw: przyjmij tylko kalendarz g==gw_id lub globalny (None)
+
+    # BULK: ReliableTransfer — skompresowany niezawodny transfer dla mass-eventów (z2m-down →
+    # wszystkie offline jednym transferem zamiast 250 timeoutów). Osobny kanał rt_* (nie rusza cal_*).
+    rt = ReliableTransfer(send_fn=lora_send, logger=log,
+                          chunk_ack_timeout=30.0,
+                          chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
+                          chunk_retries=3,  # RTT pod obciążeniem ~60s, 30s toleruje
+                          arbiter=arbiter, accept_gw=gw_id)   # multi-gw: transfer cudzej bramki ignorowany (brak cack)
+    # (a)+(d) MAPA i pełny sweep availability jako skompresowane bloby przez ReliableTransfer
+    # (kind='devmap'/'avail') — zamiast 94 pkt `db` / ~33 pkt `b`/sweep. Kanał rt_* (osobny od cal_*).
+    discovery.map_send_fn = lambda payload: rt.start_send(gw_id, 'devmap', payload)
+    # AVAIL HASH-GATE (2026-07-11, census: transfer avail co 45min NAWET bez zmian = największy
+    # składnik steady-state ~13-16 pkt/45min z ackami). Wysyłaj blob TYLKO gdy zawartość ('a')
+    # się zmieniła; wymuszenie co 6h (heartbeat spójności). Bezpieczne: zmiany live płyną w `b`
+    # (flagi a:0/1), rozjazd łata reconcile po `oh` z HB.
+    _avail_gate = {'h': None, 'ts': 0.0}
+
+    def _send_avail_blob(blob):
+        h = hashlib.md5(json.dumps(blob.get('a'), separators=(',', ':'), sort_keys=True)
+                        .encode()).hexdigest()[:8]
+        now = time.time()
+        if h == _avail_gate['h'] and now - _avail_gate['ts'] < 6 * 3600:
+            log.info('XFER', f'⏭️ avail-blob pominięty — hash {h} bez zmian (gate 6h)')
+            return
+        _avail_gate['h'] = h; _avail_gate['ts'] = now
+        rt.start_send(gw_id, 'avail', blob)
+    data.avail_blob_fn = _send_avail_blob
+
+    # ── FAZA 1 (2026-07-03): ANOMALIE JAKO PLIK (ansnap). Bramka = ŹRÓDŁO PRAWDY. Reconciler buduje
+    #    autorytatywny blob aktywnych anomalii z LOKALNEGO store → JEDEN skompresowany transfer
+    #    rt kind='ansnap' TYLKO przy zmianie hasha (steady-state = 0 uplinku). Supervisor reconciluje
+    #    add+remove. Zastępuje per-anomalia `ab` (koniec spamu przy 200+ dev). run_once (interval/dump):
+    #    re-scan truth + re-arm ręcznie wyczyszczonych wciąż-trwających (po mute_window) + self-clear
+    #    (store kurczy się na recovery → krótszy blob). send_snapshot (on-change): wyślij bez re-scanu. ──
+    an_reconciler = AnomalyReconciler(
+        gw_id, gw_anom_store,
+        probes=[offline_anom.snapshot, battery_mon.snapshot,
+                temphum_mon.snapshot, stagnation.snapshot],
+        resolve_dev=lambda sid: discovery.short_rev.get(sid),
+        dev_to_sid=lambda dev: discovery.short_ids.get(dev),
+        readd_fn=lambda sid, code, val=None: gw_anom_store.handle_ab(
+            {'g': gw_id, 'd': [[sid, code] if val is None else [sid, code, val]]}),
+        snapshot_send_fn=lambda payload: rt.start_send(gw_id, 'ansnap', payload),
+        offline_unack=offline_anom.unack,
+        delta_send_fn=lora_send,                 # DELTA (2026-07-07): 1 zmiana = 1 pakiet an_d, nie cały blob
+        on_report=lambda rep: log.info('ANOM', f"🔬 ansnap diag {rep.get('gw')}: "
+                                       f"truth={rep.get('truth_n')} store={rep.get('store_n')} "
+                                       f"missing={rep.get('missing')} stale={rep.get('stale')}"),
+        logger=log, interval=an_cfg.get('reconcile_interval', 180),
+        mute_window=an_cfg.get('mute_window', 300))
+    # store change (add/remove/ręczny clear) → NATYCHMIAST wyślij blob (bez re-scanu → clear nie cofany).
+    gw_anom_store.on_change = lambda g: (_publish_gw_anom(g), an_reconciler.send_snapshot())
+
+    _bridge = {'online': True}                           # debounce z2m bridge/state (LWT z2m-down)
+
+    def on_bridge_state(payload):
+        p = (payload or '').strip()
+        if p.startswith('{'):
+            try:
+                p = json.loads(p).get('state', '')
+            except Exception:
+                pass
+        online = (p == 'online')
+        if online == _bridge['online']:
+            return                                        # bez zmiany (np. retained 'online' na starcie)
+        _bridge['online'] = online
+        if not online:                                   # z2m padł → CAŁOŚĆ niedostępna → jeden bulk
+            devs = list(discovery.devices.keys())
+            log.warn('XFER', f'🟥 z2m bridge OFFLINE → bulk mass_offline {len(devs)} dev')
+            if devs:
+                threading.Thread(target=lambda: rt.start_send(gw_id, 'mass_offline', devs),
+                                 daemon=True, name='rt-massoff').start()
+        else:
+            log.info('XFER', '🟩 z2m bridge ONLINE → availability wróci per-device (retained)')
 
     def push_schedule_up():
         """REVERSE (gw→sup): pchnij harmonogram bramki w górę przez CalendarTransfer (gw_push).
@@ -382,12 +596,20 @@ def run_gateway(log):
 
     # ── Dispatcher (LoRa RX from supervisor) ──
     dispatcher = Dispatcher(logger=log)
-    dispatcher.register('ping', lambda d: heartbeat.handle_ping(d))
+    dispatcher.register('ping', lambda d: for_me(d) and heartbeat.handle_ping(d))  # multi-gw: ignoruj ping cudzej bramki
 
     def handle_disc_request(d):
         if not for_me(d): return
-        log.info('CMD', '⚡ Discovery requested')
-        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay),
+        # ANTI-SPAM: bramka też porównuje hash. `disc` niesie hash supervisora (`h` = co MA
+        # zarejestrowane). Jeśli == nasz disc_hash → supervisor aktualny → tylko disc_meta
+        # (lekki advertise), pomiń pełne `db`. Inaczej (różny/brak) → pełna discovery.
+        sup_hash = d.get('h')
+        meta_only = bool(sup_hash) and sup_hash == discovery.disc_hash
+        if meta_only:
+            log.info('CMD', f'⚡ Discovery req — hash supervisora zgodny ({sup_hash}) → meta_only (anti-spam, bez db)')
+        else:
+            log.info('CMD', f'⚡ Discovery requested (sup_hash={sup_hash} ≠ {discovery.disc_hash}) → pełna')
+        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay, meta_only=meta_only),
                          daemon=True).start()
     dispatcher.register('disc', handle_disc_request)
 
@@ -399,7 +621,13 @@ def run_gateway(log):
             mqtt.publish(f'zigbee2mqtt/{dev}/set',
                          json.dumps({z2m_cap: val}, separators=(',', ':')))
             pending_st[dev] = (cap, val, time.time())
-            log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → Z2M set (czekam na realne potwierdzenie)')
+            if CONFIG.get('control', {}).get('optimistic_status', False):
+                # optimistic: odeślij `st` OD RAZU (nie czekaj na Z2M); realny `st` z
+                # propagate_state_from_z2m i tak skoryguje gdy potwierdzenie dotrze/się różni.
+                lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': val})
+                log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → Z2M set + st OPTIMISTIC (bez czekania)')
+            else:
+                log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → Z2M set (czekam na realne potwierdzenie)')
         else:                                              # urządzenie wirtualne (vio) — bez Z2M
             dev_states[dev] = val
             log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → applied (virtual)')
@@ -432,6 +660,19 @@ def run_gateway(log):
         if not was_pending and last_fwd_state.get(dev) == (cap, real):
             return                                         # zewn. powtórka bez zmiany → nie spamuj
         last_fwd_state[dev] = (cap, real)
+        # BURST-GUARD (2026-07-07, audyt: restart z2m/HA → retained stany WSZYSTKICH przekaźników
+        # → 105× pojedynczych `st` = flood LoRa). Fala zewnętrznych st (>6 w 10 s) → kolejne stany
+        # jadą ZBIORCZO batchem `b` (caps 's', wiele dev/pakiet) zamiast per-dev st. Potwierdzenia
+        # cmd (was_pending) NIGDY nie są tłumione — sterowanie zawsze natychmiastowe.
+        now_b = time.time()
+        st_burst[:] = [t for t in st_burst if now_b - t < 10.0]
+        if not was_pending and len(st_burst) >= 6:
+            if len(st_burst) == 6:
+                log.warn('CTRL', '⚠️ st-burst (restart z2m?) → kolejne stany zbiorczo w batchu `b`')
+            st_burst.append(now_b)
+            data._enqueue(dev, {'s': 1 if real == 'ON' else 0}, force=True, available=True)
+            return
+        st_burst.append(now_b)
         log.info('CTRL', f'🎛️ {dev} {cap}={real} (z2m, {"cmd" if was_pending else "zewn."}) '
                  f'→ st (online+licznik)')
         lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': real})
@@ -459,14 +700,75 @@ def run_gateway(log):
             offset = int(time.time()) - int(sec)
             gw_stats['time_offset'] = f'{offset:+d}s'
             gw_stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
-            log.info('CMD', f'🕐 sync: offset={offset:+d}s')
+            gw_stats['_last_sync_ts'] = time.time()      # STEP 5+: znacznik świeżości → time_quality
+            log.info('CMD', f'🕐 sync: offset={offset:+d}s (time_quality→synced)')
     dispatcher.register('sync', handle_sync)
-    dispatcher.register('req', data.handle_req)          # STEP 3: refresh on-demand
+    dispatcher.register('req', lambda d: for_me(d) and data.handle_req(d))   # STEP 3: refresh on-demand (per-gw)
+
+    def handle_ac_b(d):                                  # CLEAR supervisor→bramka: usuń z lokalnego store + ACK
+        if d.get('g') not in (gw_id, None):
+            return
+        from modules.anomaly.store import CODE_LABEL, CODE_CAT
+        label2code = {v: k for k, v in CODE_LABEL.items()}
+        fine_cats = set(CODE_CAT.values())               # offline,battery,stagnation,temp,hum,smoke,water
+        n = 0
+        for item in d.get('d', []):
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            dev, label = item[0], item[1]
+            # FAZA 1: mute (dev,cat) → reconciler nie re-armnie wciąż-trwającej przed mute_window.
+            if label == 'other':                             # bucket zbiorczy → cały kubełek 'other'
+                an_reconciler.mute(dev, 'other')
+                n += gw_anom_store.remove_one(gw_id, dev, 'other')
+            elif label in fine_cats:                         # kategoria (== klucz store; też sup ccat)
+                an_reconciler.mute(dev, label)
+                n += gw_anom_store.remove_cat(gw_id, dev, label)
+                if label == 'offline':
+                    offline_anom.ack_clear(dev)
+            else:                                            # type_label (np. 'temp_high') → code → cat
+                code = label2code.get(label)
+                cat = CODE_CAT.get(code) if code else None
+                if cat:
+                    an_reconciler.mute(dev, cat)
+                    n += gw_anom_store.remove_cat(gw_id, dev, cat)
+                    if cat == 'offline':
+                        offline_anom.ack_clear(dev)
+                else:
+                    an_reconciler.mute(dev, 'other')
+                    n += gw_anom_store.remove_one(gw_id, dev, 'other')
+        if n and log:
+            log.info('ANOM', f'🧹 ac_b: wyczyszczono {n} anomalii (clear z supervisora) + ACK offline')
+    dispatcher.register('ac_b', handle_ac_b)             # CLAUDE.md: {t:ac_b,g,d:[["Dev","temp_high"]]}
+
+    def handle_ac_all(d):                                # F2 fix: CLEAR-ALL kubełka KOMPAKTOWO (flaga, nie lista dev)
+        # Zastępuje oversized ac_b z listą 192 urządzeń (~4KB >>220B, cicho ginął). Bramka=źródło:
+        # czyści CAŁY kubełek lokalnie + mute (nie re-arm) + ack_clear offline, potem ansnap w górę.
+        if not for_me(d):
+            return
+        bucket = d.get('b', 'offline')
+        cnt = 0
+        for it in list(gw_anom_store.items(gw_id, bucket)):
+            dev = it['dev']
+            for (g, dv, cat) in list(gw_anom_store.anomalies):
+                if g == gw_id and dv == dev and gw_anom_store._bucket(cat) == bucket:
+                    an_reconciler.mute(dev, cat)
+            if bucket == 'offline':
+                offline_anom.ack_clear(dev)
+            cnt += gw_anom_store.remove_one(gw_id, dev, bucket)
+        log.info('ANOM', f'🧹 ac_all: clear-all [{bucket}] (z supervisora, kompaktowo) n={cnt}')
+        an_reconciler.request(force_send=True)
+    dispatcher.register('ac_all', handle_ac_all)         # F2: {t:ac_all,g,b:offline|battery|other}
     dispatcher.register('dump_anom', handle_dump_anom)   # STEP 5: reconcyliacja anomalii
+    dispatcher.register('ansnap_req', lambda d: for_me(d) and an_reconciler.request(force_send=True))  # FAZA 1: sup żąda blobu
+    dispatcher.register('cal_pull', lambda d: for_me(d) and threading.Thread(  # FAZA 3B: sup Pull ← bramka → push-up
+        target=push_schedule_up, daemon=True, name='cal-pull-up').start())
     for _ct in ('cal_begin', 'cal_chunk', 'cal_end', 'cal_ack', 'cal_cack'):  # STEP 4: transfer kalendarza (per-chunk ACK)
         dispatcher.register(_ct, cal_transfer.dispatch)  # handle_end → on_calendar_received
-    dispatcher.register('params', param_sync.handle_remote)      # STEP 17: proposal z supervisora
-    dispatcher.register('params_req', param_sync.handle_remote)  # STEP 17: żądanie pełnego stanu
+    for _rt in ('rt_begin', 'rt_chunk', 'rt_end', 'rt_ack', 'rt_cack'):       # BULK: mass_offline ACK/cack
+        dispatcher.register(_rt, rt.dispatch)
+    # TIMEOUTY/PARAMETRY: TYLKO per-bramka (user 2026-07-03) — for_me odrzuca params cudzej bramki.
+    dispatcher.register('params', lambda d: for_me(d) and param_sync.handle_remote(d))      # STEP 17: proposal z supervisora
+    dispatcher.register('params_req', lambda d: for_me(d) and param_sync.handle_remote(d))  # STEP 17: żądanie pełnego stanu
     dispatcher.register('cfg', lambda d: log.info('RX', 'cfg (passthrough)'))
     dispatcher.set_fallback(lambda d: log.debug('RX', f'unknown t={d.get("t")}'))
 
@@ -476,6 +778,8 @@ def run_gateway(log):
             discovery.parse_z2m(payload)
             for dev in discovery.devices:                # STEP 3: lokalne encje LQI
                 reg_gw_lqi(dev)
+        elif topic == 'zigbee2mqtt/bridge/state':        # BULK: z2m up/down → mass_offline transfer
+            on_bridge_state(payload)
         elif topic.endswith('/availability'):           # FAZA 2: z2m native availability (autorytet)
             data.on_z2m_availability(topic, payload)
         elif topic.startswith('zigbee2mqtt/'):          # STEP 3: device state → delta/batch
@@ -497,10 +801,65 @@ def run_gateway(log):
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/sync_schedule':
             log.info('BTN', '🔘 Sync Schedule (pobierz) pressed')   # STEP 4: pull down — poproś supervisora
             lora_send({'t': 'cal_req', 'g': gw_id})
+        elif topic.startswith(f'{STATE_PREFIX}/anomaly/') and topic.endswith('/clear'):
+            # CLEAR per-wpis z HA BRAMKI (button.lora_an_<safe>_clear v10) → usuń z lokalnego store + ACK.
+            # Bramka=source: przestaje raportować → supervisor prune'uje na dump_anom (spójność w górę).
+            safe_id = AnomalyHAv10Bridge.safe_from_clear_topic(topic)
+            info = gw_anom_v10.lookup(safe_id) if safe_id else None
+            if info:
+                cg, cd, ccat = info
+                an_reconciler.mute(cd, ccat)                  # FAZA 1: nie re-armnij przed mute_window
+                if ccat == 'offline':
+                    offline_anom.ack_clear(cd)
+                n = gw_anom_store.remove_cat(cg, cd, ccat)
+                log.info('ANOM', f'🗑️ clear v10 (bramka) {cd} kat={ccat} n={n}')
+            else:
+                log.warn('ANOM', f'clear v10 (bramka): nieznana encja {safe_id}')
+        elif topic in (f'{STATE_PREFIX}/gw/{gw_lower}/cmd/clear_offline',
+                       f'{STATE_PREFIX}/gw/{gw_lower}/cmd/clear_battery',
+                       f'{STATE_PREFIX}/gw/{gw_lower}/cmd/clear_other'):
+            bucket = topic.rsplit('_', 1)[1]              # CLEAR-ALL kubełka z HA bramki
+            cnt = 0
+            for it in list(gw_anom_store.items(gw_id, bucket)):
+                dev = it['dev']
+                # FAZA 1: mute wszystkie fine-cat tego dev w kubełku (reconciler nie re-armnie)
+                for (g, dv, cat) in list(gw_anom_store.anomalies):
+                    if g == gw_id and dv == dev and gw_anom_store._bucket(cat) == bucket:
+                        an_reconciler.mute(dev, cat)
+                if bucket == 'offline':
+                    offline_anom.ack_clear(dev)
+                cnt += gw_anom_store.remove_one(gw_id, dev, bucket)
+            log.info('ANOM', f'🧹 clear-all {bucket} (bramka): {cnt}')
         elif topic.startswith(f'{STATE_PREFIX}/vio/') and topic.endswith('/state'):
             vid = topic.split('/')[2]                     # hydratacja: retained stan vswitcha → vio_states
             if vid in vio_states:
                 vio_states[vid] = 'ON' if payload.upper() in ('ON', '1') else 'OFF'
+        elif topic == f'{STATE_PREFIX}/gw/cmd/clear_anomaly':
+            # UNIFIED DASHBOARD (2026-07-08): clear z popupu na HA BRAMKI (bramka=źródło prawdy).
+            # payload {dev,bucket} = single; {bucket,all:1} = cały kubełek. Delta an_d propaguje sama.
+            try:
+                info = json.loads(payload)
+                cb = info.get('bucket', 'offline')
+                if info.get('all'):
+                    n = 0
+                    for (g, dv, cat) in list(gw_anom_store.anomalies):
+                        if g == gw_id and gw_anom_store._bucket(cat) == cb:
+                            an_reconciler.mute(dv, cat)
+                            if cb == 'offline':
+                                offline_anom.ack_clear(dv)
+                            n += gw_anom_store.remove_one(gw_id, dv, cb)
+                    log.info('ANOM', f'🗑️ clear-all [{cb}] z HA bramki n={n}')
+                else:
+                    cd = info['dev']
+                    for (g, dv, cat) in list(gw_anom_store.anomalies):
+                        if g == gw_id and dv == cd and gw_anom_store._bucket(cat) == cb:
+                            an_reconciler.mute(cd, cat)
+                    if cb == 'offline':
+                        offline_anom.ack_clear(cd)
+                    n = gw_anom_store.remove_one(gw_id, cd, cb)
+                    log.info('ANOM', f'🗑️ clear ręczny {cd} [{cb}] z HA bramki n={n}')
+            except Exception as e:
+                log.warn('ANOM', f'gw clear_anomaly bad payload {payload!r}: {e}')
         elif topic.startswith(f'{STATE_PREFIX}/vio/') and topic.endswith('/set'):
             vid = topic.split('/')[2]
             val = 'ON' if payload.upper() in ('ON', '1') else 'OFF'
@@ -523,12 +882,15 @@ def run_gateway(log):
     mqtt._on_message_cb = on_mqtt
     lora.on_receive = on_lora
     mqtt.subscribe('zigbee2mqtt/bridge/devices')
+    mqtt.subscribe('zigbee2mqtt/bridge/state')           # BULK: z2m bridge up/down (LWT) → mass_offline
     mqtt.subscribe('zigbee2mqtt/+')                      # STEP 3: device states
     mqtt.subscribe('zigbee2mqtt/+/availability')         # FAZA 2: z2m native availability
     mqtt.subscribe(f'{STATE_PREFIX}/gw/{gw_lower}/cmd/#')
+    mqtt.subscribe(f'{STATE_PREFIX}/anomaly/+/clear')    # v10: clear per-anomalia z HA bramki (button.lora_an_*_clear)
     mqtt.subscribe(f'{STATE_PREFIX}/vio/+/state')   # hydratacja: retained stan vswitchy → vio_states
     mqtt.subscribe(f'{STATE_PREFIX}/vio/+/set')
     mqtt.subscribe(f'{STATE_PREFIX}/vio/+/press')
+    mqtt.subscribe(f'{STATE_PREFIX}/gw/cmd/clear_anomaly')   # UNIFIED: clear z popupu HA bramki
     mqtt.subscribe(f'{STATE_PREFIX}/params/gateway/set/+')   # STEP 17: edycja parametrów
     mqtt.subscribe(f'{STATE_PREFIX}/params/gateway/cmd/+')   # przyciski Send Config/Timeout
 
@@ -573,11 +935,14 @@ def run_gateway(log):
 
     heartbeat.start()
     data.start()                                         # STEP 3: start batchers
-    param_sync.register_entities()                       # STEP 17: 6 encji number na HA bramki
+    param_sync.register_entities()                       # STEP 17: 12 encji number (6 param + 6 progi) na HA bramki
     stagnation.start()                                   # STEP 15: pętla stagnacji
     anomaly_batcher.start()                              # STEP 5: flush `ab` co flush_interval
+    gw_anom_pub.publish(gw_id)                            # STEP 5: encje anomalii bramki (offline/battery/other + devices_*) — start z 0
     offline_anom.start()                                 # STEP 5: gateway-side offline (do/dn)
     battery_mon.start()                                  # STEP 5: low/critical battery (lb/cb/bo)
+    temphum_mon.start()                                  # STEP 5: temp/hum high/low (th/tl/hh/hl) ALL devices
+    an_reconciler.start()                                # FAZA 1: pętla re-scan/re-arm + uplink ansnap
     log.info('MAIN', f'  tryb bramki: {gw_mode.mode} (aktywna teraz: {gw_mode.is_active()})')
 
     # STEP 4: encje trybu/harmonogramu (pod urządzeniem LoRa Gateway Gx)
@@ -624,11 +989,44 @@ def run_gateway(log):
     publish_gmstat()
     publish_calstat()                                    # bieżący tryb (z persist /tmp/lora_schedule_gw.json)
 
+    # ── STEP 5+: wizualizacja CZASU + PORY DNIA na dashboardzie bramki (MQTT discovery) ──
+    for eid, nm, icon, key in [
+            ('local_time', 'Czas bramki', 'mdi:clock-digital', 'now'),
+            ('time_quality', 'Jakość czasu', 'mdi:clock-check-outline', 'tq_label'),
+            ('time_offset', 'Offset vs supervisor', 'mdi:clock-fast', 'offset'),
+            ('sun_period', 'Pora dnia', 'mdi:theme-light-dark', 'period_label'),
+            ('sunrise', 'Świt', 'mdi:weather-sunset-up', 'sunrise'),
+            ('sunset', 'Zmierzch', 'mdi:weather-sunset-down', 'sunset')]:
+        uid = f"lora_{gw_lower}_{eid}"
+        mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+            "name": f"GW {gw_id} {nm}", "object_id": uid, "unique_id": uid,
+            "state_topic": f"{STATE_PREFIX}/{gw_lower}/timestat",
+            "value_template": "{{ value_json.%s | default('--') }}" % key,
+            "icon": icon, "device": _cal_di}, separators=(',', ':')), retain=True)
+
+    def publish_timestat():
+        now = time.time()
+        di = gw_mode.day_info(now)
+        tq = _time_quality()
+        sunrise = '%02d:%02d' % (di['sunrise_min'] // 60, di['sunrise_min'] % 60)
+        sunset = '%02d:%02d' % (di['sunset_min'] // 60, di['sunset_min'] % 60)
+        mqtt.publish(f"{STATE_PREFIX}/{gw_lower}/timestat", json.dumps({
+            'now': datetime.fromtimestamp(now).strftime('%H:%M:%S'),
+            'tq': tq, 'tq_label': TQ_LABEL.get(tq, tq),
+            'offset': gw_stats.get('time_offset', '--'),
+            'last_sync': gw_stats.get('last_sync', '--'),
+            'period': 'day' if di['is_day'] else 'night',
+            'period_label': 'Dzień ☀️' if di['is_day'] else 'Noc 🌙',
+            'sunrise': sunrise, 'sunset': sunset},
+            separators=(',', ':')), retain=True)
+    publish_timestat()
+
     def calendar_loop():                                 # przeliczaj tryb co minutę (zmiana slotu)
         while running.is_set():
             time.sleep(60)
             publish_calstat()
             publish_gmstat()                             # STEP 5: odśwież tryb pracy (przejścia day/night)
+            publish_timestat()                           # STEP 5+: czas + pora dnia (świt/zmierzch, time_quality)
     threading.Thread(target=calendar_loop, daemon=True, name='cal-mode').start()
     # STEP 17: bez pre-instancji — sync parametrów wyzwala hash `ph` w HB/pong (niżej)
 
@@ -657,15 +1055,22 @@ def run_gateway(log):
         prio = sum(1 for d in discovery.devices.values() if d.get('priority'))
         mon = sum(1 for d in discovery.devices.values()           # wyłączny (bez priority)
                   if d.get('monitored') and not d.get('priority'))
-        oa = getattr(data, 'offline_after', 0) or 0               # offline = cisza z2m > offline_after
-        offline = 0
-        if oa:
-            for dev in discovery.devices:
-                ts = data.last_msg_ts.get(dev)
-                if ts is not None and (now - ts) > oa:
-                    offline += 1
-                elif ts is None and (now - data._start_ts) > oa:  # nigdy nie raportował po grace
-                    offline += 1
+        # FIX 2026-07-07 (audyt: kafel OFFLINE=2 vs 174): licz z AUTORYTATYWNEGO data._alive
+        # (z2m availability + per-typ timeout — to samo źródło co report_liveness/anomalie),
+        # nie z legacy skalarnego timeoutu last_msg_ts. Fallback na starą pętlę przed 1. sweepem.
+        alive_map = dict(getattr(data, '_alive', {}) or {})
+        if alive_map:
+            offline = sum(1 for v in alive_map.values() if v is False)
+        else:
+            oa = getattr(data, 'offline_after', 0) or 0           # legacy: cisza z2m > offline_after
+            offline = 0
+            if oa:
+                for dev in discovery.devices:
+                    ts = data.last_msg_ts.get(dev)
+                    if ts is not None and (now - ts) > oa:
+                        offline += 1
+                    elif ts is None and (now - data._start_ts) > oa:
+                        offline += 1
         last_hb = (datetime.fromtimestamp(heartbeat._last_hb).strftime('%H:%M:%S')
                    if heartbeat._last_hb else '--')
         ha.pub_gw_stats(gw_id, {
@@ -689,7 +1094,7 @@ def run_gateway(log):
     try:
         while running.is_set(): time.sleep(0.5)
     except KeyboardInterrupt: pass
-    heartbeat.running = False; stagnation.stop(); offline_anom.stop(); battery_mon.stop()
+    heartbeat.running = False; stagnation.stop(); offline_anom.stop(); battery_mon.stop(); temphum_mon.stop()
     anomaly_batcher.stop(); data.stop(); lora.stop(); mqtt.stop()
     log.info('MAIN', 'Stopped.')
 
@@ -705,6 +1110,9 @@ def run_supervisor(log):
         client_id=f"step3_sup_{int(time.time())}", logger=log)
 
     lora = _make_lora(CONFIG, log)
+    CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
+    #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
+    #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
     ha = HAEntities(mqtt, logger=log)
     known_gateways = CONFIG.get('gateways', ['G1'])
 
@@ -712,7 +1120,10 @@ def run_supervisor(log):
         lora.send(json.dumps(msg, separators=(',', ':')))
 
     sup_disc = SupervisorDiscovery(
-        ha, logger=log, request_disc_fn=lambda gw: send_to_all({"t": "disc", "g": gw}))
+        ha, logger=log,
+        # ANTI-SPAM: dołącz hash KTÓRY SUPERVISOR MA (gw_synced) → bramka porówna i wyśle
+        # pełne `db` tylko gdy różny; zgodny → sama meta. Mutualne porównanie hashy.
+        request_disc_fn=lambda gw: send_to_all({"t": "disc", "g": gw, "h": sup_disc.gw_synced.get(gw, "")}))
 
     # STEP 3: data layer — `b` → merged HA state
     dev_avail = {}                       # {(gw,dev): bool} — REALNY licznik offline (A)
@@ -750,14 +1161,53 @@ def run_supervisor(log):
     cal_id = cal_cfg.get('calendar_id', 'calendar.lora_global')
     scheduler = ScheduleManager(mode_names=mode_names, gateways=known_gateways, logger=log,
                                 persist_path='/tmp/lora_schedule_sup.json')
+    # ChannelArbiter supervisora: transfer-plik (kalendarz push w dół / odbiór devmap/ansnap/
+    # gw_push od bramek) trzyma kanał — wolumen supervisora czeka. accept_gw=None → agreguje
+    # transfery od WSZYSTKICH bramek (per-gw filtr jest po stronie bramek).
+    arbiter = ChannelArbiter(logger=log)
+    lora.arbiter = arbiter                       # jw. — supervisor też odkłada bulk podczas transferu
     cal_transfer = CalendarTransfer(
-        send_fn=send_to_all, chunk_size=cal_cfg.get('chunk_size', 140),
+        send_fn=send_to_all, chunk_size=cal_cfg.get('chunk_size', 60),
         chunk_delay=cal_cfg.get('chunk_delay', 6.0),
         chunk_ack_timeout=cal_cfg.get('chunk_ack_timeout', 30.0),   # anty-spam: round-trip LoRa
         chunk_retries=cal_cfg.get('chunk_retries', 2),
-        end_retries=cal_cfg.get('end_retries', 3), logger=log)
+        end_retries=cal_cfg.get('end_retries', 3), logger=log,
+        arbiter=arbiter, accept_gw=None)
     expected_cal_hash = {gw: scheduler.schedule_hash(gw, win_days) for gw in known_gateways}
     cal_sync_guard = {}                                  # gw → ts ostatniego auto-sync (debounce drift)
+
+    # BULK: odbiór ReliableTransfer (mass_offline z bramki = z2m-down → cała bramka niedostępna).
+    # _set_avail to JEDNO źródło prawdy availability (idempotentne) → licznik+lista offline spójne.
+    def on_rt_received(gw, kind, payload):
+        if kind == 'mass_offline' and isinstance(payload, list):
+            for dev in payload:
+                _set_avail(gw, dev, False)
+            log.warn('XFER', f'📥 mass_offline [{gw}] {len(payload)} dev → availability OFF (z2m-down)')
+        elif kind == 'devmap' and isinstance(payload, dict):
+            # (a) skompresowana MAPA urządzeń (zamiast `db`) → rejestracja encji jak handle_db
+            sup_disc.handle_devmap(gw, payload)
+        elif kind == 'avail' and isinstance(payload, dict):
+            # (d) pełny sweep availability jednym blobem {ts, a:{sid:0/1}} → update wszystkich naraz
+            bits = payload.get('a', {})
+            rev = {info.get('sid'): name for name, info in sup_disc.devices(gw).items()}
+            n = 0
+            for sid, bit in bits.items():
+                try:
+                    sid_i = int(sid)
+                except (TypeError, ValueError):
+                    sid_i = sid
+                dev = rev.get(sid_i)
+                if dev:
+                    _set_avail(gw, dev, bool(bit)); n += 1
+            log.info('XFER', f'📥 avail blob [{gw}] {n}/{len(bits)} sid → availability zaktualizowana')
+        elif kind == 'ansnap' and isinstance(payload, dict):
+            # FAZA 1: autorytatywny blob aktywnych anomalii z bramki → reconcile store sup (add+remove)
+            _reconcile_ansnap(gw, payload)
+        else:
+            log.warn('XFER', f'rt kind={kind} nieobsłużony (payload {type(payload).__name__})')
+    rt = ReliableTransfer(send_fn=send_to_all, on_received=on_rt_received, logger=log,
+                          chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
+                          arbiter=arbiter, accept_gw=None)   # agreguj transfery wszystkich bramek
 
     def on_calendar_received_sup(gw, direction, compact):
         """REVERSE (gw_push): bramka raportuje swój harmonogram → MIRROR na calendar.lora_<gw>
@@ -887,6 +1337,20 @@ def run_supervisor(log):
                     "icon": icon, "device": di}, separators=(',', ':')), retain=True)
         an_regd.add(gw)
 
+    # STEP 5: format anomalii do powiadomienia/popup — (emoji, etykieta PL, jednostka wartości)
+    _ANOM_FMT = {
+        'offline': ('📴', 'Offline', ''),
+        'critical_battery': ('🪫', 'Bateria krytyczna', '%'),
+        'low_battery': ('🔋', 'Bateria niska', '%'),
+        'temp_high': ('🔺', 'Temperatura wysoka', '°C'),
+        'temp_low': ('🔻', 'Temperatura niska', '°C'),
+        'hum_high': ('💧', 'Wilgotność wysoka', '%'),
+        'hum_low': ('🏜️', 'Wilgotność niska', '%'),
+        'stagnation': ('🕰️', 'Stagnacja', 'h'),
+        'smoke': ('🔥', 'Dym', ''),
+        'water_leak': ('🌊', 'Zalanie', ''),
+    }
+
     def publish_anomalies(gw):
         reg_anomaly_entities(gw)
         gl = gw.lower()
@@ -895,6 +1359,7 @@ def run_supervisor(log):
             mqtt.publish(f"{STATE_PREFIX}/gw/{gl}/an_{bucket}",
                          json.dumps({"count": len(items), "items": items},
                                     separators=(',', ':')), retain=True)
+        _anom_notification(gw)        # POWIADOMIENIE HA (dzwonek) z listą + wartościami
 
     def _ha_service(domain, service, data):              # best-effort HA service call (thread)
         tok = ha_cfg5.get('token', '')
@@ -913,12 +1378,33 @@ def run_supervisor(log):
                 log.debug('ANOM', f'service {domain}.{service}: {e}')
         threading.Thread(target=_post, daemon=True, name='ha-svc').start()
 
-    def anomaly_popup(gw, dev, code, value, critical):   # STEP 5: browser_mod popup (krytyczne)
+    def _anom_notification(gw):
+        """POWIADOMIENIE HA (persistent_notification = dzwonek) z listą WSZYSTKICH aktywnych
+        anomalii bramki + wartością i jednostką. Aktualizuje (stałe id), dismiss gdy 0."""
+        lines = []
+        for bucket in ('offline', 'battery', 'other'):
+            for it in anomaly_store.items(gw, bucket):
+                emoji, label, unit = _ANOM_FMT.get(it['type'], ('⚠️', it['type'], ''))
+                v = it.get('value')
+                vtxt = f": **{v}{unit}**" if v is not None and v != '' else ''
+                lines.append(f"{emoji} **{it['dev']}** — {label}{vtxt}")
+        nid = f"lora_anomalie_{gw.lower()}"
+        if not lines:
+            _ha_service('persistent_notification', 'dismiss', {'notification_id': nid})
+            return
+        msg = f"### 🚨 {len(lines)} aktywnych anomalii\n\n" + "\n".join(lines)
+        _ha_service('persistent_notification', 'create',
+                    {'notification_id': nid, 'title': f'🚨 Anomalie {gw} ({len(lines)})',
+                     'message': msg})
+
+    def anomaly_popup(gw, dev, code, value, critical):   # STEP 5: browser_mod popup (krytyczne) z wartością
         if not an_cfg.get('popup', True) or not critical:
             return
         from modules.anomaly.store import CODE_LABEL
-        content = f"**{gw} / {dev}**: {CODE_LABEL.get(code, code)}" + \
-                  (f" = {value}" if value is not None else "")
+        typ = CODE_LABEL.get(code, code)
+        emoji, label, unit = _ANOM_FMT.get(typ, ('🚨', typ, ''))
+        vtxt = f": **{value}{unit}**" if value is not None and value != '' else ''
+        content = f"## {emoji} {gw} / {dev}\n\n**{label}**{vtxt}"
         _ha_service('browser_mod', 'popup',
                     {'title': '🚨 Anomalia LoRa', 'content': content,
                      'timeout': 15000, 'dismissable': True})
@@ -927,10 +1413,100 @@ def run_supervisor(log):
         resolve_dev=lambda gw, sid: sup_data._dev_from_sid(gw, sid),
         on_change=publish_anomalies, on_alert=anomaly_popup,
         persist_path=an_cfg.get('persist_path', '/tmp/lora_anomaly_ids.json'), logger=log)
+    # GHOST-PRUNE (2026-07-07, audyt): persistence trzyma anomalie bramek spoza konfiguracji
+    # (np. stare test_1/test_2 [G1] po przemianowaniu maszyny G1→G2) → fałszywie zawyżony licznik
+    # alarmów (175 vs 173). Przy starcie wywal wszystko dla nieznanych bramek.
+    _ghosts = [(g, dv, cat) for (g, dv, cat) in list(anomaly_store.anomalies)
+               if g not in known_gateways]
+    for (g, dv, cat) in _ghosts:
+        anomaly_store.remove_cat(g, dv, cat)
+    if _ghosts:
+        log.info('ANOM', f'👻 ghost-prune: usunięto {len(_ghosts)} anomalii nieznanych bramek '
+                 f'({sorted(set(g for g, _, _ in _ghosts))} ∉ {known_gateways})')
+
+    # v10 DISPLAY: most store → encje HA per-anomalia (sensor.lora_an_* + button.lora_an_*_clear).
+    # Reconciluje na każdej zmianie store (ab/auto-clear/reconcile/ghost-prune) → reaktywny dashboard
+    # v10 (auto-entities). Backend (detekcja/batching/redundancja) nietknięty. Liczniki/clear-all już są.
+    an_v10 = AnomalyHAv10Bridge(anomaly_store, mqtt, HA_PREFIX, STATE_PREFIX, logger=log)
+    anomaly_store.on_change = lambda gw: (publish_anomalies(gw), an_v10.publish(gw))
+
+    def _reconcile_ansnap(gw, payload):
+        """FAZA 1: blob aktywnych anomalii z bramki (rt kind='ansnap') = AUTORYTATYWNA lista. Reconcile
+        store supervisora: dodaj/aktualizuj wszystkie z blobu + USUŃ te dla tej bramki, których w blobie
+        NIE MA (recovery lub ręczny clear na bramce = źródle prawdy). Pusty blob → skasuj wszystkie gw."""
+        from modules.anomaly.batcher import CODE_CAT
+        blob = payload.get('a', []) or []
+        anomaly_store.handle_ab({'g': gw, 'd': blob})          # add/update (brak recovery w blobie)
+        present = set()
+        for row in blob:
+            if not isinstance(row, list) or len(row) < 2:
+                continue
+            dev = sup_data._dev_from_sid(gw, row[0])
+            if dev:
+                present.add((dev, CODE_CAT.get(row[1], 'other')))
+        removed = 0
+        for (g, dev, cat) in list(anomaly_store.anomalies):
+            if g == gw and (dev, cat) not in present:
+                anomaly_store.remove_cat(gw, dev, cat)         # brak w blobie → recovery/clear na bramce
+                removed += 1
+        log.info('ANOM', f'📥 ansnap [{gw}] {len(blob)} aktywnych → reconcile (usunięto {removed})')
+
+    def _sup_anom_rows(gw):
+        """Odbuduj listę [[sid,code,val?],...] z lokalnego store — TA SAMA formuła co bramka
+        (_build_blob) → hash porównywalny 1:1 (weryfikacja delty an_d)."""
+        from modules.anomaly.batcher import CODE_CAT  # noqa: F401 (spójność importów)
+        sidmap = {name: info.get('sid') for name, info in sup_disc.devices(gw).items()}
+        rows = []
+        for (g, dev, cat), a in anomaly_store.anomalies.items():
+            if g != gw:
+                continue
+            sid = sidmap.get(dev)
+            if sid is None:
+                continue
+            code, val = a.get('code'), a.get('value')
+            rows.append([sid, code] if val is None else [sid, code, val])
+        rows.sort(key=lambda r: (r[0], r[1]))
+        return rows
+
+    an_d_dump_guard = {}                                  # gw → ts (debounce dump po rozjeździe delty)
+
+    def handle_an_d(d):
+        """DELTA anomalii (2026-07-07): {t:an_d,g,a:[dodane],r:[[sid,code] usunięte],h:hash-po}.
+        1 pakiet zamiast pełnego blobu przy małej zmianie. Aplikuj → porównaj hash lokalnej listy
+        z h bramki → rozjazd = zgubiona wcześniejsza delta → zażądaj pełnego snapshotu (dump_anom).
+        Samonaprawialny hash-chain: maksimum oszczędności LoRa bez utraty spójności.
+        DEBOUNCE 90s (2026-07-11): burst delt z bramki (start) = seria rozjazdów → BEZ debounce
+        sup słał dump per delta (8×/19s), zapychał kolejkę radia i ubijał własną antenę."""
+        from modules.anomaly.batcher import CODE_CAT
+        gw = d.get('g')
+        if not gw:
+            return
+        adds = d.get('a', []) or []
+        rems = d.get('r', []) or []
+        if adds:
+            anomaly_store.handle_ab({'g': gw, 'd': adds})
+        for row in rems:
+            if not isinstance(row, list) or len(row) < 2:
+                continue
+            dev = sup_data._dev_from_sid(gw, row[0])
+            if dev:
+                anomaly_store.remove_cat(gw, dev, CODE_CAT.get(row[1], 'other'))
+        h = AnomalyReconciler.blob_hash(_sup_anom_rows(gw))
+        if h != d.get('h'):
+            if time.time() - an_d_dump_guard.get(gw, 0) >= 90:
+                an_d_dump_guard[gw] = time.time()
+                log.warn('ANOM', f'⚠️ an_d [{gw}] hash rozjazd {h}≠{d.get("h")} → żądam pełnego ansnap')
+                send_to_all({"t": "dump_anom", "g": gw})
+            else:
+                log.debug('ANOM', f'an_d [{gw}] rozjazd {h}≠{d.get("h")} — dump w debounce (90s)')
+        else:
+            log.info('ANOM', f'📥 an_d [{gw}] +{len(adds)}/-{len(rems)} hash OK ({h})')
 
     # ── UNIFIKACJA availability: offline-set bramki OR cmd-failure (jedno źródło prawdy) ──
     cmd_failed = set()                                    # {(gw,dev)} — cmd bez st (sticky offline w OR-merge)
     off_sync_guard = {}                                   # gw → ts (debounce reconcile po drift offline-hash)
+    ah_guard = {}                                         # AH-GATE: gw → ts dump po rozjeździe ah (debounce)
+    gw_ah_sync = {}                                       # AH-GATE: gw → True gdy HB.ah == lokalny hash anomalii
 
     def reconcile_availability(gw):
         """Reconcile listy offline z dev_avail (łapie zgubione `do`/`dn`). Recovery → usuń+kasuj ack.
@@ -970,6 +1546,12 @@ def run_supervisor(log):
         while running.is_set() and interval > 0:
             time.sleep(interval)
             for gw in known_gateways:
+                # AH-GATE (2026-07-07): HB niesie hash stanu anomalii bramki — zgodny z lokalnym →
+                # pełny dump ZBĘDNY (oszczędność ~10-14 pkt LoRa/cykl). Dump tylko przy rozjeździe
+                # lub braku informacji (bramka bez ah = stary soft / przed pierwszym blobem).
+                if gw_ah_sync.get(gw):
+                    log.debug('ANOM', f'⏭️ dump_anom [{gw}] pominięty — ah zgodny (AH-GATE)')
+                    continue
                 dump_and_reconcile(gw, prune_after)
 
     ctrl_cfg = CONFIG.get('control', {})
@@ -1117,6 +1699,36 @@ def run_supervisor(log):
                 "icon": icon, "device": di}, separators=(',', ':')), retain=True)
         gwhash_regd.add(gw)
 
+    # ── STEP 5+: encje JAKOŚĆ CZASU + PORA DNIA/TRYB bramki na HA supervisora (z HB tq/gm/ga) ──
+    gwtime_regd = set()
+    _TQ_L = {'synced': 'Zsynchronizowany ✅', 'ntp': 'Zsynchronizowany (NTP) 🛰️',
+             'holdover': 'Holdover 🕓',
+             'unsynced': 'Niezsynchronizowany ⚠️', 'stale': 'Przeterminowany ❌'}
+    _GM_L = {'all-time': 'Całodobowa', 'day': 'Dzienna', 'night': 'Nocna'}
+
+    def reg_gw_time_entities(gw):
+        if gw in gwtime_regd:
+            return
+        gl = gw.lower(); di = {"identifiers": [f"lora_gateway_{gl}"]}
+        for eid, nm, icon, key in [
+                ('time_quality', 'Jakość czasu', 'mdi:clock-check-outline', 'tq_label'),
+                ('sun_mode', 'Pora dnia / tryb', 'mdi:theme-light-dark', 'mode'),
+                ('mode_active', 'Tryb — stan', 'mdi:power', 'active')]:
+            uid = f"lora_gw_{gl}_{eid}"
+            mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
+                "name": f"GW {gw} {nm}", "object_id": uid, "unique_id": uid,
+                "state_topic": f"{STATE_PREFIX}/gw/{gl}/timestat",
+                "value_template": "{{ value_json.%s | default('--') }}" % key,
+                "icon": icon, "device": di}, separators=(',', ':')), retain=True)
+        gwtime_regd.add(gw)
+
+    def publish_gw_time(gw, d):
+        tq = d.get('tq'); gm = d.get('gm'); ga_v = d.get('ga')
+        mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/timestat", json.dumps({
+            'tq': tq or '--', 'tq_label': _TQ_L.get(tq, tq or '--'),
+            'mode': _GM_L.get(gm, gm or '--'),
+            'active': 'aktywna' if ga_v else 'wstrzymana'}, separators=(',', ':')), retain=True)
+
     wd = CONFIG.get('watchdog', {})
     sup_hb = SupervisorHeartbeat(
         ha, logger=log, send_ping_fn=lambda gw: send_to_all({"t": "ping", "g": gw}),
@@ -1136,8 +1748,18 @@ def run_supervisor(log):
             reg_gw_hashes(gw)                             # STEP 17: encje hash bramki
             reg_cal_button_gw(gw)                         # STEP 4: per-bramka Sync Calendar
             reg_anomaly_entities(gw)                      # STEP 5: encje an_offline/_battery/_other
+            reg_gw_time_entities(gw)                      # STEP 5+: encje jakość czasu + pora dnia
             mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes",
                          {'disc': d.get('hash', '--'), 'param': d.get('ph', '--')}, retain=True)
+            publish_gw_time(gw, d)                        # STEP 5+: tq/gm/ga → dashboard supervisora
+            ah = d.get('ah')                              # AH-GATE: hash stanu anomalii z bramki
+            if ah:
+                local_ah = AnomalyReconciler.blob_hash(_sup_anom_rows(gw))
+                gw_ah_sync[gw] = (local_ah == ah)
+                if local_ah != ah and time.time() - ah_guard.get(gw, 0) > 120:
+                    ah_guard[gw] = time.time()
+                    log.warn('ANOM', f'⚠️ HB [{gw}]: ah rozjazd {local_ah}≠{ah} → dump_anom (reconcile)')
+                    send_to_all({"t": "dump_anom", "g": gw})
             ga = d.get('ga')                             # STEP 5: aktywność trybu bramki (supresja)
             if ga is not None:
                 gw_active[gw] = bool(ga)
@@ -1186,6 +1808,8 @@ def run_supervisor(log):
     dispatcher.register('b', sup_data.handle_b)          # STEP 3: batch data → HA
     for _ct in ('cal_begin', 'cal_chunk', 'cal_end', 'cal_ack', 'cal_cack'):  # STEP 4: transfer kalendarza (per-chunk ACK)
         dispatcher.register(_ct, cal_transfer.dispatch)  # ACK od bramki / pull gw_push
+    for _rt in ('rt_begin', 'rt_chunk', 'rt_end', 'rt_ack', 'rt_cack'):       # BULK: odbiór mass_offline
+        dispatcher.register(_rt, rt.dispatch)            # handle_end → on_rt_received
 
     def handle_cal_req(d):                                # STEP 4: bramka prosi o harmonogram (pull down)
         gw = d.get('g', '?')
@@ -1194,6 +1818,7 @@ def run_supervisor(log):
     dispatcher.register('cal_req', handle_cal_req)
     dispatcher.register('param_upd', param_sync.handle_remote)   # STEP 17: confirmed z bramki
     dispatcher.register('ab', handle_ab)                 # STEP 15: anomalie (stagnacja sg/sc)
+    dispatcher.register('an_d', handle_an_d)             # DELTA anomalii: 1 pakiet, hash-chain verify
 
     def handle_st(d):
         gw = d.get('g', '?'); dev = d.get('d'); val = str(d.get('v', '')).upper()
@@ -1201,7 +1826,7 @@ def run_supervisor(log):
             with cmd_lock: pending_cmd.pop((gw, dev), None)
             cmd_failed.discard((gw, dev))                # st potwierdza działanie → czyść cmd-failure
             _set_avail(gw, dev, True)                    # STEP 4 fix: online w dev_avail → licznik spada
-            ha.pub_device_state(gw, dev, {"state": val, "available": "ON"})
+            sup_data.apply_st(gw, dev, {"state": val})   # MERGE + last_seen (był full-replace bez ts → gubił last_seen/capy)
             log.info('CTRL', f'🎛️ st {gw}/{dev} = {val} → online + odbite w HA (cmd/zmiana zewn.)')
     dispatcher.register('st', handle_st)
 
@@ -1236,6 +1861,22 @@ def run_supervisor(log):
                 log.info('CTRL', f'🎛️ Refresh {gw}/{dev} → req')
                 send_to_all({"t": "req", "g": gw, "d": dev})
             return
+        if len(segs) == 4 and segs[1] == 'anomaly' and segs[3] == 'clear':  # v10 clear per-anomalia
+            safe_id = segs[2]
+            info = an_v10.lookup(safe_id)
+            if info:
+                cg, cd, ccat = info
+                # PER-ANOMALY: kasuj DOKŁADNIE tę kategorię (temp≠hum≠stagnacja), nie cały kubełek —
+                # jedno urządzenie może mieć kilka anomalii, każdą kasujemy osobno (wymóg usera).
+                if ccat == 'offline':                     # ACK: nie wracaj przez reconcile aż do recovery
+                    cmd_failed.discard((cg, cd)); ack_offline.add((cg, cd))
+                n = anomaly_store.remove_cat(cg, cd, ccat)
+                send_to_all({"t": "ac_b", "g": cg, "d": [[cd, ccat]]})  # clear→bramka: usuń+ACK (nie re-doda przy dump)
+                publish_offline_count(cg)
+                log.info('ANOM', f'🗑️ clear v10 {cg}/{cd} kat={ccat} n={n} ({safe_id}) + ac_b→{cg}')
+            else:
+                log.warn('ANOM', f'clear v10: nieznana encja {safe_id}')
+            return
         if topic.startswith(f'{STATE_PREFIX}/supervisor/cmd/'):
             rest = segs[3:]
             if len(rest) == 1:
@@ -1266,19 +1907,22 @@ def run_supervisor(log):
                         if cb == 'offline':                # ACK: nie wracaj przez reconcile aż do recovery
                             cmd_failed.discard((cg, cd)); ack_offline.add((cg, cd))
                         n = anomaly_store.remove_one(cg, cd, cb)
+                        send_to_all({"t": "ac_b", "g": cg, "d": [[cd, cb]]})  # clear→bramka: usuń+ACK
                         publish_offline_count(cg)
-                        log.info('ANOM', f'🗑️ clear ręczny {cg}/{cd} [{cb}] n={n} (ack)')
+                        log.info('ANOM', f'🗑️ clear ręczny {cg}/{cd} [{cb}] n={n} (ack) + ac_b→{cg}')
                     except Exception as e:
                         log.warn('ANOM', f'clear_anomaly bad payload {payload!r}: {e}')
                 elif a in ('clear_offline', 'clear_battery', 'clear_other'):  # CLEAR-ALL kubełka
                     bucket = a.split('_', 1)[1]
                     for g in known_gateways:
-                        for it in list(anomaly_store.items(g, bucket)):
+                        for it in list(anomaly_store.items(g, bucket)):   # lokalny store sup (UI, bez LoRa)
                             if bucket == 'offline':
                                 cmd_failed.discard((g, it['dev'])); ack_offline.add((g, it['dev']))
                             anomaly_store.remove_one(g, it['dev'], bucket)
+                        # F2 fix: KOMPAKTOWA flaga (nie lista 192 dev = ~4KB >>220B, cicho ginęła)
+                        send_to_all({"t": "ac_all", "g": g, "b": bucket})
                         publish_offline_count(g)
-                    log.info('BTN', f'🔘 Clear all [{bucket}] (ack)')
+                    log.info('BTN', f'🔘 Clear all [{bucket}] (ack) + ac_all→bramki (kompaktowo)')
             elif len(rest) == 2:
                 gw, a = rest[0].upper(), rest[1]
                 if a == 'ping':
@@ -1291,6 +1935,25 @@ def run_supervisor(log):
                 elif a == 'calendar':                     # STEP 4: re-read HA + push do tej bramki
                     log.info('BTN', f'🔘 Sync Calendar {gw}')
                     read_ha_calendar(); targeted_calendar_sync([gw])
+                elif a == 'pull_calendar':                # FAZA 3B: Pull ← Gx (sup prosi bramkę o push-up)
+                    log.info('BTN', f'🔘 Pull Calendar ← {gw}')
+                    send_to_all({"t": "cal_pull", "g": gw})
+                elif a == 'dump_anom':                     # FAZA 3B: Dump anomalii per-bramka
+                    log.info('BTN', f'🔘 Dump Anomalies {gw}')
+                    send_to_all({"t": "dump_anom", "g": gw})
+                    threading.Thread(target=lambda: (time.sleep(an_cfg.get('prune_after', 90)),
+                                     anomaly_store.prune_stale(gw, an_cfg.get('prune_after', 90) + 30)),
+                                     daemon=True).start()
+                elif a in ('clear_offline', 'clear_battery', 'clear_other'):  # FAZA 3B: Clear-all kubełka per-bramka
+                    bucket = a.split('_', 1)[1]
+                    for it in list(anomaly_store.items(gw, bucket)):   # lokalny store sup (UI, bez LoRa)
+                        if bucket == 'offline':
+                            cmd_failed.discard((gw, it['dev'])); ack_offline.add((gw, it['dev']))
+                        anomaly_store.remove_one(gw, it['dev'], bucket)
+                    # F2 fix: KOMPAKTOWA flaga zamiast listy 192 dev (~4KB >>220B, cicho ginęła)
+                    send_to_all({"t": "ac_all", "g": gw, "b": bucket})
+                    publish_offline_count(gw)
+                    log.info('BTN', f'🔘 Clear all [{bucket}] {gw} (ack) + ac_all→{gw} (kompaktowo)')
             return
         if len(segs) == 5 and segs[2] == 'vio' and segs[4] == 'set':
             gw, vid = segs[1].upper(), segs[3]
@@ -1369,9 +2032,10 @@ def run_supervisor(log):
     mqtt._on_message_cb = on_mqtt
     lora.on_receive = on_lora
     mqtt.subscribe(f'{STATE_PREFIX}/supervisor/cmd/#')
+    mqtt.subscribe(f'{STATE_PREFIX}/anomaly/+/clear')      # v10: clear per-anomalia (button.lora_an_*_clear)
     mqtt.subscribe(f'{STATE_PREFIX}/supervisor/req/+/+')   # STEP 3: refresh buttons
     mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/set/+')   # STEP 17: edycja parametrów
-    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/cmd/+')   # przyciski Send Config/Timeout
+    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/cmd/#')   # przyciski Send (per-gw: cmd/<gw>/send_*)
     mqtt.subscribe(f'{STATE_PREFIX}/+/+/state')   # hydratacja: retained stany urządzeń (seed merge)
     mqtt.subscribe(f'{STATE_PREFIX}/+/+/set')
     mqtt.subscribe(f'{STATE_PREFIX}/+/+/+/set')
@@ -1387,7 +2051,14 @@ def run_supervisor(log):
         log.info('LORA', f'{label}: {"✅ OK" if info["connected"] else "❌ FAIL"}')
 
     ha.reg_supervisor(); sup_hb.start()
-    param_sync.register_entities()                       # STEP 17: 6 encji number na HA supervisora
+    # STARTUP: republikuj encje anomalii wczytanych z persist (po restarcie supervisora) → dashboard
+    # v10 od razu ma wiersze, nie czeka na pierwszy ab/reconcile. Idempotentne (reconcile mostu).
+    for _gw in known_gateways:
+        try:
+            publish_anomalies(_gw); an_v10.publish(_gw)
+        except Exception as _e:
+            log.warn('ANOM', f'startup republish {_gw}: {_e}')
+    param_sync.register_entities()                       # STEP 17: 12 encji number (6 param + 6 progi) na HA supervisora
     # UNIFIKACJA: offline_mon usunięty — availability liczona z offline-set bramki (reconcile)
     reg_cal_button_global()                              # STEP 4: przycisk Sync Calendar All
     _da_uid = 'lora_sup_dump_anom_all'                   # STEP 5: przycisk Dump Anomalies All
@@ -1404,6 +2075,24 @@ def run_supervisor(log):
             "command_topic": f"{STATE_PREFIX}/supervisor/cmd/{_cb}",
             "icon": _ci}, separators=(',', ':')), retain=True)
     threading.Thread(target=dump_anom_cycle, daemon=True, name='dump-anom').start()  # STEP 5: 30min
+
+    # ── STEP 5+: zegar SUPERVISORA (źródło czasu referencyjnego) na dashboardzie ──
+    mqtt.publish(f"{HA_PREFIX}/sensor/lora_sup_local_time/config", json.dumps({
+        "name": "Supervisor — czas (źródło sync)", "object_id": "lora_sup_local_time",
+        "unique_id": "lora_sup_local_time",
+        "state_topic": f"{STATE_PREFIX}/supervisor/timestat",
+        "value_template": "{{ value_json.now | default('--') }}",
+        "json_attributes_topic": f"{STATE_PREFIX}/supervisor/timestat",
+        "icon": "mdi:clock-star-four-points"}, separators=(',', ':')), retain=True)
+
+    def sup_clock_loop():
+        while running.is_set():
+            mqtt.publish(f"{STATE_PREFIX}/supervisor/timestat", json.dumps({
+                'now': datetime.now().strftime('%H:%M:%S'),
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'role': 'źródło czasu (UTC sec w sync)'}, separators=(',', ':')), retain=True)
+            time.sleep(30)
+    threading.Thread(target=sup_clock_loop, daemon=True, name='sup-clock').start()
     # STEP 17: bez pre-instancji — sync wyzwala porównanie `ph` w on_hb (HB/pong)
 
     def initial_discovery():

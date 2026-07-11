@@ -1,0 +1,15 @@
+# Helpery do configuration.yaml (albo utworz w UI: Ustawienia->Urzadzenia->Helpery).
+input_number:
+  motion_timeout:
+    name: Motion timeout (czas wygaszania strefy)
+    min: 30
+    max: 900
+    step: 10
+    unit_of_measurement: s
+    icon: mdi:timer-outline
+    initial: 150            # 2,5 min — JEDNO miejsce na timer wszystkich stref
+
+input_boolean:
+  motion_enabled:
+    name: Motion enabled (bramka stref ruchu)
+    icon: mdi:motion-sensor

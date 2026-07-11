@@ -35,26 +35,31 @@ TYPE_LABELS = {"offline": "Offline", "do": "Offline", "lb": "Niska bateria",
                "critical_battery": "Krytyczna bateria", "stagnation": "Stagnacja",
                "temp_high": "Temp. wysoka", "temp_low": "Temp. niska", "water_leak": "Wyciek",
                "smoke": "Dym", "hum_high": "Wilg. wysoka", "hum_low": "Wilg. niska"}
+TYPE_UNITS = {"lb": "%", "cb": "%", "low_battery": "%", "critical_battery": "%",
+              "temp_high": "°C", "temp_low": "°C", "hum_high": "%", "hum_low": "%", "stagnation": "h"}
 
 
 def _row(eid, i, bucket, color):
-    """Button-card wiersz i: items[i] → dev · typ · data godz; klik → clear tej anomalii."""
+    """Button-card wiersz i (PEŁNA SZEROKOŚĆ): items[i] → dev · typ · data | WARTOŚĆ+jednostka | ✕ clear."""
     L = json.dumps(TYPE_LABELS, ensure_ascii=False)
+    U = json.dumps(TYPE_UNITS, ensure_ascii=False)
     content = (
         "[[[ "
         "var items=(states['" + eid + "'].attributes.items)||[];"
         "var it=items[" + str(i) + "];"
         "if(!it) return '';"
-        "var L=" + L + ";"
+        "var L=" + L + ";var U=" + U + ";"
         "var typ=L[it.type]||it.type||'';"
+        "var val=(it.value!=null&&it.value!=='')?(it.value+(U[it.type]||'')):'';"
         "var ts=it.detected_at?new Date(it.detected_at):(it.since?new Date(it.since*1000):null);"
         "var tss=ts?(('0'+ts.getDate()).slice(-2)+'.'+('0'+(ts.getMonth()+1)).slice(-2)+' '+"
         "('0'+ts.getHours()).slice(-2)+':'+('0'+ts.getMinutes()).slice(-2)):'—';"
         "return `<div style=\"display:flex;justify-content:space-between;align-items:center;"
-        "width:100%;box-sizing:border-box;gap:12px;\">"
+        "width:100%;box-sizing:border-box;gap:14px;\">"
         "<div style=\"display:flex;flex-direction:column;gap:3px;flex:1 1 auto;min-width:0;\">"
         "<span style=\"color:#e5e5e5;font-weight:700;font-size:14px;\">${it.dev}</span>"
         "<span style=\"color:#737373;font-size:11px;\">${it.gw} · ${typ} · ${tss}</span></div>"
+        "<span style=\"color:#fca5a5;font-weight:900;font-size:18px;flex:0 0 auto;white-space:nowrap;\">${val}</span>"
         "<span style=\"color:" + color + ";font-size:18px;font-weight:800;flex:0 0 auto;\">✕</span>"
         "</div>`; ]]]")
     # height 0 gdy brak items[i] (ukrycie pustych wierszy)
@@ -78,7 +83,8 @@ def _row(eid, i, bucket, color):
         "styles": {"card": [{"background": "#0a0a0a"}, {"box-shadow": "none"},
                             {"border-bottom": border}, {"border-radius": "0"}, {"width": "100%"},
                             {"padding": pad}, {"height": height}, {"overflow": "hidden"}],
-                   "custom_fields": {"content": [{"width": "100%"}]}}}
+                   "grid": [{"grid-template-columns": "1fr"}],
+                   "custom_fields": {"content": [{"width": "100%"}, {"justify-self": "stretch"}]}}}
 
 
 def _popup_content(eid, bucket, title, color, clear_btn):
@@ -113,7 +119,7 @@ def _patch(card):
         data["title"] = f"Anomalie — {title}"
         data["content"] = _popup_content(e, bucket, title, color, cb)
         data["dismissable"] = True
-        data["style"] = {"--popup-min-width": "560px", "--popup-max-width": "640px",
+        data["style"] = {"--popup-min-width": "min(720px,92vw)", "--popup-max-width": "min(900px,94vw)",
                          "--popup-background-color": "#0a0a0a", "--popup-border-radius": "12px"}
         return True
     for c in (card.get("cards") or []):

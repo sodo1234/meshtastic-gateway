@@ -1,0 +1,1606 @@
+{
+ "title": "LoRa Gateway G1",
+ "button_card_templates": {
+  "lora_base": {
+   "styles": {
+    "card": [
+     {
+      "background": "#0a0a0a"
+     },
+     {
+      "border-radius": "12px"
+     },
+     {
+      "border": "1px solid #1f1f1f"
+     },
+     {
+      "box-shadow": "none"
+     },
+     {
+      "overflow": "hidden"
+     }
+    ]
+   }
+  },
+  "lora_hdr": {
+   "show_icon": false,
+   "show_state": false,
+   "styles": {
+    "card": [
+     {
+      "background": "none"
+     },
+     {
+      "box-shadow": "none"
+     },
+     {
+      "border": "none"
+     },
+     {
+      "padding": "12px 0 4px 0"
+     }
+    ],
+    "name": [
+     {
+      "font-size": "10px"
+     },
+     {
+      "font-weight": 700
+     },
+     {
+      "color": "#525252"
+     },
+     {
+      "letter-spacing": "3px"
+     },
+     {
+      "text-transform": "uppercase"
+     },
+     {
+      "justify-self": "start"
+     }
+    ]
+   }
+  },
+  "lora_stat": {
+   "template": "lora_base",
+   "show_state": true,
+   "styles": {
+    "card": [
+     {
+      "padding": "14px 16px"
+     },
+     {
+      "height": "88px"
+     }
+    ],
+    "grid": [
+     {
+      "grid-template-areas": "\"n i\" \"s i\""
+     },
+     {
+      "grid-template-columns": "1fr 22px"
+     },
+     {
+      "grid-template-rows": "auto auto"
+     },
+     {
+      "align-items": "center"
+     },
+     {
+      "column-gap": "10px"
+     }
+    ],
+    "state": [
+     {
+      "font-size": "19px"
+     },
+     {
+      "font-weight": 800
+     },
+     {
+      "font-variant-numeric": "tabular-nums"
+     },
+     {
+      "justify-self": "start"
+     },
+     {
+      "color": "#e5e5e5"
+     },
+     {
+      "white-space": "nowrap"
+     },
+     {
+      "overflow": "hidden"
+     },
+     {
+      "text-overflow": "ellipsis"
+     },
+     {
+      "max-width": "100%"
+     },
+     {
+      "line-height": "1.2"
+     }
+    ],
+    "name": [
+     {
+      "font-size": "8px"
+     },
+     {
+      "font-weight": 700
+     },
+     {
+      "color": "#525252"
+     },
+     {
+      "letter-spacing": "2px"
+     },
+     {
+      "justify-self": "start"
+     },
+     {
+      "margin-bottom": "6px"
+     },
+     {
+      "white-space": "nowrap"
+     },
+     {
+      "overflow": "hidden"
+     },
+     {
+      "text-overflow": "ellipsis"
+     },
+     {
+      "max-width": "100%"
+     }
+    ],
+    "icon": [
+     {
+      "width": "18px"
+     },
+     {
+      "color": "#525252"
+     }
+    ],
+    "img_cell": [
+     {
+      "justify-self": "center"
+     },
+     {
+      "align-self": "center"
+     }
+    ]
+   }
+  },
+  "lora_btn": {
+   "template": "lora_base",
+   "show_state": false,
+   "styles": {
+    "card": [
+     {
+      "padding": "14px 12px"
+     },
+     {
+      "height": "58px"
+     }
+    ],
+    "name": [
+     {
+      "font-size": "11px"
+     },
+     {
+      "font-weight": 800
+     },
+     {
+      "letter-spacing": "1.5px"
+     },
+     {
+      "text-transform": "uppercase"
+     },
+     {
+      "white-space": "nowrap"
+     },
+     {
+      "overflow": "hidden"
+     },
+     {
+      "text-overflow": "ellipsis"
+     }
+    ],
+    "icon": [
+     {
+      "width": "20px"
+     }
+    ]
+   }
+  }
+ },
+ "views": [
+  {
+   "path": "lora-gw-stats",
+   "title": "Bramka",
+   "icon": "mdi:radio-tower",
+   "cards": [
+    {
+     "type": "vertical-stack",
+     "cards": [
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "BRAMKA G1"
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "binary_sensor.lora_g1_sup_link",
+       "show_icon": false,
+       "show_name": false,
+       "show_state": false,
+       "tap_action": {
+        "action": "more-info"
+       },
+       "custom_fields": {
+        "content": "[[[ var l=states['binary_sensor.lora_g1_sup_link'];var on=l&&l.state==='on';var col=on?'#4ade80':'#f87171';var lbl=on?'POŁĄCZONY':'BRAK';var rx=states['sensor.lora_g1_sup_last_rx'];var rxT=rx?rx.state:'--';var off=states['sensor.lora_g1_time_offset'];var offT=off?off.state:'--';var sy=states['sensor.lora_g1_last_sync'];var syT=sy?sy.state:'--';return `<div style=\"display:flex;flex-direction:column;gap:8px;width:100%;\"><div style=\"display:flex;align-items:center;justify-content:space-between;\"><span style=\"font-size:11px;font-weight:700;color:#525252;letter-spacing:2px;\">SUPERVISOR</span><span style=\"font-size:13px;font-weight:800;color:${col};\">● ${lbl}</span></div><div style=\"font-size:10px;color:#525252;\">ostatni RX: <span style=\"color:#e5e5e5;\">${rxT}</span></div><div style=\"display:flex;justify-content:space-between;font-size:10px;color:#525252;\"><span>sync: <span style=\"color:#22d3ee;\">${syT}</span></span><span>offset: <span style=\"color:#22d3ee;\">${offT}</span></span></div></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "padding": "16px"
+         },
+         {
+          "border": "[[[ var l=states['binary_sensor.lora_g1_sup_link'];return l&&l.state==='on'?'1px solid #1f3a1f':'1px solid #3a1f1f'; ]]]"
+         }
+        ]
+       }
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "CZAS & PORA DNIA"
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_base",
+         "entity": "sensor.lora_gateway_g1_gw_g1_pora_dnia",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "tap_action": {
+          "action": "more-info"
+         },
+         "custom_fields": {
+          "content": "[[[ var p=states['sensor.lora_gateway_g1_gw_g1_pora_dnia'];var st=p?p.state:'--';var day=/Dzie/i.test(st);var sr=states['sensor.lora_gateway_g1_gw_g1_swit'];var ss=states['sensor.lora_gateway_g1_gw_g1_zmierzch'];var srT=sr?sr.state:'--';var ssT=ss?ss.state:'--';var icon=day?'☀️':'🌙';var col=day?'#fbbf24':'#818cf8';var lbl=day?'DZIEŃ':'NOC';return `<div style=\"display:flex;align-items:center;gap:18px;width:100%;\"><div style=\"font-size:54px;line-height:1;filter:drop-shadow(0 0 12px ${col}55);\">${icon}</div><div style=\"display:flex;flex-direction:column;gap:5px;\"><span style=\"font-size:26px;font-weight:800;color:${col};letter-spacing:3px;\">${lbl}</span><span style=\"font-size:11px;color:#525252;\">🌅 świt <span style=\"color:#e5e5e5;font-weight:700;\">${srT}</span>  ·  🌇 zmierzch <span style=\"color:#e5e5e5;font-weight:700;\">${ssT}</span></span></div></div>`; ]]]"
+         },
+         "styles": {
+          "card": [
+           {
+            "padding": "18px 20px"
+           },
+           {
+            "height": "108px"
+           }
+          ],
+          "custom_fields": {
+           "content": [
+            {
+             "justify-self": "start"
+            }
+           ]
+          }
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_base",
+         "entity": "sensor.lora_gateway_g1_gw_g1_czas_bramki",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "tap_action": {
+          "action": "more-info"
+         },
+         "custom_fields": {
+          "content": "[[[ var lt=states['sensor.lora_gateway_g1_gw_g1_czas_bramki'];var ltT=lt?lt.state:'--';var off=states['sensor.lora_g1_time_offset'];var offS=off?off.state:'--';var tq=states['sensor.lora_gateway_g1_gw_g1_jakosc_czasu'];var tqS=tq?tq.state:'--';var m=/([+-]?\\d+)/.exec(offS||'');var supT='—';if(m&&ltT.indexOf(':')>=0){var pr=ltT.split(':');var d=new Date();d.setHours(+pr[0],+pr[1],+pr[2]||0);d=new Date(d.getTime()-(+m[1])*1000);supT=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2);}var tqCol=/Zsynchron/i.test(tqS)?'#4ade80':(/Holdover/i.test(tqS)?'#fbbf24':'#f87171');return `<div style=\"display:flex;flex-direction:column;gap:12px;width:100%;\"><div style=\"display:flex;justify-content:space-between;gap:14px;\"><div style=\"display:flex;flex-direction:column;\"><span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;\">CZAS BRAMKI</span><span style=\"font-size:23px;font-weight:800;color:#22d3ee;font-variant-numeric:tabular-nums;\">${ltT}</span></div><div style=\"display:flex;flex-direction:column;text-align:right;\"><span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;\">CZAS SUPERVISORA</span><span style=\"font-size:23px;font-weight:800;color:#a5b4fc;font-variant-numeric:tabular-nums;\">${supT}</span></div></div><div style=\"display:flex;justify-content:space-between;font-size:10px;color:#525252;\"><span>jakość: <span style=\"color:${tqCol};font-weight:700;\">${tqS}</span></span><span>Δ offset: <span style=\"color:#22d3ee;font-weight:700;\">${offS}</span></span></div></div>`; ]]]"
+         },
+         "styles": {
+          "card": [
+           {
+            "padding": "16px 20px"
+           },
+           {
+            "height": "108px"
+           }
+          ],
+          "custom_fields": {
+           "content": [
+            {
+             "justify-self": "start"
+            }
+           ]
+          }
+         }
+        }
+       ]
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "STATYSTYKI URZĄDZEŃ"
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_gateway_g1_total",
+         "name": "TOTAL",
+         "icon": "mdi:devices",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_g1_gw_monitored",
+         "name": "MONITORED",
+         "icon": "mdi:eye",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_gateway_g1_priority",
+         "name": "PRIORITY",
+         "icon": "mdi:alert-octagon",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_base",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "entity": "binary_sensor.temp_1_available",
+         "tap_action": {
+          "action": "none"
+         },
+         "custom_fields": {
+          "content": "[[[ var av=[\"binary_sensor.temp_1_available\", \"binary_sensor.temp_2_available\", \"binary_sensor.leak_1_available\", \"binary_sensor.door_1_available\", \"binary_sensor.test_1_available\", \"binary_sensor.test_2_available\"];var lq=[\"sensor.temp_1_lqi\", \"sensor.temp_2_lqi\", \"sensor.leak_1_lqi\", \"sensor.door_1_lqi\", \"sensor.test_1_lqi\", \"sensor.test_2_lqi\"];var off=0;for(var i=0;i<av.length;i++){var a=states[av[i]];if(a&&a.state!=='unavailable'&&a.state!=='unknown'){if(a.state!=='on')off++;}else{var e=states[lq[i]];var ts=e&&(e.last_reported||e.last_updated);if(!e||!ts||((Date.now()-new Date(ts).getTime())/1000>=1920))off++;}}var col=off>0?'#f87171':'#525252';return `<div style=\"display:flex;flex-direction:column;justify-content:center;height:100%;\"><span style=\"font-size:19px;font-weight:800;color:${col};\">${off}</span><span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;margin-top:6px;\">OFFLINE</span></div>`; ]]]"
+         },
+         "styles": {
+          "card": [
+           {
+            "padding": "14px 16px"
+           },
+           {
+            "height": "88px"
+           }
+          ],
+          "custom_fields": {
+           "content": [
+            {
+             "justify-self": "start"
+            }
+           ]
+          }
+         }
+        }
+       ]
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_g1_gw_uptime",
+         "name": "UPTIME",
+         "icon": "mdi:timer",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_g1_gw_last_hb",
+         "name": "OSTATNI HB",
+         "icon": "mdi:heart-pulse",
+         "tap_action": {
+          "action": "more-info"
+         }
+        }
+       ]
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "SYNCHRONIZACJA"
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.gw_g1_hash_parametrow",
+         "name": "HASH PARAM",
+         "icon": "mdi:tune-variant",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.gw_g1_hash_disc",
+         "name": "HASH DISC",
+         "icon": "mdi:fingerprint",
+         "tap_action": {
+          "action": "more-info"
+         }
+        }
+       ]
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "PARAMETRY"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "entities": [
+        {
+         "entity": "number.p1_stagnation_bateryjne",
+         "name": "P1 · Stagnacja bateryjne [h]"
+        },
+        {
+         "entity": "number.p2_stagnation_sieciowe",
+         "name": "P2 · Stagnacja sieciowe [h]"
+        },
+        {
+         "entity": "number.p3_placeholder",
+         "name": "P3 · Raportowanie temp [min]"
+        },
+        {
+         "entity": "number.t1_offline_switch_light",
+         "name": "T1 · Offline switch/light [min]"
+        },
+        {
+         "entity": "number.t2_offline_temp_hum",
+         "name": "T2 · Offline temp/hum [min]"
+        },
+        {
+         "entity": "number.t3_offline_door_leak_motion",
+         "name": "T3 · Offline door/leak [min]"
+        }
+       ],
+       "card_mod": {
+        "style": "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:12px;box-shadow:none;padding:4px 6px;}.card-content{padding:4px 8px;}hui-number-entity-row,hui-generic-entity-row{padding:3px 4px;color:#e5e5e5;}.text-content{color:#a0a0a0;font-size:12px;}ha-textfield{--mdc-typography-subtitle1-font-size:13px;}"
+       }
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_btn",
+         "name": "Wyślij Config",
+         "icon": "mdi:cog-sync",
+         "tap_action": {
+          "action": "call-service",
+          "service": "button.press",
+          "service_data": {
+           "entity_id": "button.lora_gateway_g1_lora_wyslij_config"
+          }
+         },
+         "styles": {
+          "card": [
+           {
+            "border": "1px solid #4ade8033"
+           }
+          ],
+          "icon": [
+           {
+            "color": "#4ade80"
+           }
+          ],
+          "name": [
+           {
+            "color": "#4ade80"
+           }
+          ]
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_btn",
+         "name": "Wyślij Timeout",
+         "icon": "mdi:timer-cog",
+         "tap_action": {
+          "action": "call-service",
+          "service": "button.press",
+          "service_data": {
+           "entity_id": "button.lora_gateway_g1_lora_wyslij_timeout"
+          }
+         },
+         "styles": {
+          "card": [
+           {
+            "border": "1px solid #22d3ee33"
+           }
+          ],
+          "icon": [
+           {
+            "color": "#22d3ee"
+           }
+          ],
+          "name": [
+           {
+            "color": "#22d3ee"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "POZOSTAŁE URZĄDZENIA"
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "sensor.button_lqi",
+       "show_icon": false,
+       "show_name": false,
+       "show_state": false,
+       "tap_action": {
+        "action": "more-info"
+       },
+       "custom_fields": {
+        "content": "[[[ var lqe=states['sensor.button_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;var be=states['sensor.0x385cfbfffece1c9e_battery'];var bt=be&&be.state!=='unavailable'&&be.state!==''&&be.state!=='unknown'?parseInt(be.state):null;var btCol=bt===null?'#525252':(bt<10?'#f87171':(bt<25?'#fbbf24':'#4ade80'));var btTxt=bt===null?'--':bt;return `<div style=\"display:flex;align-items:center;justify-content:space-between;width:100%;\"><span style=\"font-size:12px;font-weight:700;color:#e5e5e5;\">Button</span><div style=\"display:flex;gap:16px;align-items:baseline;font-size:11px;\"><span style=\"color:#525252;\">📶 <span style=\"color:${lqCol};font-weight:800;\">${lqTxt}</span><span style=\"font-size:8px;\">/255</span></span><span style=\"color:#525252;\">🔋 <span style=\"color:${btCol};font-weight:800;\">${btTxt}%</span></span></div></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "padding": "15px 16px"
+         },
+         {
+          "height": "52px"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "path": "lora-schedule",
+   "title": "Harmonogram",
+   "icon": "mdi:calendar-clock",
+   "cards": [
+    {
+     "type": "vertical-stack",
+     "cards": [
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "TRYB PRACY"
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "sensor.lora_gateway_g1_gw_g1_tryb_pracy_bramki",
+       "show_icon": false,
+       "show_name": false,
+       "show_state": false,
+       "tap_action": {
+        "action": "more-info"
+       },
+       "custom_fields": {
+        "content": "[[[ var s=states['sensor.lora_gateway_g1_gw_g1_tryb_pracy_bramki'];var lbl=s?s.state:'--';var a=s&&s.attributes?s.attributes:{};var ga=a.ga===undefined?1:a.ga;var act=a.active||(ga?'aktywna':'wstrzymana');var col=ga?'#4ade80':'#fbbf24';return `<div style=\"display:flex;flex-direction:column;gap:6px;width:100%;\"><span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;\">TRYB PRACY BRAMKI</span><span style=\"font-size:19px;font-weight:800;color:#e5e5e5;\">${lbl}</span><span style=\"font-size:11px;font-weight:700;color:${col};\">● ${act}</span></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "padding": "14px 16px"
+         },
+         {
+          "height": "100px"
+         }
+        ],
+        "custom_fields": {
+         "content": [
+          {
+           "justify-self": "start"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "HARMONOGRAM PRODUKCJI"
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_gateway_g1_gw_g1_tryb",
+         "name": "TRYB",
+         "icon": "mdi:factory",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_gateway_g1_gw_g1_tryb_nastepna_zmiana",
+         "name": "NASTĘPNA ZMIANA",
+         "icon": "mdi:clock-outline",
+         "tap_action": {
+          "action": "more-info"
+         }
+        }
+       ]
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_gateway_g1_gw_g1_harmonogram_slotow",
+         "name": "SLOTY",
+         "icon": "mdi:calendar-multiple",
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_gateway_g1_gw_g1_hash_kalendarza",
+         "name": "HASH KALENDARZA",
+         "icon": "mdi:fingerprint",
+         "tap_action": {
+          "action": "more-info"
+         }
+        }
+       ]
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "SYNCHRONIZACJA"
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_btn",
+         "name": "Pobierz (Sync)",
+         "icon": "mdi:calendar-sync",
+         "tap_action": {
+          "action": "call-service",
+          "service": "button.press",
+          "service_data": {
+           "entity_id": "button.lora_gateway_g1_gw_g1_sync_schedule"
+          }
+         },
+         "styles": {
+          "card": [
+           {
+            "border": "1px solid #4ade8033"
+           }
+          ],
+          "icon": [
+           {
+            "color": "#4ade80"
+           }
+          ],
+          "name": [
+           {
+            "color": "#4ade80"
+           }
+          ]
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "template": "lora_btn",
+         "name": "Wyślij w górę",
+         "icon": "mdi:upload",
+         "tap_action": {
+          "action": "call-service",
+          "service": "button.press",
+          "service_data": {
+           "entity_id": "button.lora_gateway_g1_gw_g1_push_schedule_up"
+          }
+         },
+         "styles": {
+          "card": [
+           {
+            "border": "1px solid #22d3ee33"
+           }
+          ],
+          "icon": [
+           {
+            "color": "#22d3ee"
+           }
+          ],
+          "name": [
+           {
+            "color": "#22d3ee"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "type": "calendar",
+       "initial_view": "listWeek",
+       "entities": [
+        "calendar.lora_g1"
+       ],
+       "card_mod": {
+        "style": "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:12px;box-shadow:none;overflow:hidden;}"
+       }
+      }
+     ]
+    },
+    {
+     "type": "custom:button-card",
+     "template": "lora_hdr",
+     "name": "KALENDARZ G1 (LOKALNY)"
+    }
+   ]
+  },
+  {
+   "path": "lora-control",
+   "title": "Sterowanie",
+   "icon": "mdi:lightbulb",
+   "type": "masonry",
+   "cards": [
+    {
+     "type": "custom:button-card",
+     "template": "lora_hdr",
+     "name": "STEROWANIE"
+    },
+    {
+     "type": "horizontal-stack",
+     "cards": [
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "switch.0x70c59cfffee2b098",
+       "name": "Test 1",
+       "show_state": false,
+       "tap_action": {
+        "action": "toggle"
+       },
+       "icon": "[[[ var e=states['switch.0x70c59cfffee2b098']; return e&&e.state==='on'?'mdi:lightbulb-on':'mdi:lightbulb-off-outline'; ]]]",
+       "custom_fields": {
+        "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G1</span>`; ]]]",
+        "info": "[[[ var e=states['switch.0x70c59cfffee2b098'];var ae=states['binary_sensor.test_1_available'];var fe=states['sensor.test_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;var online=e&&e.state!=='unavailable'&&fresh;var col=online?'#4ade80':'#f87171';var label=online?'online':'offline';var ent=states['switch.0x70c59cfffee2b098'];var lsT=ent?new Date(ent.last_changed).toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';var lqe=states['sensor.test_1_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\"><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${lsT}</div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "height": "120px"
+         },
+         {
+          "padding": "16px"
+         },
+         {
+          "border": "[[[ var e=states['switch.0x70c59cfffee2b098']; var ae=states['binary_sensor.test_1_available'];var fe=states['sensor.test_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '1px solid #f87171'; return e.state==='on'?'1px solid #facc15':'1px solid #1f1f1f'; ]]]"
+         }
+        ],
+        "icon": [
+         {
+          "width": "35px"
+         },
+         {
+          "height": "35px"
+         },
+         {
+          "color": "[[[ var e=states['switch.0x70c59cfffee2b098']; var ae=states['binary_sensor.test_1_available'];var fe=states['sensor.test_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '#f87171'; return e.state==='on'?'#facc15':'#525252'; ]]]"
+         }
+        ],
+        "name": [
+         {
+          "font-size": "11px"
+         },
+         {
+          "font-weight": 700
+         },
+         {
+          "color": "#e5e5e5"
+         }
+        ],
+        "custom_fields": {
+         "badge": [
+          {
+           "position": "absolute"
+          },
+          {
+           "top": "10px"
+          },
+          {
+           "right": "15px"
+          }
+         ],
+         "info": [
+          {
+           "justify-self": "start"
+          },
+          {
+           "padding": 0
+          }
+         ]
+        }
+       }
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "switch.0x70c59cfffe8c0be7",
+       "name": "Test 2",
+       "show_state": false,
+       "tap_action": {
+        "action": "toggle"
+       },
+       "icon": "[[[ var e=states['switch.0x70c59cfffe8c0be7']; return e&&e.state==='on'?'mdi:lightbulb-on':'mdi:lightbulb-off-outline'; ]]]",
+       "custom_fields": {
+        "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G1</span>`; ]]]",
+        "info": "[[[ var e=states['switch.0x70c59cfffe8c0be7'];var ae=states['binary_sensor.test_2_available'];var fe=states['sensor.test_2_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;var online=e&&e.state!=='unavailable'&&fresh;var col=online?'#4ade80':'#f87171';var label=online?'online':'offline';var ent=states['switch.0x70c59cfffe8c0be7'];var lsT=ent?new Date(ent.last_changed).toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';var lqe=states['sensor.test_2_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\"><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${lsT}</div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "height": "120px"
+         },
+         {
+          "padding": "16px"
+         },
+         {
+          "border": "[[[ var e=states['switch.0x70c59cfffe8c0be7']; var ae=states['binary_sensor.test_2_available'];var fe=states['sensor.test_2_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '1px solid #f87171'; return e.state==='on'?'1px solid #facc15':'1px solid #1f1f1f'; ]]]"
+         }
+        ],
+        "icon": [
+         {
+          "width": "35px"
+         },
+         {
+          "height": "35px"
+         },
+         {
+          "color": "[[[ var e=states['switch.0x70c59cfffe8c0be7']; var ae=states['binary_sensor.test_2_available'];var fe=states['sensor.test_2_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '#f87171'; return e.state==='on'?'#facc15':'#525252'; ]]]"
+         }
+        ],
+        "name": [
+         {
+          "font-size": "11px"
+         },
+         {
+          "font-weight": 700
+         },
+         {
+          "color": "#e5e5e5"
+         }
+        ],
+        "custom_fields": {
+         "badge": [
+          {
+           "position": "absolute"
+          },
+          {
+           "top": "10px"
+          },
+          {
+           "right": "15px"
+          }
+         ],
+         "info": [
+          {
+           "justify-self": "start"
+          },
+          {
+           "padding": 0
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "path": "lora-alarms",
+   "title": "Alarmy",
+   "icon": "mdi:fire-alert",
+   "cards": [
+    {
+     "type": "custom:button-card",
+     "template": "lora_hdr",
+     "name": "CZUJNIKI"
+    },
+    {
+     "type": "horizontal-stack",
+     "cards": [
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "binary_sensor.leak_1_water_leak",
+       "name": "Leak 1",
+       "show_state": false,
+       "tap_action": {
+        "action": "none"
+       },
+       "icon": "[[[ var e=states['binary_sensor.leak_1_water_leak']; var ae=states['binary_sensor.leak_1_available'];var fe=states['sensor.leak_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return 'mdi:alert-octagon'; return e.state==='on'?'mdi:water-alert':'mdi:water'; ]]]",
+       "custom_fields": {
+        "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G1</span>`; ]]]",
+        "info": "[[[ var e=states['binary_sensor.leak_1_water_leak'];var ae=states['binary_sensor.leak_1_available'];var fe=states['sensor.leak_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;var online=e&&e.state!=='unavailable'&&fresh;var col=online?'#4ade80':'#f87171';var label=online?'online':'offline';var b=states['sensor.leak_1_battery'];var batt=b&&b.state!=='unavailable'?b.state:'--';var battColor='#4ade80';if(batt!=='--'){var bv=parseInt(batt);if(bv<10)battColor='#f87171';else if(bv<25)battColor='#fbbf24';}var ent=states['binary_sensor.leak_1_water_leak'];var lsT=ent?new Date(ent.last_changed).toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';var lqe=states['sensor.leak_1_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;return `<div style=\"display:flex;flex-direction:column;gap:2px;font-size:10px;color:#525252;margin-top:6px;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "height": "120px"
+         },
+         {
+          "padding": "16px"
+         },
+         {
+          "border": "[[[ var e=states['binary_sensor.leak_1_water_leak']; var ae=states['binary_sensor.leak_1_available'];var fe=states['sensor.leak_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '1px solid #f87171'; return e.state==='on'?'1px solid #facc15':'1px solid #1f1f1f'; ]]]"
+         }
+        ],
+        "icon": [
+         {
+          "width": "35px"
+         },
+         {
+          "height": "35px"
+         },
+         {
+          "color": "[[[ var e=states['binary_sensor.leak_1_water_leak']; var ae=states['binary_sensor.leak_1_available'];var fe=states['sensor.leak_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '#f87171'; return e.state==='on'?'#facc15':'#525252'; ]]]"
+         }
+        ],
+        "name": [
+         {
+          "font-size": "11px"
+         },
+         {
+          "font-weight": 700
+         },
+         {
+          "color": "#e5e5e5"
+         }
+        ],
+        "custom_fields": {
+         "badge": [
+          {
+           "position": "absolute"
+          },
+          {
+           "top": "10px"
+          },
+          {
+           "right": "15px"
+          }
+         ],
+         "info": [
+          {
+           "justify-self": "start"
+          },
+          {
+           "padding": 0
+          }
+         ]
+        }
+       }
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "binary_sensor.door_1_contact",
+       "name": "Door 1",
+       "show_state": false,
+       "tap_action": {
+        "action": "none"
+       },
+       "icon": "[[[ var e=states['binary_sensor.door_1_contact']; var ae=states['binary_sensor.door_1_available'];var fe=states['sensor.door_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return 'mdi:alert-octagon'; return e.state==='on'?'mdi:door-open':'mdi:door-closed'; ]]]",
+       "custom_fields": {
+        "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G1</span>`; ]]]",
+        "info": "[[[ var e=states['binary_sensor.door_1_contact'];var ae=states['binary_sensor.door_1_available'];var fe=states['sensor.door_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;var online=e&&e.state!=='unavailable'&&fresh;var col=online?'#4ade80':'#f87171';var label=online?'online':'offline';var b=states['sensor.door_1_battery'];var batt=b&&b.state!=='unavailable'?b.state:'--';var battColor='#4ade80';if(batt!=='--'){var bv=parseInt(batt);if(bv<10)battColor='#f87171';else if(bv<25)battColor='#fbbf24';}var ent=states['binary_sensor.door_1_contact'];var lsT=ent?new Date(ent.last_changed).toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';var lqe=states['sensor.door_1_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;return `<div style=\"display:flex;flex-direction:column;gap:2px;font-size:10px;color:#525252;margin-top:6px;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "height": "120px"
+         },
+         {
+          "padding": "16px"
+         },
+         {
+          "border": "[[[ var e=states['binary_sensor.door_1_contact']; var ae=states['binary_sensor.door_1_available'];var fe=states['sensor.door_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '1px solid #f87171'; return e.state==='on'?'1px solid #facc15':'1px solid #1f1f1f'; ]]]"
+         }
+        ],
+        "icon": [
+         {
+          "width": "35px"
+         },
+         {
+          "height": "35px"
+         },
+         {
+          "color": "[[[ var e=states['binary_sensor.door_1_contact']; var ae=states['binary_sensor.door_1_available'];var fe=states['sensor.door_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '#f87171'; return e.state==='on'?'#facc15':'#525252'; ]]]"
+         }
+        ],
+        "name": [
+         {
+          "font-size": "11px"
+         },
+         {
+          "font-weight": 700
+         },
+         {
+          "color": "#e5e5e5"
+         }
+        ],
+        "custom_fields": {
+         "badge": [
+          {
+           "position": "absolute"
+          },
+          {
+           "top": "10px"
+          },
+          {
+           "right": "15px"
+          }
+         ],
+         "info": [
+          {
+           "justify-self": "start"
+          },
+          {
+           "padding": 0
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "path": "lora-sensors",
+   "title": "Pomiary",
+   "icon": "mdi:thermometer",
+   "cards": [
+    {
+     "type": "vertical-stack",
+     "cards": [
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "POMIARY"
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "sensor.temp_1_temperature",
+       "show_icon": false,
+       "show_state": false,
+       "show_name": false,
+       "custom_fields": {
+        "content": "[[[ var t=states['sensor.temp_1_temperature'];var h=states['sensor.temp_1_humidity'];var b=states['sensor.temp_1_battery'];var temp=t&&t.state!=='unavailable'?parseFloat(t.state).toFixed(1):'--';var hum=h&&h.state!=='unavailable'?Math.round(parseFloat(h.state)):'--';var batt=b&&b.state!=='unavailable'?b.state:'--';var b=states['sensor.temp_1_battery'];var batt=b&&b.state!=='unavailable'?b.state:'--';var battColor='#4ade80';if(batt!=='--'){var bv=parseInt(batt);if(bv<10)battColor='#f87171';else if(bv<25)battColor='#fbbf24';}var e=states['sensor.temp_1_temperature'];var ae=states['binary_sensor.temp_1_available'];var fe=states['sensor.temp_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;var online=e&&e.state!=='unavailable'&&fresh;var col=online?'#4ade80':'#f87171';var label=online?'online':'offline';var ent=states['sensor.temp_1_temperature'];var lsT=ent?new Date(ent.last_changed).toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';var lqe=states['sensor.temp_1_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;return `<div style=\"display:flex;flex-direction:column;height:100%;width:100%;\"><div style=\"display:flex;align-items:center;width:100%;margin-bottom:8px;justify-content:space-between;\"><div style=\"font-size:14px;font-weight:600;color:#e5e5e5;\">Temp 1</div><div><span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G1</span></div></div><div style=\"display:flex;justify-content:space-between;align-items:center;width:100%;flex-grow:1;\"><div style=\"display:flex;align-items:baseline;gap:30px;\"><div><span style=\"font-size:30px;font-weight:700;color:#22d3ee;\">${temp}</span><span style=\"font-size:22px;color:#525252;\">°C</span></div><div><span style=\"font-size:30px;font-weight:700;color:#4ade80;\">${hum}</span><span style=\"font-size:22px;color:#525252;\">%</span></div></div><div style=\"display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:10px;color:#525252;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "height": "112px"
+         },
+         {
+          "padding": "16px"
+         },
+         {
+          "border-radius": "12px"
+         },
+         {
+          "background": "#0a0a0a"
+         },
+         {
+          "border": "[[[ var e=states['sensor.temp_1_temperature']; var ae=states['binary_sensor.temp_1_available'];var fe=states['sensor.temp_1_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '1px solid #f87171'; return e.state==='on'?'1px solid #1f1f1f':'1px solid #1f1f1f'; ]]]"
+         }
+        ],
+        "icon": [
+         {
+          "display": "none"
+         }
+        ],
+        "name": [
+         {
+          "display": "none"
+         }
+        ]
+       }
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "entity": "sensor.temp_1_temperature",
+         "styles": {
+          "card": [
+           {
+            "background": "#0a0a0a"
+           },
+           {
+            "border-radius": "12px"
+           },
+           {
+            "box-shadow": "none"
+           },
+           {
+            "padding": 0
+           },
+           {
+            "overflow": "hidden"
+           },
+           {
+            "height": "auto"
+           }
+          ],
+          "custom_fields": {
+           "chart": [
+            {
+             "pointer-events": "none"
+            }
+           ]
+          }
+         },
+         "custom_fields": {
+          "chart": {
+           "card": {
+            "type": "custom:apexcharts-card",
+            "header": {
+             "show": true,
+             "title": "Temperatura",
+             "show_states": false,
+             "colorize_states": true
+            },
+            "graph_span": "24h",
+            "span": {
+             "end": "minute"
+            },
+            "yaxis": [
+             {
+              "decimals": 1
+             }
+            ],
+            "apex_config": {
+             "chart": {
+              "height": 160,
+              "toolbar": {
+               "show": false
+              },
+              "background": "transparent"
+             },
+             "grid": {
+              "show": true,
+              "borderColor": "#1f1f1f"
+             },
+             "stroke": {
+              "width": 2,
+              "curve": "smooth"
+             },
+             "dataLabels": {
+              "enabled": false
+             },
+             "legend": {
+              "show": false
+             },
+             "tooltip": {
+              "enabled": true,
+              "theme": "dark"
+             }
+            },
+            "series": [
+             {
+              "entity": "sensor.temp_1_temperature",
+              "name": "Temperatura",
+              "type": "line",
+              "color": "#22d3ee"
+             }
+            ],
+            "card_mod": {
+             "style": "ha-card{background:transparent!important;border:none!important;box-shadow:none!important;}ha-card .header{padding:4px 8px!important;min-height:24px!important;}ha-card .header .title{font-size:12px!important;}"
+            }
+           }
+          }
+         },
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "entity": "sensor.temp_1_humidity",
+         "styles": {
+          "card": [
+           {
+            "background": "#0a0a0a"
+           },
+           {
+            "border-radius": "12px"
+           },
+           {
+            "box-shadow": "none"
+           },
+           {
+            "padding": 0
+           },
+           {
+            "overflow": "hidden"
+           },
+           {
+            "height": "auto"
+           }
+          ],
+          "custom_fields": {
+           "chart": [
+            {
+             "pointer-events": "none"
+            }
+           ]
+          }
+         },
+         "custom_fields": {
+          "chart": {
+           "card": {
+            "type": "custom:apexcharts-card",
+            "header": {
+             "show": true,
+             "title": "Wilgotność",
+             "show_states": false,
+             "colorize_states": true
+            },
+            "graph_span": "24h",
+            "span": {
+             "end": "minute"
+            },
+            "yaxis": [
+             {
+              "decimals": 0,
+              "min": 0,
+              "max": 100
+             }
+            ],
+            "apex_config": {
+             "chart": {
+              "height": 160,
+              "toolbar": {
+               "show": false
+              },
+              "background": "transparent"
+             },
+             "grid": {
+              "show": true,
+              "borderColor": "#1f1f1f"
+             },
+             "stroke": {
+              "width": 2,
+              "curve": "smooth"
+             },
+             "dataLabels": {
+              "enabled": false
+             },
+             "legend": {
+              "show": false
+             },
+             "tooltip": {
+              "enabled": true,
+              "theme": "dark"
+             }
+            },
+            "series": [
+             {
+              "entity": "sensor.temp_1_humidity",
+              "name": "Wilgotność",
+              "type": "line",
+              "color": "#4ade80"
+             }
+            ],
+            "card_mod": {
+             "style": "ha-card{background:transparent!important;border:none!important;box-shadow:none!important;}ha-card .header{padding:4px 8px!important;min-height:24px!important;}ha-card .header .title{font-size:12px!important;}"
+            }
+           }
+          }
+         },
+         "tap_action": {
+          "action": "more-info"
+         }
+        }
+       ]
+      },
+      {
+       "type": "custom:button-card",
+       "template": "lora_base",
+       "entity": "sensor.temp_2_temperature",
+       "show_icon": false,
+       "show_state": false,
+       "show_name": false,
+       "custom_fields": {
+        "content": "[[[ var t=states['sensor.temp_2_temperature'];var h=states['sensor.temp_2_humidity'];var b=states['sensor.temp_2_battery'];var temp=t&&t.state!=='unavailable'?parseFloat(t.state).toFixed(1):'--';var hum=h&&h.state!=='unavailable'?Math.round(parseFloat(h.state)):'--';var batt=b&&b.state!=='unavailable'?b.state:'--';var b=states['sensor.temp_2_battery'];var batt=b&&b.state!=='unavailable'?b.state:'--';var battColor='#4ade80';if(batt!=='--'){var bv=parseInt(batt);if(bv<10)battColor='#f87171';else if(bv<25)battColor='#fbbf24';}var e=states['sensor.temp_2_temperature'];var ae=states['binary_sensor.temp_2_available'];var fe=states['sensor.temp_2_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;var online=e&&e.state!=='unavailable'&&fresh;var col=online?'#4ade80':'#f87171';var label=online?'online':'offline';var ent=states['sensor.temp_2_temperature'];var lsT=ent?new Date(ent.last_changed).toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';var lqe=states['sensor.temp_2_lqi'];var lq=lqe&&lqe.state!=='unavailable'&&lqe.state!==''&&lqe.state!=='unknown'?parseInt(lqe.state):null;var lqCol=lq===null?'#525252':(lq>=100?'#4ade80':(lq>=50?'#fbbf24':'#f87171'));var lqTxt=lq===null?'--':lq;return `<div style=\"display:flex;flex-direction:column;height:100%;width:100%;\"><div style=\"display:flex;align-items:center;width:100%;margin-bottom:8px;justify-content:space-between;\"><div style=\"font-size:14px;font-weight:600;color:#e5e5e5;\">Temp 2</div><div><span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G1</span></div></div><div style=\"display:flex;justify-content:space-between;align-items:center;width:100%;flex-grow:1;\"><div style=\"display:flex;align-items:baseline;gap:30px;\"><div><span style=\"font-size:30px;font-weight:700;color:#22d3ee;\">${temp}</span><span style=\"font-size:22px;color:#525252;\">°C</span></div><div><span style=\"font-size:30px;font-weight:700;color:#4ade80;\">${hum}</span><span style=\"font-size:22px;color:#525252;\">%</span></div></div><div style=\"display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:10px;color:#525252;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div></div>`; ]]]"
+       },
+       "styles": {
+        "card": [
+         {
+          "height": "112px"
+         },
+         {
+          "padding": "16px"
+         },
+         {
+          "border-radius": "12px"
+         },
+         {
+          "background": "#0a0a0a"
+         },
+         {
+          "border": "[[[ var e=states['sensor.temp_2_temperature']; var ae=states['binary_sensor.temp_2_available'];var fe=states['sensor.temp_2_lqi'];var fts=fe&&(fe.last_reported||fe.last_updated);var lqfresh=fts&&((Date.now()-new Date(fts).getTime())/1000<1920);var fresh=(ae&&ae.state!=='unavailable'&&ae.state!=='unknown')?(ae.state==='on'):lqfresh;if(!e||e.state==='unavailable'||!fresh) return '1px solid #f87171'; return e.state==='on'?'1px solid #1f1f1f':'1px solid #1f1f1f'; ]]]"
+         }
+        ],
+        "icon": [
+         {
+          "display": "none"
+         }
+        ],
+        "name": [
+         {
+          "display": "none"
+         }
+        ]
+       }
+      },
+      {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "entity": "sensor.temp_2_temperature",
+         "styles": {
+          "card": [
+           {
+            "background": "#0a0a0a"
+           },
+           {
+            "border-radius": "12px"
+           },
+           {
+            "box-shadow": "none"
+           },
+           {
+            "padding": 0
+           },
+           {
+            "overflow": "hidden"
+           },
+           {
+            "height": "auto"
+           }
+          ],
+          "custom_fields": {
+           "chart": [
+            {
+             "pointer-events": "none"
+            }
+           ]
+          }
+         },
+         "custom_fields": {
+          "chart": {
+           "card": {
+            "type": "custom:apexcharts-card",
+            "header": {
+             "show": true,
+             "title": "Temperatura",
+             "show_states": false,
+             "colorize_states": true
+            },
+            "graph_span": "24h",
+            "span": {
+             "end": "minute"
+            },
+            "yaxis": [
+             {
+              "decimals": 1
+             }
+            ],
+            "apex_config": {
+             "chart": {
+              "height": 160,
+              "toolbar": {
+               "show": false
+              },
+              "background": "transparent"
+             },
+             "grid": {
+              "show": true,
+              "borderColor": "#1f1f1f"
+             },
+             "stroke": {
+              "width": 2,
+              "curve": "smooth"
+             },
+             "dataLabels": {
+              "enabled": false
+             },
+             "legend": {
+              "show": false
+             },
+             "tooltip": {
+              "enabled": true,
+              "theme": "dark"
+             }
+            },
+            "series": [
+             {
+              "entity": "sensor.temp_2_temperature",
+              "name": "Temperatura",
+              "type": "line",
+              "color": "#22d3ee"
+             }
+            ],
+            "card_mod": {
+             "style": "ha-card{background:transparent!important;border:none!important;box-shadow:none!important;}ha-card .header{padding:4px 8px!important;min-height:24px!important;}ha-card .header .title{font-size:12px!important;}"
+            }
+           }
+          }
+         },
+         "tap_action": {
+          "action": "more-info"
+         }
+        },
+        {
+         "type": "custom:button-card",
+         "show_icon": false,
+         "show_name": false,
+         "show_state": false,
+         "entity": "sensor.temp_2_humidity",
+         "styles": {
+          "card": [
+           {
+            "background": "#0a0a0a"
+           },
+           {
+            "border-radius": "12px"
+           },
+           {
+            "box-shadow": "none"
+           },
+           {
+            "padding": 0
+           },
+           {
+            "overflow": "hidden"
+           },
+           {
+            "height": "auto"
+           }
+          ],
+          "custom_fields": {
+           "chart": [
+            {
+             "pointer-events": "none"
+            }
+           ]
+          }
+         },
+         "custom_fields": {
+          "chart": {
+           "card": {
+            "type": "custom:apexcharts-card",
+            "header": {
+             "show": true,
+             "title": "Wilgotność",
+             "show_states": false,
+             "colorize_states": true
+            },
+            "graph_span": "24h",
+            "span": {
+             "end": "minute"
+            },
+            "yaxis": [
+             {
+              "decimals": 0,
+              "min": 0,
+              "max": 100
+             }
+            ],
+            "apex_config": {
+             "chart": {
+              "height": 160,
+              "toolbar": {
+               "show": false
+              },
+              "background": "transparent"
+             },
+             "grid": {
+              "show": true,
+              "borderColor": "#1f1f1f"
+             },
+             "stroke": {
+              "width": 2,
+              "curve": "smooth"
+             },
+             "dataLabels": {
+              "enabled": false
+             },
+             "legend": {
+              "show": false
+             },
+             "tooltip": {
+              "enabled": true,
+              "theme": "dark"
+             }
+            },
+            "series": [
+             {
+              "entity": "sensor.temp_2_humidity",
+              "name": "Wilgotność",
+              "type": "line",
+              "color": "#4ade80"
+             }
+            ],
+            "card_mod": {
+             "style": "ha-card{background:transparent!important;border:none!important;box-shadow:none!important;}ha-card .header{padding:4px 8px!important;min-height:24px!important;}ha-card .header .title{font-size:12px!important;}"
+            }
+           }
+          }
+         },
+         "tap_action": {
+          "action": "more-info"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

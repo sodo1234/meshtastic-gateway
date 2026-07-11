@@ -1,0 +1,88 @@
+id: '1782320190743'
+alias: Motion RA10 RA11 RA12
+description: ''
+triggers:
+- entity_id:
+  - binary_sensor.ra10_s1_occupancy
+  - binary_sensor.ra10_s2_occupancy
+  - binary_sensor.ra10_s3_occupancy
+  - binary_sensor.ra10_s4_occupancy
+  - binary_sensor.ra10_s5_occupancy
+  - binary_sensor.ra10_s6_occupancy
+  - binary_sensor.ra10_s7_occupancy
+  - binary_sensor.ra10_s8_occupancy
+  - binary_sensor.ra10_s9_occupancy
+  - binary_sensor.ra10_s10_occupancy
+  - binary_sensor.ra12_s1_occupancy
+  - binary_sensor.ra12_s2_occupancy
+  - binary_sensor.ra12_s3_occupancy
+  - binary_sensor.ra12_s4_occupancy
+  - binary_sensor.ra12_s5_occupancy
+  - binary_sensor.ra12_s6_occupancy
+  - binary_sensor.ra12_s7_occupancy
+  - binary_sensor.ra12_s8_occupancy
+  - binary_sensor.ra12_s9_occupancy
+  - binary_sensor.ra12_s10_occupancy
+  to: 'on'
+  trigger: state
+- entity_id:
+  - binary_sensor.ra10_s1_occupancy
+  - binary_sensor.ra10_s2_occupancy
+  - binary_sensor.ra10_s3_occupancy
+  - binary_sensor.ra10_s4_occupancy
+  - binary_sensor.ra10_s5_occupancy
+  - binary_sensor.ra10_s6_occupancy
+  - binary_sensor.ra10_s7_occupancy
+  - binary_sensor.ra10_s8_occupancy
+  - binary_sensor.ra10_s9_occupancy
+  - binary_sensor.ra10_s10_occupancy
+  - binary_sensor.ra12_s1_occupancy
+  - binary_sensor.ra12_s2_occupancy
+  - binary_sensor.ra12_s3_occupancy
+  - binary_sensor.ra12_s4_occupancy
+  - binary_sensor.ra12_s5_occupancy
+  - binary_sensor.ra12_s6_occupancy
+  - binary_sensor.ra12_s7_occupancy
+  - binary_sensor.ra12_s8_occupancy
+  - binary_sensor.ra12_s9_occupancy
+  - binary_sensor.ra12_s10_occupancy
+  to: 'off'
+  for:
+    seconds: '{{ states(''input_number.motion_timeout'') | int(150) }}'
+  trigger: state
+conditions:
+- condition: state
+  entity_id: sun.sun
+  state: below_horizon
+- condition: state
+  entity_id: input_boolean.motion_enabled
+  state: 'on'
+actions:
+- choose:
+  - conditions:
+    - condition: template
+      value_template: "{% set ss = ['binary_sensor.ra10_s1_occupancy', 'binary_sensor.ra10_s2_occupancy', 'binary_sensor.ra10_s3_occupancy', 'binary_sensor.ra10_s4_occupancy', 'binary_sensor.ra10_s5_occupancy', 'binary_sensor.ra10_s6_occupancy', 'binary_sensor.ra10_s7_occupancy', 'binary_sensor.ra10_s8_occupancy', 'binary_sensor.ra10_s9_occupancy', 'binary_sensor.ra10_s10_occupancy', 'binary_sensor.ra12_s1_occupancy', 'binary_sensor.ra12_s2_occupancy', 'binary_sensor.ra12_s3_occupancy', 'binary_sensor.ra12_s4_occupancy', 'binary_sensor.ra12_s5_occupancy', 'binary_sensor.ra12_s6_occupancy', 'binary_sensor.ra12_s7_occupancy', 'binary_sensor.ra12_s8_occupancy', 'binary_sensor.ra12_s9_occupancy', 'binary_sensor.ra12_s10_occupancy'] %}\n{% set ns = namespace(any_on=false) %}\n{% for s in ss %}\n  {% set lqi = 'sensor.' ~ s.split('.')[1] | replace('_occupancy','') ~ '_lqi' %}\n  {% if states(s) == 'on' and states(lqi) | int(0) > 0 %}{% set ns.any_on = true %}{% endif %}\n{% endfor %}\n{{ ns.any_on }}"
+    sequence:
+    - action: switch.turn_on
+      target:
+        entity_id:
+        - switch.ra10_2
+        - switch.ra10_3
+        - switch.ra11_2
+        - switch.ra11_3
+        - switch.ra12_2
+        - switch.ra12_3
+  - conditions:
+    - condition: template
+      value_template: "{% set ss = ['binary_sensor.ra10_s1_occupancy', 'binary_sensor.ra10_s2_occupancy', 'binary_sensor.ra10_s3_occupancy', 'binary_sensor.ra10_s4_occupancy', 'binary_sensor.ra10_s5_occupancy', 'binary_sensor.ra10_s6_occupancy', 'binary_sensor.ra10_s7_occupancy', 'binary_sensor.ra10_s8_occupancy', 'binary_sensor.ra10_s9_occupancy', 'binary_sensor.ra10_s10_occupancy', 'binary_sensor.ra12_s1_occupancy', 'binary_sensor.ra12_s2_occupancy', 'binary_sensor.ra12_s3_occupancy', 'binary_sensor.ra12_s4_occupancy', 'binary_sensor.ra12_s5_occupancy', 'binary_sensor.ra12_s6_occupancy', 'binary_sensor.ra12_s7_occupancy', 'binary_sensor.ra12_s8_occupancy', 'binary_sensor.ra12_s9_occupancy', 'binary_sensor.ra12_s10_occupancy'] %}\n{% set ns = namespace(any_on=false) %}\n{% for s in ss %}\n  {% set lqi = 'sensor.' ~ s.split('.')[1] | replace('_occupancy','') ~ '_lqi' %}\n  {% if states(s) == 'on' and states(lqi) | int(0) > 0 %}{% set ns.any_on = true %}{% endif %}\n{% endfor %}\n{{ not ns.any_on }}"
+    sequence:
+    - action: switch.turn_off
+      target:
+        entity_id:
+        - switch.ra10_2
+        - switch.ra10_3
+        - switch.ra11_2
+        - switch.ra11_3
+        - switch.ra12_2
+        - switch.ra12_3
+mode: restart

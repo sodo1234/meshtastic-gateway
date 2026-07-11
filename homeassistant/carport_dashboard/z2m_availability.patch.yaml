@@ -1,0 +1,10 @@
+# PATCH do zigbee2mqtt/configuration.yaml — availability dla KAŻDEGO urządzenia.
+# Zamień istniejący blok `availability:` (na końcu configu) na poniższy.
+# Jedyna realna zmiana vs obecny stan: dodane `enabled: true`.
+
+availability:
+  enabled: true          # ← BEZ tego z2m 2.x (schema v5) może ignorować blok = brak availability
+  active:
+    timeout: 10          # urządzenia sieciowe (ZBMINIR2 relays): ping co 10 min
+  passive:
+    timeout: 1440        # bateryjne (SNZB-03P PIR): online jeśli raport < 1440 min (24h)

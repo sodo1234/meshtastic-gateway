@@ -99,3 +99,12 @@ class GatewayMode:
     def state(self, now=None):
         """Dla HB diag_fn: tryb + czy aktywna (supervisor czyta do supresji)."""
         return {"gm": self.mode, "ga": 1 if self.is_active(now) else 0}
+
+    def day_info(self, now=None):
+        """Pora dnia + okno świt/zmierzch (minuty od północy, czas LOKALNY) — do wizualizacji
+        na dashboardzie. Liczone lokalnie (stałe godziny lub solar lat/lon), niezależnie od HA."""
+        now = self.clock() if now is None else now
+        lt = time.localtime(now)
+        mins = lt.tm_hour * 60 + lt.tm_min
+        s, e = self._day_window(lt)
+        return {"is_day": bool(s <= mins < e), "sunrise_min": int(s), "sunset_min": int(e)}

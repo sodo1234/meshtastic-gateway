@@ -1,0 +1,328 @@
+# Carport — widok ALARMY (mechanizm anomalii: dostepnosc z2m, HACS-free).
+# Wklej ten wpis do listy `views:` dashboardu carport (raw config editor).
+# Wymaga: button_card_templates lora_hdr/lora_base (sa juz w styled.yaml) + z2m availability enabled.
+title: Alarmy
+path: carport-alarms
+icon: mdi:alert
+type: sections
+sections:
+- type: grid
+  cards:
+  - type: custom:button-card
+    template: lora_hdr
+    name: PODSUMOWANIE ANOMALII
+    layout_options:
+      grid_columns: 4
+  - type: custom:button-card
+    template: lora_base
+    name: STATUS SYSTEMU
+    show_state: false
+    show_label: true
+    label: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'',''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?(''ALERT — ''+n+'' offline''):''WSZYSTKO OK''; ]]]'
+    tap_action:
+      action: none
+    icon: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'',''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''mdi:alert'':''mdi:check-circle''; ]]]'
+    styles:
+      card:
+      - height: 70px
+      - padding: 10px 12px
+      - border: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'',''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''1px solid #f87171'':''1px solid #14532d''; ]]]'
+      icon:
+      - width: 24px
+      - height: 24px
+      - color: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'',''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''#f87171'':''#4ade80''; ]]]'
+      name:
+      - font-size: 10px
+      - font-weight: 700
+      - color: '#9ca3af'
+      label:
+      - font-size: 13px
+      - font-weight: 800
+      - color: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'',''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''#f87171'':''#4ade80''; ]]]'
+  - type: custom:button-card
+    template: lora_base
+    name: Przekazniki offline (0-105)
+    show_state: false
+    show_label: true
+    label: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'']; var n=a.filter(function(i){var e=states[i]; return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n; ]]]'
+    icon: mdi:toggle-switch-variant
+    tap_action:
+      action: none
+    styles:
+      card:
+      - height: 70px
+      - padding: 10px 12px
+      - border: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''1px solid #f87171'':''1px solid #1f1f1f''; ]]]'
+      icon:
+      - width: 24px
+      - height: 24px
+      - color: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''#f87171'':''#facc15''; ]]]'
+      name:
+      - font-size: 10px
+      - font-weight: 700
+      - color: '#e5e5e5'
+      - white-space: nowrap
+      - overflow: hidden
+      - text-overflow: ellipsis
+      label:
+      - font-size: 22px
+      - font-weight: 800
+      - color: '[[[ var a=[''switch.test_1'',''switch.test_2'',''switch.ra1_1'',''switch.ra1_2'',''switch.ra1_3'',''switch.ra2_1'',''switch.ra2_2'',''switch.ra2_3'',''switch.ra3_1'',''switch.ra3_2'',''switch.ra3_3'',''switch.ra4_1'',''switch.ra4_2'',''switch.ra4_3'',''switch.ra5_1'',''switch.ra5_2'',''switch.ra5_3'',''switch.ra6_1'',''switch.ra6_2'',''switch.ra6_3'',''switch.ra7_1'',''switch.ra7_2'',''switch.ra7_3'',''switch.ra8_1'',''switch.ra8_2'',''switch.ra8_3'',''switch.ra8_r1'',''switch.ra8_r2'',''switch.ra8_r3'',''switch.ra8_r4'',''switch.ra8_r5'',''switch.ra8_r6'',''switch.ra9_1'',''switch.ra9_2'',''switch.ra9_3'',''switch.ra10_1'',''switch.ra10_2'',''switch.ra10_3'',''switch.ra11_1'',''switch.ra11_2'',''switch.ra11_3'',''switch.ra11_r1'',''switch.ra11_r2'',''switch.ra11_r3'',''switch.ra11_r4'',''switch.ra11_r5'',''switch.ra11_r6'',''switch.ra12_1'',''switch.ra12_2'',''switch.ra12_3'',''switch.ra13_1'',''switch.ra13_2'',''switch.ra13_3'',''switch.ra14_1'',''switch.ra14_2'',''switch.ra14_3'',''switch.ra14_r1'',''switch.ra15_1'',''switch.ra15_2'',''switch.ra15_3'',''switch.rb1_1'',''switch.rb1_2'',''switch.rb1_3'',''switch.rb2_1'',''switch.rb2_2'',''switch.rb2_3'',''switch.rb3_1'',''switch.rb3_2'',''switch.rb3_3'',''switch.rb4_1'',''switch.rb4_2'',''switch.rb4_3'',''switch.rb5_1'',''switch.rb5_2'',''switch.rb5_3'',''switch.rb6_1'',''switch.rb6_2'',''switch.rb6_3'',''switch.0x983268fffe5568f8'',''switch.0x983268fffe8c2298'',''switch.0xf044d3fffe70773a'',''switch.0x6ce4a4fffeaceb93'',''switch.0x6ce4a4fffe5cee74'',''switch.rb6_r6'',''switch.0xc02cedfffe30d68c'',''switch.rb7_1'',''switch.rb7_2'',''switch.rb7_3'',''switch.rb8_1'',''switch.rb8_2'',''switch.rb8_3'',''switch.rb9_1'',''switch.rb9_2'',''switch.rb9_3'',''switch.rb10_1'',''switch.rb10_2'',''switch.rb10_3'',''switch.0x8c8b48fffef7119d'',''switch.rb10_r2'',''switch.rb10_r3'',''switch.0xc02cedfffe317a8e'',''switch.rb10_r5'',''switch.rb11_1'',''switch.rb11_2'',''switch.rb11_3'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''#f87171'':''#facc15''; ]]]'
+  - type: custom:button-card
+    template: lora_base
+    name: Czujniki ruchu offline (0-82)
+    show_state: false
+    show_label: true
+    label: '[[[ var a=[''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i]; return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n; ]]]'
+    icon: mdi:motion-sensor
+    tap_action:
+      action: none
+    styles:
+      card:
+      - height: 70px
+      - padding: 10px 12px
+      - border: '[[[ var a=[''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''1px solid #f87171'':''1px solid #1f1f1f''; ]]]'
+      icon:
+      - width: 24px
+      - height: 24px
+      - color: '[[[ var a=[''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''#f87171'':''#4ade80''; ]]]'
+      name:
+      - font-size: 10px
+      - font-weight: 700
+      - color: '#e5e5e5'
+      - white-space: nowrap
+      - overflow: hidden
+      - text-overflow: ellipsis
+      label:
+      - font-size: 22px
+      - font-weight: 800
+      - color: '[[[ var a=[''binary_sensor.ra7_s1_occupancy'',''binary_sensor.0x18690afffe1c90b8_occupancy'',''binary_sensor.0x18690afffe1c90be_occupancy'',''binary_sensor.ra7_s4_occupancy'',''binary_sensor.ra7_s5_occupancy'',''binary_sensor.0xf044d3fffe915fee_occupancy'',''binary_sensor.0x18690afffe1c92a6_occupancy'',''binary_sensor.ra7_s8_occupancy'',''binary_sensor.ra7_s9_occupancy'',''binary_sensor.ra7_s10_occupancy'',''binary_sensor.ra9_s1_occupancy'',''binary_sensor.ra9_s2_occupancy'',''binary_sensor.ra9_s3_occupancy'',''binary_sensor.ra9_s4_occupancy'',''binary_sensor.0x449fdafffe08027e_occupancy'',''binary_sensor.ra9_s6_occupancy'',''binary_sensor.ra9_s7_occupancy'',''binary_sensor.ra9_s8_occupancy'',''binary_sensor.ra9_s9_occupancy'',''binary_sensor.ra9_s10_occupancy'',''binary_sensor.ra10_s1_occupancy'',''binary_sensor.ra10_s2_occupancy'',''binary_sensor.ra10_s3_occupancy'',''binary_sensor.ra10_s4_occupancy'',''binary_sensor.ra10_s5_occupancy'',''binary_sensor.ra10_s6_occupancy'',''binary_sensor.ra10_s7_occupancy'',''binary_sensor.ra10_s8_occupancy'',''binary_sensor.ra10_s9_occupancy'',''binary_sensor.ra10_s10_occupancy'',''binary_sensor.ra12_s1_occupancy'',''binary_sensor.ra12_s2_occupancy'',''binary_sensor.ra12_s3_occupancy'',''binary_sensor.ra12_s4_occupancy'',''binary_sensor.ra12_s5_occupancy'',''binary_sensor.ra12_s6_occupancy'',''binary_sensor.ra12_s7_occupancy'',''binary_sensor.ra12_s8_occupancy'',''binary_sensor.ra12_s9_occupancy'',''binary_sensor.ra12_s10_occupancy'',''binary_sensor.ra13_s1_occupancy'',''binary_sensor.ra13_s2_occupancy'',''binary_sensor.ra15_s1_occupancy'',''binary_sensor.ra15_s2_occupancy'',''binary_sensor.rb4_s1_occupancy'',''binary_sensor.rb4_s2_occupancy'',''binary_sensor.rb4_s3_occupancy'',''binary_sensor.rb4_s4_occupancy'',''binary_sensor.rb4_s5_occupancy'',''binary_sensor.rb4_s6_occupancy'',''binary_sensor.rb4_s7_occupancy'',''binary_sensor.rb4_s8_occupancy'',''binary_sensor.rb4_s9_occupancy'',''binary_sensor.rb4_s10_occupancy'',''binary_sensor.rb4_s11_occupancy'',''binary_sensor.rb7_s1_occupancy'',''binary_sensor.rb7_s2_occupancy'',''binary_sensor.rb7_s3_occupancy'',''binary_sensor.rb7_s4_occupancy'',''binary_sensor.rb7_s5_occupancy'',''binary_sensor.rb7_s6_occupancy'',''binary_sensor.rb7_s7_occupancy'',''binary_sensor.rb7_s8_occupancy'',''binary_sensor.rb7_s9_occupancy'',''binary_sensor.rb7_s10_occupancy'',''binary_sensor.rb7_s11_occupancy'',''binary_sensor.rb8_s1_occupancy'',''binary_sensor.rb8_s2_occupancy'',''binary_sensor.rb8_s3_occupancy'',''binary_sensor.rb8_s4_occupancy'',''binary_sensor.0xf044d3fffe91637d_occupancy'',''binary_sensor.0x18690afffe1c9757_occupancy'',''binary_sensor.rb8_s7_occupancy'',''binary_sensor.rb8_s8_occupancy'',''binary_sensor.rb11_s1_occupancy'',''binary_sensor.rb11_s2_occupancy'',''binary_sensor.rb11_s3_occupancy'',''binary_sensor.rb11_s4_occupancy'',''binary_sensor.rb11_s5_occupancy'',''binary_sensor.rb11_s6_occupancy'',''binary_sensor.rb11_s7_occupancy'',''binary_sensor.rb11_s8_occupancy'']; var n=a.filter(function(i){var e=states[i];return !e||e.state===''unavailable''||e.state===''unknown'';}).length; return n>0?''#f87171'':''#4ade80''; ]]]'
+- type: grid
+  cards:
+  - type: custom:button-card
+    template: lora_hdr
+    name: PRZEKAZNIKI OFFLINE
+    layout_options:
+      grid_columns: 4
+  - type: entity-filter
+    entities:
+    - switch.test_1
+    - switch.test_2
+    - switch.ra1_1
+    - switch.ra1_2
+    - switch.ra1_3
+    - switch.ra2_1
+    - switch.ra2_2
+    - switch.ra2_3
+    - switch.ra3_1
+    - switch.ra3_2
+    - switch.ra3_3
+    - switch.ra4_1
+    - switch.ra4_2
+    - switch.ra4_3
+    - switch.ra5_1
+    - switch.ra5_2
+    - switch.ra5_3
+    - switch.ra6_1
+    - switch.ra6_2
+    - switch.ra6_3
+    - switch.ra7_1
+    - switch.ra7_2
+    - switch.ra7_3
+    - switch.ra8_1
+    - switch.ra8_2
+    - switch.ra8_3
+    - switch.ra8_r1
+    - switch.ra8_r2
+    - switch.ra8_r3
+    - switch.ra8_r4
+    - switch.ra8_r5
+    - switch.ra8_r6
+    - switch.ra9_1
+    - switch.ra9_2
+    - switch.ra9_3
+    - switch.ra10_1
+    - switch.ra10_2
+    - switch.ra10_3
+    - switch.ra11_1
+    - switch.ra11_2
+    - switch.ra11_3
+    - switch.ra11_r1
+    - switch.ra11_r2
+    - switch.ra11_r3
+    - switch.ra11_r4
+    - switch.ra11_r5
+    - switch.ra11_r6
+    - switch.ra12_1
+    - switch.ra12_2
+    - switch.ra12_3
+    - switch.ra13_1
+    - switch.ra13_2
+    - switch.ra13_3
+    - switch.ra14_1
+    - switch.ra14_2
+    - switch.ra14_3
+    - switch.ra14_r1
+    - switch.ra15_1
+    - switch.ra15_2
+    - switch.ra15_3
+    - switch.rb1_1
+    - switch.rb1_2
+    - switch.rb1_3
+    - switch.rb2_1
+    - switch.rb2_2
+    - switch.rb2_3
+    - switch.rb3_1
+    - switch.rb3_2
+    - switch.rb3_3
+    - switch.rb4_1
+    - switch.rb4_2
+    - switch.rb4_3
+    - switch.rb5_1
+    - switch.rb5_2
+    - switch.rb5_3
+    - switch.rb6_1
+    - switch.rb6_2
+    - switch.rb6_3
+    - switch.0x983268fffe5568f8
+    - switch.0x983268fffe8c2298
+    - switch.0xf044d3fffe70773a
+    - switch.0x6ce4a4fffeaceb93
+    - switch.0x6ce4a4fffe5cee74
+    - switch.rb6_r6
+    - switch.0xc02cedfffe30d68c
+    - switch.rb7_1
+    - switch.rb7_2
+    - switch.rb7_3
+    - switch.rb8_1
+    - switch.rb8_2
+    - switch.rb8_3
+    - switch.rb9_1
+    - switch.rb9_2
+    - switch.rb9_3
+    - switch.rb10_1
+    - switch.rb10_2
+    - switch.rb10_3
+    - switch.0x8c8b48fffef7119d
+    - switch.rb10_r2
+    - switch.rb10_r3
+    - switch.0xc02cedfffe317a8e
+    - switch.rb10_r5
+    - switch.rb11_1
+    - switch.rb11_2
+    - switch.rb11_3
+    conditions:
+    - condition: state
+      state:
+      - unavailable
+      - unknown
+    show_empty: false
+    card:
+      type: entities
+      title: Przekazniki niedostepne
+      state_color: true
+    layout_options:
+      grid_columns: 4
+- type: grid
+  cards:
+  - type: custom:button-card
+    template: lora_hdr
+    name: CZUJNIKI RUCHU OFFLINE
+    layout_options:
+      grid_columns: 4
+  - type: entity-filter
+    entities:
+    - binary_sensor.ra7_s1_occupancy
+    - binary_sensor.0x18690afffe1c90b8_occupancy
+    - binary_sensor.0x18690afffe1c90be_occupancy
+    - binary_sensor.ra7_s4_occupancy
+    - binary_sensor.ra7_s5_occupancy
+    - binary_sensor.0xf044d3fffe915fee_occupancy
+    - binary_sensor.0x18690afffe1c92a6_occupancy
+    - binary_sensor.ra7_s8_occupancy
+    - binary_sensor.ra7_s9_occupancy
+    - binary_sensor.ra7_s10_occupancy
+    - binary_sensor.ra9_s1_occupancy
+    - binary_sensor.ra9_s2_occupancy
+    - binary_sensor.ra9_s3_occupancy
+    - binary_sensor.ra9_s4_occupancy
+    - binary_sensor.0x449fdafffe08027e_occupancy
+    - binary_sensor.ra9_s6_occupancy
+    - binary_sensor.ra9_s7_occupancy
+    - binary_sensor.ra9_s8_occupancy
+    - binary_sensor.ra9_s9_occupancy
+    - binary_sensor.ra9_s10_occupancy
+    - binary_sensor.ra10_s1_occupancy
+    - binary_sensor.ra10_s2_occupancy
+    - binary_sensor.ra10_s3_occupancy
+    - binary_sensor.ra10_s4_occupancy
+    - binary_sensor.ra10_s5_occupancy
+    - binary_sensor.ra10_s6_occupancy
+    - binary_sensor.ra10_s7_occupancy
+    - binary_sensor.ra10_s8_occupancy
+    - binary_sensor.ra10_s9_occupancy
+    - binary_sensor.ra10_s10_occupancy
+    - binary_sensor.ra12_s1_occupancy
+    - binary_sensor.ra12_s2_occupancy
+    - binary_sensor.ra12_s3_occupancy
+    - binary_sensor.ra12_s4_occupancy
+    - binary_sensor.ra12_s5_occupancy
+    - binary_sensor.ra12_s6_occupancy
+    - binary_sensor.ra12_s7_occupancy
+    - binary_sensor.ra12_s8_occupancy
+    - binary_sensor.ra12_s9_occupancy
+    - binary_sensor.ra12_s10_occupancy
+    - binary_sensor.ra13_s1_occupancy
+    - binary_sensor.ra13_s2_occupancy
+    - binary_sensor.ra15_s1_occupancy
+    - binary_sensor.ra15_s2_occupancy
+    - binary_sensor.rb4_s1_occupancy
+    - binary_sensor.rb4_s2_occupancy
+    - binary_sensor.rb4_s3_occupancy
+    - binary_sensor.rb4_s4_occupancy
+    - binary_sensor.rb4_s5_occupancy
+    - binary_sensor.rb4_s6_occupancy
+    - binary_sensor.rb4_s7_occupancy
+    - binary_sensor.rb4_s8_occupancy
+    - binary_sensor.rb4_s9_occupancy
+    - binary_sensor.rb4_s10_occupancy
+    - binary_sensor.rb4_s11_occupancy
+    - binary_sensor.rb7_s1_occupancy
+    - binary_sensor.rb7_s2_occupancy
+    - binary_sensor.rb7_s3_occupancy
+    - binary_sensor.rb7_s4_occupancy
+    - binary_sensor.rb7_s5_occupancy
+    - binary_sensor.rb7_s6_occupancy
+    - binary_sensor.rb7_s7_occupancy
+    - binary_sensor.rb7_s8_occupancy
+    - binary_sensor.rb7_s9_occupancy
+    - binary_sensor.rb7_s10_occupancy
+    - binary_sensor.rb7_s11_occupancy
+    - binary_sensor.rb8_s1_occupancy
+    - binary_sensor.rb8_s2_occupancy
+    - binary_sensor.rb8_s3_occupancy
+    - binary_sensor.rb8_s4_occupancy
+    - binary_sensor.0xf044d3fffe91637d_occupancy
+    - binary_sensor.0x18690afffe1c9757_occupancy
+    - binary_sensor.rb8_s7_occupancy
+    - binary_sensor.rb8_s8_occupancy
+    - binary_sensor.rb11_s1_occupancy
+    - binary_sensor.rb11_s2_occupancy
+    - binary_sensor.rb11_s3_occupancy
+    - binary_sensor.rb11_s4_occupancy
+    - binary_sensor.rb11_s5_occupancy
+    - binary_sensor.rb11_s6_occupancy
+    - binary_sensor.rb11_s7_occupancy
+    - binary_sensor.rb11_s8_occupancy
+    conditions:
+    - condition: state
+      state:
+      - unavailable
+      - unknown
+    show_empty: false
+    card:
+      type: entities
+      title: Czujniki niedostepne
+      state_color: true
+    layout_options:
+      grid_columns: 4

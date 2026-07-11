@@ -25,12 +25,14 @@ CODE_CAT = {
 
 
 class AnomalyBatcher:
-    def __init__(self, gw_id, send_fn, interval=30, max_payload=150, logger=None):
+    def __init__(self, gw_id, send_fn, interval=30, max_payload=150, logger=None, arbiter=None):
         self.gw_id = gw_id
         self.send = send_fn              # callable(dict) → LoRa
         self.interval = interval
         self.max_payload = max_payload
         self.log = logger
+        # ChannelArbiter (opcjonalny) — patrz Batcher: wolumen czeka gdy trwa transfer-plik.
+        self.arbiter = arbiter
         self.buffer = {}                 # (sid, kategoria) → [sid, code, val?]
         self.lock = threading.Lock()
         self.running = False
@@ -83,6 +85,8 @@ class AnomalyBatcher:
         return chunks
 
     def flush(self):
+        if self.arbiter is not None and self.arbiter.busy():
+            return 0                     # transfer-plik trwa → odłóż (bufor zostaje na następny tick)
         with self.lock:
             entries = list(self.buffer.values())
             self.buffer.clear()

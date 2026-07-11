@@ -21,7 +21,8 @@
   h1 .accent{color:var(--accent);margin-right:8px;}
   /* GRID */
   .gridwrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;height:calc(100vh - 70px);}
-  .gridwrap.one-col{grid-template-columns:1fr;}        /* układ 1-kolumnowy (panele jeden pod drugim) */
+  .gridwrap.one-col{grid-template-columns:1fr;}        /* 1-kol: jedna kolumna, drugi panel UKRYTY (nie stackowany) */
+  .gridwrap.one-col #panel-sup{display:none;}          /* ukryj SUPERVISOR → GATEWAY na całą szerokość */
   .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;
          display:flex;flex-direction:column;overflow:hidden;}
   /* PANEL HEADER — uppercase mini-label per lora_hdr */
@@ -222,6 +223,9 @@ function renderHosts(r){
   const list = (hosts[net]||[]);
   sel.innerHTML = list.map(h => `<option value="${h.ip}">${h.name} (${h.ip})</option>`).join('')
                   || '<option value="">(none)</option>';
+  // Domyślny host wg roli: sup→supervisor, gw→gateway (bez tego oba panele brały 1. opcję=gateway).
+  const want = r==='sup' ? 'supervisor' : r==='gw' ? 'gateway' : '';
+  if(want){ const m = list.find(h => (h.name||'').toLowerCase().includes(want)); if(m) sel.value = m.ip; }
   onHostChange(r);
 }
 
@@ -233,20 +237,31 @@ async function onHostChange(r){
   // 1) scripts
   const j = await fetch(`/api/scripts?host=${host}`).then(x=>x.json());
   const sel = document.getElementById(`script-${r}`);
-  const defaultName = r==='test' ? 'test_step1_transport.py' : r==='sup' ? 'supervisor.py' : 'gateway.py';
-  sel.innerHTML = j.scripts.map(s =>
+  // Domyślny skrypt: NAJPIERW test_step5_anomaly.py (aktualny harness → log /tmp/test_transport.log,
+  // świeży). Bez tego launcher brał 'gateway.py' → /tmp/gateway.log = STARY log v38 (mylące „dane z 22").
+  const prefs = r==='test' ? ['test_step1_transport.py']
+              : ['test_step5_anomaly.py', r==='sup' ? 'supervisor.py' : 'gateway.py'];
+  const defaultName = prefs.find(n => (j.scripts||[]).includes(n)) || (j.scripts||[])[0] || '';
+  sel.innerHTML = (j.scripts||[]).map(s =>
     `<option ${s===defaultName?'selected':''} value="${s}">${s}</option>`).join('');
   // 2) USB devices
   await refreshUsb(r);
   refreshStatus(r);
 }
 
-async function refreshUsb(r){
+async function refreshUsb(r, attempt=0){
   const host = state[r].host; if(!host) return;
-  const j = await fetch(`/api/usb-devices?host=${host}`).then(x=>x.json());
+  const j = await fetch(`/api/usb-devices?host=${host}`).then(x=>x.json()).catch(()=>({devices:[]}));
   const sel = document.getElementById(`port-${r}`);
   const info = document.getElementById(`usbinfo-${r}`);
   if(!j.devices || j.devices.length === 0){
+    // pusto (relay w dołku / cache jeszcze zimny) → ponów do 3× co 4s przed werdyktem „brak".
+    // Bez tego pojedynczy pad na starcie blokował USB aż do ręcznego przełączenia hosta.
+    if(state[r].host === host && attempt < 3){
+      info.innerHTML = '<span style="color:var(--mut)">USB: wykrywanie…</span>';
+      setTimeout(()=>refreshUsb(r, attempt+1), 4000);
+      return;
+    }
     sel.innerHTML = '<option value="">(brak USB)</option>';
     info.innerHTML = '<span style="color:var(--bad)">⚠ brak wykrytych urządzeń serial</span>';
     return;
@@ -263,8 +278,10 @@ function getScript(r){ return document.getElementById(`script-${r}`)?.value || '
 
 async function refreshStatus(r){
   const host = state[r].host; if(!host) return;
+  if(state[r].busy) return;                 // operacja start/stop w toku → nie nadpisuj etykiety
   const script = getScript(r);
   const j = await fetch(`/api/status?host=${host}&role=${r}&script=${encodeURIComponent(script)}`).then(x=>x.json());
+  if(state[r].busy) return;                 // operacja wystartowała w trakcie awaita → nie nadpisuj
   const el = document.getElementById(`st-${r}`);
   const tx = document.getElementById(`sttxt-${r}`);
   const prev = el.classList.contains('running');
@@ -335,26 +352,57 @@ function colorize(line){
   return html;
 }
 
+// ── Busy state: przycisk reaguje NATYCHMIAST, robota leci w tle (poll /api/op) ──
+function _btns(r){ return document.querySelectorAll(`#panel-${r} .btnrow button`); }
+function setBusy(r, label){
+  state[r].busy = true;
+  _btns(r).forEach(b => { b.disabled = true; b.style.opacity = .5; });
+  const el = document.getElementById(`st-${r}`), tx = document.getElementById(`sttxt-${r}`);
+  if(el){ el.classList.remove('running','stopped'); }
+  if(tx){ tx.textContent = label; }
+}
+function clearBusy(r){
+  state[r].busy = false;
+  if(state[r]._iv){ clearInterval(state[r]._iv); state[r]._iv = null; }
+  _btns(r).forEach(b => { b.disabled = false; b.style.opacity = 1; });
+}
+function pollOp(r, action){
+  if(state[r]._iv){ clearInterval(state[r]._iv); }   // nie nakładaj pollOpów
+  const host = state[r].host;
+  let tries = 0;
+  state[r]._iv = setInterval(async ()=>{
+    tries++;
+    const j = await fetch(`/api/op?host=${host}&role=${r}`).then(x=>x.json()).catch(()=>null);
+    if(j && j.action === action && j.busy === false){
+      clearBusy(r);                                  // czyści też interwał
+      toast(j.ok ? `${action} ✓ ${j.result||''}` : `${action} ⚠ ${j.result||'błąd'}`);
+      refreshStatus(r);
+    } else if(tries > 80){                            // bezpiecznik ~120s
+      clearBusy(r); refreshStatus(r);
+    }
+  }, 1500);
+}
+
 async function doStart(r){
   const host = state[r].host;
   const script = getScript(r);
   const port = document.getElementById(`port-${r}`).value;
-  if(!host || !script) return toast('select host + script');
+  if(!host || !script) return toast('wybierz host + skrypt');
   closeStream(r);
-  toast(`starting ${script} on ${host}…`);
-  const j = await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({host, role:r, script, port})}).then(x=>x.json());
-  toast(j.ok ? `started ✓ ${script}` : `start failed: ${j.msg||j.err}`);
-  setTimeout(()=>refreshStatus(r), 1500);
+  setBusy(r, `⏳ STARTUJĘ ${script}…`);
+  toast(`start ${script} → ${host} (w tle)`);
+  await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host, role:r, script, port})}).then(x=>x.json()).catch(()=>({}));
+  pollOp(r, 'start');
 }
 async function doStop(r){
   const host = state[r].host;
   const script = getScript(r);
-  await fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({host, role:r, script})});
-  toast('stop sent');
   closeStream(r);
-  setTimeout(()=>refreshStatus(r), 1000);
+  setBusy(r, '⏳ ZATRZYMUJĘ…');
+  await fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({host, role:r, script})}).then(x=>x.json()).catch(()=>({}));
+  pollOp(r, 'stop');
 }
 async function doRestart(r){
   await doStop(r); setTimeout(()=>doStart(r), 1500);
@@ -408,7 +456,8 @@ async function openConfig(r){
   const host = state[r].host;
   if(!host) return toast('najpierw wybierz host');
   cfgHost = host;
-  document.getElementById('cfg-host').textContent = host;
+  const roleLabel = r === 'gw' ? 'CONFIG BRAMKI' : r === 'sup' ? 'CONFIG SUPERVISORA' : 'CONFIG';
+  document.getElementById('cfg-host').textContent = `${roleLabel} · ${host}`;
   document.getElementById('cfg-modal').style.display = 'flex';
   await loadConfigInto(host);
 }

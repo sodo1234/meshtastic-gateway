@@ -1,0 +1,717 @@
+# Carport dashboard — PELNY (4 widoki). entity_id ZWERYFIKOWANE na zywym HA carport (2026-06-29).
+# Import: dashboard -> Edytuj -> ⋮ -> Raw configuration editor -> wklej calosc.
+# Wzor: G1 lora-gw (Bramka/Harmonogram) + nowe (Przekazniki 105 / Czujniki ruchu 82).
+title: Carport
+views:
+  - title: Bramka
+    path: carport-gw
+    icon: mdi:radio-tower
+    cards:
+      - type: entities
+        title: "Status bramki G1"
+        state_color: true
+        entities:
+          - entity: binary_sensor.lora_gw_g1_synced
+            name: "Czas zsynchronizowany"
+          - entity: sensor.lora_gw_g1_operating_mode
+            name: "Tryb pracy"
+          - entity: sensor.lora_gw_g1_sync_mode
+            name: "Tryb synchronizacji"
+          - entity: sensor.lora_gw_g1_uptime
+            name: "Uptime"
+          - entity: sensor.lora_gw_g1_tx_count
+            name: "TX count"
+          - entity: sensor.lora_gw_g1_batcher_pending
+            name: "Batcher w kolejce"
+          - entity: sensor.lora_gw_g1_batcher_flushed
+            name: "Batcher wyslane"
+      - type: entities
+        title: "Czas i synchronizacja"
+        entities:
+          - entity: sensor.lora_gw_g1_scada_time
+            name: "Czas SCADA"
+          - entity: sensor.lora_gw_g1_system_time
+            name: "Czas systemowy"
+          - entity: sensor.lora_gw_g1_time_offset
+            name: "Offset czasu"
+          - entity: button.lora_gw_g1_request_sync
+            name: "Wymus synchronizacje"
+      - type: entities
+        title: "Parametry P1-P3"
+        entities:
+          - entity: number.lora_gw_g1_param_p1
+            name: "P1"
+          - entity: number.lora_gw_g1_param_p2
+            name: "P2"
+          - entity: number.lora_gw_g1_param_p3
+            name: "P3"
+      - type: entities
+        title: "Virtual I/O (test)"
+        state_color: true
+        entities:
+          - entity: switch.lora_vio_vs_test
+            name: "Test Switch"
+          - entity: button.lora_vio_vb_test_press
+            name: "Test Button"
+  - title: Harmonogram
+    path: carport-schedule
+    icon: mdi:calendar-clock
+    cards:
+      - type: calendar
+        title: "Harmonogram produkcji (G1)"
+        initial_view: dayGridMonth
+        entities:
+          - calendar.lora_g1
+      - type: entities
+        title: "Tryb biezacy"
+        state_color: true
+        entities:
+          - entity: sensor.lora_gw_g1_operating_mode
+            name: "Tryb pracy"
+          - entity: sensor.lora_gw_g1_sync_mode
+            name: "Tryb synchronizacji"
+          - entity: button.lora_gw_g1_request_sync
+            name: "Wymus synchronizacje"
+  - title: Przekazniki
+    path: carport-relays
+    icon: mdi:toggle-switch-variant
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: entities
+            title: "INNE (2)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.test_1
+                name: "Test 1"
+              - entity: switch.test_2
+                name: "Test 2"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA1 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra1_1
+                name: "RA1_1"
+              - entity: switch.ra1_2
+                name: "RA1_2"
+              - entity: switch.ra1_3
+                name: "RA1_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA2 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra2_1
+                name: "RA2_1"
+              - entity: switch.ra2_2
+                name: "RA2_2"
+              - entity: switch.ra2_3
+                name: "RA2_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA3 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra3_1
+                name: "RA3_1"
+              - entity: switch.ra3_2
+                name: "RA3_2"
+              - entity: switch.ra3_3
+                name: "RA3_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA4 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra4_1
+                name: "RA4_1"
+              - entity: switch.ra4_2
+                name: "RA4_2"
+              - entity: switch.ra4_3
+                name: "RA4_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA5 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra5_1
+                name: "RA5_1"
+              - entity: switch.ra5_2
+                name: "RA5_2"
+              - entity: switch.ra5_3
+                name: "RA5_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA6 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra6_1
+                name: "RA6_1"
+              - entity: switch.ra6_2
+                name: "RA6_2"
+              - entity: switch.ra6_3
+                name: "RA6_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA7 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra7_1
+                name: "RA7_1"
+              - entity: switch.ra7_2
+                name: "RA7_2"
+              - entity: switch.ra7_3
+                name: "RA7_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA8 (9)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra8_1
+                name: "RA8_1"
+              - entity: switch.ra8_2
+                name: "RA8_2"
+              - entity: switch.ra8_3
+                name: "RA8_3"
+              - entity: switch.ra8_r1
+                name: "RA8_R1"
+              - entity: switch.ra8_r2
+                name: "RA8_R2"
+              - entity: switch.ra8_r3
+                name: "RA8_R3"
+              - entity: switch.ra8_r4
+                name: "RA8_R4"
+              - entity: switch.ra8_r5
+                name: "RA8_R5"
+              - entity: switch.ra8_r6
+                name: "RA8_R6"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA9 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra9_1
+                name: "RA9_1"
+              - entity: switch.ra9_2
+                name: "RA9_2"
+              - entity: switch.ra9_3
+                name: "RA9_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA10 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra10_1
+                name: "RA10_1"
+              - entity: switch.ra10_2
+                name: "RA10_2"
+              - entity: switch.ra10_3
+                name: "RA10_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA11 (9)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra11_1
+                name: "RA11_1"
+              - entity: switch.ra11_2
+                name: "RA11_2"
+              - entity: switch.ra11_3
+                name: "RA11_3"
+              - entity: switch.ra11_r1
+                name: "RA11_R1"
+              - entity: switch.ra11_r2
+                name: "RA11_R2"
+              - entity: switch.ra11_r3
+                name: "RA11_R3"
+              - entity: switch.ra11_r4
+                name: "RA11_R4"
+              - entity: switch.ra11_r5
+                name: "RA11_R5"
+              - entity: switch.ra11_r6
+                name: "RA11_R6"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA12 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra12_1
+                name: "RA12_1"
+              - entity: switch.ra12_2
+                name: "RA12_2"
+              - entity: switch.ra12_3
+                name: "RA12_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA13 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra13_1
+                name: "RA13_1"
+              - entity: switch.ra13_2
+                name: "RA13_2"
+              - entity: switch.ra13_3
+                name: "RA13_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA14 (4)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra14_1
+                name: "RA14_1"
+              - entity: switch.ra14_2
+                name: "RA14_2"
+              - entity: switch.ra14_3
+                name: "RA14_3"
+              - entity: switch.ra14_r1
+                name: "RA14_R1"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RA15 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.ra15_1
+                name: "RA15_1"
+              - entity: switch.ra15_2
+                name: "RA15_2"
+              - entity: switch.ra15_3
+                name: "RA15_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB1 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb1_1
+                name: "RB1_1"
+              - entity: switch.rb1_2
+                name: "RB1_2"
+              - entity: switch.rb1_3
+                name: "RB1_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB2 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb2_1
+                name: "RB2_1"
+              - entity: switch.rb2_2
+                name: "RB2_2"
+              - entity: switch.rb2_3
+                name: "RB2_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB3 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb3_1
+                name: "RB3_1"
+              - entity: switch.rb3_2
+                name: "RB3_2"
+              - entity: switch.rb3_3
+                name: "RB3_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB4 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb4_1
+                name: "RB4_1"
+              - entity: switch.rb4_2
+                name: "RB4_2"
+              - entity: switch.rb4_3
+                name: "RB4_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB5 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb5_1
+                name: "RB5_1"
+              - entity: switch.rb5_2
+                name: "RB5_2"
+              - entity: switch.rb5_3
+                name: "RB5_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB6 (10)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb6_1
+                name: "RB6_1"
+              - entity: switch.rb6_2
+                name: "RB6_2"
+              - entity: switch.rb6_3
+                name: "RB6_3"
+              - entity: switch.0x983268fffe5568f8
+                name: "RB6_R1"
+              - entity: switch.0x983268fffe8c2298
+                name: "RB6_R2"
+              - entity: switch.0xf044d3fffe70773a
+                name: "RB6_R3"
+              - entity: switch.0x6ce4a4fffeaceb93
+                name: "RB6_R4"
+              - entity: switch.0x6ce4a4fffe5cee74
+                name: "RB6_R5"
+              - entity: switch.rb6_r6
+                name: "RB6_R6"
+              - entity: switch.0xc02cedfffe30d68c
+                name: "RB6_R7"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB7 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb7_1
+                name: "RB7_1"
+              - entity: switch.rb7_2
+                name: "RB7_2"
+              - entity: switch.rb7_3
+                name: "RB7_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB8 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb8_1
+                name: "RB8_1"
+              - entity: switch.rb8_2
+                name: "RB8_2"
+              - entity: switch.rb8_3
+                name: "RB8_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB9 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb9_1
+                name: "RB9_1"
+              - entity: switch.rb9_2
+                name: "RB9_2"
+              - entity: switch.rb9_3
+                name: "RB9_3"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB10 (8)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb10_1
+                name: "RB10_1"
+              - entity: switch.rb10_2
+                name: "RB10_2"
+              - entity: switch.rb10_3
+                name: "RB10_3"
+              - entity: switch.0x8c8b48fffef7119d
+                name: "RB10_R1"
+              - entity: switch.rb10_r2
+                name: "RB10_R2"
+              - entity: switch.rb10_r3
+                name: "RB10_R3"
+              - entity: switch.0xc02cedfffe317a8e
+                name: "RB10_R4"
+              - entity: switch.rb10_r5
+                name: "RB10_R5"
+      - type: grid
+        cards:
+          - type: entities
+            title: "RB11 (3)"
+            show_header_toggle: true
+            state_color: true
+            entities:
+              - entity: switch.rb11_1
+                name: "RB11_1"
+              - entity: switch.rb11_2
+                name: "RB11_2"
+              - entity: switch.rb11_3
+                name: "RB11_3"
+  - title: Czujniki ruchu
+    path: carport-motion
+    icon: mdi:motion-sensor
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: glance
+            title: "RA7 (10)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.ra7_s1_occupancy
+                name: "RA7_S1"
+              - entity: binary_sensor.0x18690afffe1c90b8_occupancy
+                name: "RA7_S2"
+              - entity: binary_sensor.0x18690afffe1c90be_occupancy
+                name: "RA7_S3"
+              - entity: binary_sensor.ra7_s4_occupancy
+                name: "RA7_S4"
+              - entity: binary_sensor.ra7_s5_occupancy
+                name: "RA7_S5"
+              - entity: binary_sensor.0xf044d3fffe915fee_occupancy
+                name: "RA7_S6"
+              - entity: binary_sensor.0x18690afffe1c92a6_occupancy
+                name: "RA7_S7"
+              - entity: binary_sensor.ra7_s8_occupancy
+                name: "RA7_S8"
+              - entity: binary_sensor.ra7_s9_occupancy
+                name: "RA7_S9"
+              - entity: binary_sensor.ra7_s10_occupancy
+                name: "RA7_S10"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RA9 (10)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.ra9_s1_occupancy
+                name: "RA9_S1"
+              - entity: binary_sensor.ra9_s2_occupancy
+                name: "RA9_S2"
+              - entity: binary_sensor.ra9_s3_occupancy
+                name: "RA9_S3"
+              - entity: binary_sensor.ra9_s4_occupancy
+                name: "RA9_S4"
+              - entity: binary_sensor.0x449fdafffe08027e_occupancy
+                name: "RA9_S5"
+              - entity: binary_sensor.ra9_s6_occupancy
+                name: "RA9_S6"
+              - entity: binary_sensor.ra9_s7_occupancy
+                name: "RA9_S7"
+              - entity: binary_sensor.ra9_s8_occupancy
+                name: "RA9_S8"
+              - entity: binary_sensor.ra9_s9_occupancy
+                name: "RA9_S9"
+              - entity: binary_sensor.ra9_s10_occupancy
+                name: "RA9_S10"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RA10 (10)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.ra10_s1_occupancy
+                name: "RA10_S1"
+              - entity: binary_sensor.ra10_s2_occupancy
+                name: "RA10_S2"
+              - entity: binary_sensor.ra10_s3_occupancy
+                name: "RA10_S3"
+              - entity: binary_sensor.ra10_s4_occupancy
+                name: "RA10_S4"
+              - entity: binary_sensor.ra10_s5_occupancy
+                name: "RA10_S5"
+              - entity: binary_sensor.ra10_s6_occupancy
+                name: "RA10_S6"
+              - entity: binary_sensor.ra10_s7_occupancy
+                name: "RA10_S7"
+              - entity: binary_sensor.ra10_s8_occupancy
+                name: "RA10_S8"
+              - entity: binary_sensor.ra10_s9_occupancy
+                name: "RA10_S9"
+              - entity: binary_sensor.ra10_s10_occupancy
+                name: "RA10_S10"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RA12 (10)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.ra12_s1_occupancy
+                name: "RA12_S1"
+              - entity: binary_sensor.ra12_s2_occupancy
+                name: "RA12_S2"
+              - entity: binary_sensor.ra12_s3_occupancy
+                name: "RA12_S3"
+              - entity: binary_sensor.ra12_s4_occupancy
+                name: "RA12_S4"
+              - entity: binary_sensor.ra12_s5_occupancy
+                name: "RA12_S5"
+              - entity: binary_sensor.ra12_s6_occupancy
+                name: "RA12_S6"
+              - entity: binary_sensor.ra12_s7_occupancy
+                name: "RA12_S7"
+              - entity: binary_sensor.ra12_s8_occupancy
+                name: "RA12_S8"
+              - entity: binary_sensor.ra12_s9_occupancy
+                name: "RA12_S9"
+              - entity: binary_sensor.ra12_s10_occupancy
+                name: "RA12_S10"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RA13 (2)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.ra13_s1_occupancy
+                name: "RA13_S1"
+              - entity: binary_sensor.ra13_s2_occupancy
+                name: "RA13_S2"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RA15 (2)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.ra15_s1_occupancy
+                name: "RA15_S1"
+              - entity: binary_sensor.ra15_s2_occupancy
+                name: "RA15_S2"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RB4 (11)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.rb4_s1_occupancy
+                name: "RB4_S1"
+              - entity: binary_sensor.rb4_s2_occupancy
+                name: "RB4_S2"
+              - entity: binary_sensor.rb4_s3_occupancy
+                name: "RB4_S3"
+              - entity: binary_sensor.rb4_s4_occupancy
+                name: "RB4_S4"
+              - entity: binary_sensor.rb4_s5_occupancy
+                name: "RB4_S5"
+              - entity: binary_sensor.rb4_s6_occupancy
+                name: "RB4_S6"
+              - entity: binary_sensor.rb4_s7_occupancy
+                name: "RB4_S7"
+              - entity: binary_sensor.rb4_s8_occupancy
+                name: "RB4_S8"
+              - entity: binary_sensor.rb4_s9_occupancy
+                name: "RB4_S9"
+              - entity: binary_sensor.rb4_s10_occupancy
+                name: "RB4_S10"
+              - entity: binary_sensor.rb4_s11_occupancy
+                name: "RB4_S11"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RB7 (11)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.rb7_s1_occupancy
+                name: "RB7_S1"
+              - entity: binary_sensor.rb7_s2_occupancy
+                name: "RB7_S2"
+              - entity: binary_sensor.rb7_s3_occupancy
+                name: "RB7_S3"
+              - entity: binary_sensor.rb7_s4_occupancy
+                name: "RB7_S4"
+              - entity: binary_sensor.rb7_s5_occupancy
+                name: "RB7_S5"
+              - entity: binary_sensor.rb7_s6_occupancy
+                name: "RB7_S6"
+              - entity: binary_sensor.rb7_s7_occupancy
+                name: "RB7_S7"
+              - entity: binary_sensor.rb7_s8_occupancy
+                name: "RB7_S8"
+              - entity: binary_sensor.rb7_s9_occupancy
+                name: "RB7_S9"
+              - entity: binary_sensor.rb7_s10_occupancy
+                name: "RB7_S10"
+              - entity: binary_sensor.rb7_s11_occupancy
+                name: "RB7_S11"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RB8 (8)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.rb8_s1_occupancy
+                name: "RB8_S1"
+              - entity: binary_sensor.rb8_s2_occupancy
+                name: "RB8_S2"
+              - entity: binary_sensor.rb8_s3_occupancy
+                name: "RB8_S3"
+              - entity: binary_sensor.rb8_s4_occupancy
+                name: "RB8_S4"
+              - entity: binary_sensor.0xf044d3fffe91637d_occupancy
+                name: "RB8_S5"
+              - entity: binary_sensor.0x18690afffe1c9757_occupancy
+                name: "RB8_S6"
+              - entity: binary_sensor.rb8_s7_occupancy
+                name: "RB8_S7"
+              - entity: binary_sensor.rb8_s8_occupancy
+                name: "RB8_S8"
+      - type: grid
+        cards:
+          - type: glance
+            title: "RB11 (8)"
+            show_state: true
+            state_color: true
+            entities:
+              - entity: binary_sensor.rb11_s1_occupancy
+                name: "RB11_S1"
+              - entity: binary_sensor.rb11_s2_occupancy
+                name: "RB11_S2"
+              - entity: binary_sensor.rb11_s3_occupancy
+                name: "RB11_S3"
+              - entity: binary_sensor.rb11_s4_occupancy
+                name: "RB11_S4"
+              - entity: binary_sensor.rb11_s5_occupancy
+                name: "RB11_S5"
+              - entity: binary_sensor.rb11_s6_occupancy
+                name: "RB11_S6"
+              - entity: binary_sensor.rb11_s7_occupancy
+                name: "RB11_S7"
+              - entity: binary_sensor.rb11_s8_occupancy
+                name: "RB11_S8"

@@ -148,7 +148,7 @@ class AnomalyStore:
         return False
 
     def remove_one(self, gw, dev, bucket):
-        """Ręczny clear jednej anomalii (klik wiersza w popupie) — usuń (gw,dev,*) z kubełka."""
+        """Clear-all kubełka dla urządzenia — usuń (gw,dev,*) z całego kubełka (offline/battery/other)."""
         keys = [k for k in self.anomalies
                 if k[0] == gw and k[1] == dev and self._bucket(k[2]) == bucket]
         for k in keys:
@@ -158,8 +158,23 @@ class AnomalyStore:
             if self.on_change:
                 self.on_change(gw)
             if self.log:
-                self.log.info("ANOM", f"🗑️ clear ręczny {gw}/{dev} [{bucket}]")
+                self.log.info("ANOM", f"🗑️ clear ręczny {gw}/{dev} [{bucket}] ({len(keys)} kat.)")
         return len(keys)
+
+    def remove_cat(self, gw, dev, cat):
+        """PER-ANOMALY clear (klik JEDNEGO wiersza v10) — usuń DOKŁADNIE (gw,dev,cat).
+        Jedno urządzenie może mieć kilka anomalii w kubełku 'other' (temp+hum+stagnacja) —
+        kasujemy tylko TĘ jedną, reszta zostaje. To różnica vs remove_one (cały kubełek)."""
+        key = (gw, dev, cat)
+        if key in self.anomalies:
+            del self.anomalies[key]
+            self._save()
+            if self.on_change:
+                self.on_change(gw)
+            if self.log:
+                self.log.info("ANOM", f"🗑️ clear pojedynczy {gw}/{dev} kat={cat}")
+            return 1
+        return 0
 
     # ── reconcyliacja (dump_anom) ───────────────────────
     def prune_stale(self, gw, max_age_s):

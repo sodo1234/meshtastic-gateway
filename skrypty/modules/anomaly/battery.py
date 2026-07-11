@@ -23,6 +23,7 @@ class BatteryMonitor:
         self.log = logger
         self.check_interval = check_interval
         self.level = {}                  # dev → 'ok' | 'low' | 'critical'
+        self.value = {}                  # dev → ostatni poziom baterii % (snapshot/value)
         self.running = True
 
     def start(self):
@@ -59,6 +60,7 @@ class BatteryMonitor:
                 b = int(b)
             except (TypeError, ValueError):
                 continue
+            self.value[dev] = b          # zapamiętaj poziom (do snapshot/wyświetlenia)
             sid = self.disc.short_ids.get(dev)
             if sid is None:
                 continue
@@ -88,5 +90,5 @@ class BatteryMonitor:
                 continue
             sid = self.disc.short_ids.get(dev)
             if sid is not None:
-                out.append((sid, "cb" if lvl == "critical" else "lb", None))
+                out.append((sid, "cb" if lvl == "critical" else "lb", self.value.get(dev)))
         return out

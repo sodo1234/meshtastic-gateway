@@ -101,7 +101,13 @@ class GatewayOfflineAnomaly:
         self.check_interval = check_interval
         self.grace = grace
         self.is_active = is_active       # callable() → bool (None = zawsze aktywna)
-        self.offline = set()             # dev names
+        self.offline = set()             # dev names (= availability offline, do hasha/dryfu)
+        # ACK: urządzenia offline RĘCZNIE wyczyszczone (clear z bramki/supervisora przez ac_b).
+        # Rozdziela AVAILABILITY (prawda — urządzenie nadal offline, zostaje w self.offline dla
+        # hasha) od ANOMALII (ACK-owalny alert). Acked → NIE re-emituj `do` i snapshot() go pomija,
+        # więc dump_anom NIE re-dodaje. Kasowane przy recovery (dev wraca online) → re-alert gdy
+        # znów padnie. Odpowiednik ack_offline na supervisorze.
+        self.ack = set()
         self.running = True
 
     def start(self):
@@ -123,8 +129,15 @@ class GatewayOfflineAnomaly:
 
     def check(self):
         active = (self.is_active() if self.is_active else True)
-        now = time.time()
-        for dev, info in list(self.disc.devices.items()):
+        # UNIFIKACJA 2026-07-02 (fix dump_anom=0): offline-ANOMALIA == AVAILABILITY bramki.
+        # Zamiast osobnego, rozjeżdżającego się timeoutu — czytamy autorytatywny GatewayData._alive
+        # (wynik report_liveness + eventów z2m: True/False/None). To TO SAMO źródło co flaga `a:`
+        # wysyłana do supervisora → 161 realnie-offline (żyjące dotąd tylko w availability) wpadają
+        # do anomaly-store → snapshot()/dump_anom/batch/sensory lora_an_g1_* działają. Bramka =
+        # source of truth. None = jeszcze nieokreślone (grace startowy) → nie zgłaszaj.
+        # (get_timeout/grace zostają w sygnaturze dla zgodności; availability już liczy timeout.)
+        alive_map = getattr(self.data, '_alive', {})
+        for dev in list(self.disc.devices.keys()):
             sid = self.disc.short_ids.get(dev)
             if sid is None:
                 continue
@@ -133,18 +146,19 @@ class GatewayOfflineAnomaly:
                     self.offline.discard(dev)
                     self.emit(sid, "dn")
                 continue
-            ts = self.data.last_msg_ts.get(dev)
-            if ts is None:
+            state = alive_map.get(dev)
+            if state is None:            # dostępność jeszcze nieokreślona (grace) → pomiń
                 continue
-            tmin = self.get_timeout(info.get('type'))
-            stale = (now - ts) > (tmin * 60 + self.grace)
+            stale = (state is False)
             if stale and dev not in self.offline:
-                self.offline.add(dev)
-                self.emit(sid, "do")
-                if self.log:
-                    self.log.warn('OFFLINE', f'💀 {dev} OFFLINE (cisza {int((now - ts) / 60)}min)')
+                self.offline.add(dev)                    # availability offline (do hasha)
+                if dev not in self.ack:                  # acked → alert wyciszony (dump nie re-doda)
+                    self.emit(sid, "do")
+                    if self.log:
+                        self.log.warn('OFFLINE', f'💀 {dev} OFFLINE (availability)')
             elif not stale and dev in self.offline:
                 self.offline.discard(dev)
+                self.ack.discard(dev)                    # recovery → kasuj ack (re-alert gdy znów padnie)
                 self.emit(sid, "dn")
                 if self.log:
                     self.log.info('OFFLINE', f'🟢 {dev} ONLINE (wróciło)')
@@ -152,7 +166,17 @@ class GatewayOfflineAnomaly:
     def offline_devices(self):
         return set(self.offline)
 
+    def ack_clear(self, dev):
+        """Ręczny clear anomalii offline (z ac_b / lokalnego HA bramki): wycisz alert do recovery.
+        Urządzenie zostaje w self.offline (availability=offline nadal prawdą, hash spójny)."""
+        self.ack.add(dev)
+
+    def unack(self, dev):
+        """Cofnij ręczne wyciszenie offline (AnomalyReconciler re-arm: urządzenie NADAL offline po
+        upływie okna wyciszenia → anomalia wraca; snapshot()/dump znów ją uwzględnia)."""
+        self.ack.discard(dev)
+
     def snapshot(self):
-        """[(sid,'do',None)] dla dump_anom — aktualnie offline."""
+        """[(sid,'do',None)] dla dump_anom — aktualnie offline, POMIJAJĄC acked (nie re-dodawaj)."""
         return [(self.disc.short_ids.get(d), "do", None) for d in self.offline
-                if self.disc.short_ids.get(d) is not None]
+                if d not in self.ack and self.disc.short_ids.get(d) is not None]

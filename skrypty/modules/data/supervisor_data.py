@@ -51,6 +51,19 @@ class SupervisorData:
         if self.log and applied:
             self.log.info('DATA', f'📊 b {gw}: {applied}/{len(items)} urządzeń zaktualizowanych')
 
+    def apply_st(self, gw, dev, fields):
+        """`st` (sterowanie cmd / zmiana zewn.) → MERGE w stan urządzenia + last_seen + publish
+        pełnego dict. `st` jest event-driven (NIE batch `b`), więc omijał logikę last_seen z
+        handle_b; dodatkowo pub_device_state robi full-replace → goły {state,available} kasował
+        last_seen i capy (temp/humi/batt). Tu mergujemy w istniejący stan i znaczymy czas."""
+        cur = self.state.setdefault(gw, {}).setdefault(dev, {})
+        cur.update(fields)
+        cur['last_seen'] = _now_str()
+        cur.setdefault('available', 'ON')
+        self.ha.pub_device_state(gw, dev, dict(cur))
+        self.last_msg_ts[(gw, dev)] = time.time()
+        return dict(cur)
+
     def hydrate(self, gw, dev, fields):
         """Startowy seed stanu z RETAINED encji HA (lora/<gl>/<dev>/state) — żeby pierwszy
         częściowy `b` po restarcie nie skasował reszty capów (merge ma od czego startować).

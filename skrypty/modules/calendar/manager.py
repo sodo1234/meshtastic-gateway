@@ -173,6 +173,19 @@ class ScheduleManager:
             self.add_slot("GLOBAL", s['start'], s['end'],
                           mode=s.get('mode'), note=s.get('note', ''))
 
+    def replace_schedule(self, gw, slots):
+        """Autorytatywny down-sync (bramka): NADPISZ cały harmonogram bramki gw odebranym
+        zestawem. Push 'cal' niesie pełny effective (GLOBAL+override) mastera dla okna, więc
+        bramka ma być LUSTREM, nie akumulatorem. `merge_schedule` nigdy nie usuwał starych
+        slotów → bramka narastała (47 vs 15 na supervisorze) i budowała ICS ze STARYMI
+        eventami (SERWIS ginął w stercie/nieaktualne). Zwraca liczbę slotów po podmianie."""
+        with self.lock:
+            self.data[gw] = sorted(list(slots), key=lambda s: s.get('start', ''))
+            self._save()
+        if self.log:
+            self.log.info('CAL', f"♻️ Replace [{gw}]: {len(self.data.get(gw, []))} slotów (down-sync, było lustro)")
+        return len(self.data.get(gw, []))
+
     # ── kompakt do LoRa ─────────────────────────────────
     def prepare_compact(self, gw, window_days=14):
         """Kompakt [[start_min,dur_min,mode]] dla okna window_days + hash (12 hex)."""

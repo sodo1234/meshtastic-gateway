@@ -21,7 +21,9 @@ class FakeGwDisc:
 
 
 class FakeGwData:
-    def __init__(self): self.last_msg_ts = {}
+    def __init__(self):
+        self.last_msg_ts = {}
+        self._alive = {}          # dev → True/False/None (autorytatywna dostępność, unifikacja 2026-07-02)
 
 
 class FakeSupDisc:
@@ -209,8 +211,8 @@ def test_gateway_offline_anomaly_and_suppression():
                                 emit=lambda sid, code: emitted.append((sid, code)),
                                 get_timeout=lambda dt: 60, grace=0,
                                 is_active=lambda: active["v"])
-    now = time.time()
-    data.last_msg_ts["Temp 1"] = now - 61 * 60     # >60min → offline `do`
+    # UNIFIKACJA 2026-07-02: check() czyta autorytatywne data._alive (nie timeout last_msg_ts)
+    data._alive["Temp 1"] = False                  # availability=offline → anomalia `do`
     eng.check()
     assert emitted[-1] == (0, "do")
     # supresja: bramka nieaktywna → wyczyść offline (`dn`), brak dalszych `do`
@@ -275,6 +277,70 @@ def test_anomaly_store_ghost_prune():
     print("✅ store: ghost-prune usuwa anomalie urządzeń spoza discovery")
 
 
+def test_reconciler_rearm_mute_and_snapshot():
+    """STEP 5+: cykliczny re-scan → re-arm po ręcznym clear gdy warunek trwa (mute→hold→re-emit);
+    autorytatywny blob wysyłany TYLKO przy zmianie (oszczędność LoRa)."""
+    from modules.anomaly import AnomalyStore, AnomalyReconciler
+    sid2dev = {0: "Temp 1", 5: "Test 1"}
+    dev2sid = {v: k for k, v in sid2dev.items()}
+    st = AnomalyStore(resolve_dev=lambda gw, sid: sid2dev.get(sid))
+    sent = []
+    truth_rows = [[0, "lb", 20]]                       # Temp 1 low battery — warunek TRWA
+    rec = AnomalyReconciler(
+        "G1", st, probes=[lambda: list(truth_rows)],
+        resolve_dev=lambda sid: sid2dev.get(sid), dev_to_sid=lambda dev: dev2sid.get(dev),
+        readd_fn=lambda sid, code, val: st.handle_ab(
+            {"g": "G1", "d": [[sid, code, val] if val is not None else [sid, code]]}),
+        snapshot_send_fn=lambda p: sent.append(p),
+        interval=999, mute_window=100)
+    # cykl 1: prawda jest, store pusty, brak mute → re-arm + blob wysłany
+    rep = rec.run_once(diagnostic=True)
+    assert st.counts("G1")["battery"] == 1
+    assert len(sent) == 1 and [0, "lb", 20] in sent[0]["a"]
+    assert rep["rearmed"] == ["Temp 1/battery"]
+    # cykl 2: brak zmiany → blob NIE wysyłany ponownie (dedup po hash)
+    rec.run_once()
+    assert len(sent) == 1
+    # ręczny clear + mute → reconciler NIE re-armuje w oknie; blob (teraz pusty) idzie w górę (usunięcie)
+    st.remove_cat("G1", "Temp 1", "battery"); rec.mute("Temp 1", "battery")
+    rep = rec.run_once(diagnostic=True)
+    assert st.counts("G1")["battery"] == 0
+    assert rep["rearmed"] == [] and "Temp 1/battery" in rep["muted"]
+    assert len(sent) == 2 and sent[-1]["a"] == []
+    # po wygaśnięciu okna wyciszenia → warunek nadal trwa → re-arm wraca
+    rec.mute_window = 0
+    rec.run_once()
+    assert st.counts("G1")["battery"] == 1
+    # force_send: blob leci nawet bez zmiany (diagnostyka na żądanie supervisora)
+    before = len(sent); rec.run_once(force_send=True)
+    assert len(sent) == before + 1
+    print("✅ reconciler: re-arm(mute→hold→re-emit) + blob on-change + force_send")
+
+
+def test_reconciler_offline_unack_and_diag():
+    """Offline re-arm cofa ACK w silniku; raport diagnostyki wykazuje stale (zgubione recovery)."""
+    from modules.anomaly import AnomalyStore, AnomalyReconciler
+    sid2dev = {0: "Temp 1", 2: "Door 1"}
+    dev2sid = {v: k for k, v in sid2dev.items()}
+    st = AnomalyStore(resolve_dev=lambda gw, sid: sid2dev.get(sid))
+    unacked = []
+    truth_rows = [[0, "do", None]]                     # Temp 1 offline (surowa prawda silnika)
+    rec = AnomalyReconciler(
+        "G1", st, probes=[lambda: list(truth_rows)],
+        resolve_dev=lambda sid: sid2dev.get(sid), dev_to_sid=lambda dev: dev2sid.get(dev),
+        readd_fn=lambda sid, code, val: st.handle_ab({"g": "G1", "d": [[sid, code]]}),
+        offline_unack=lambda dev: unacked.append(dev), mute_window=0)
+    rec.run_once()
+    assert st.offline_devs("G1") == {"Temp 1"} and unacked == ["Temp 1"]   # re-arm + unack
+    # symuluj zgubione recovery: store ma anomalię, ale prawda już pusta → stale w raporcie
+    truth_rows.clear()
+    # dołóż ręcznie anomalię, której silnik już nie widzi
+    st.handle_ab({"g": "G1", "d": [[2, "do"]]})
+    rep = rec.run_once(diagnostic=True)
+    assert "Door 1/offline" in rep["stale"] and "Temp 1/offline" in rep["stale"]
+    print("✅ reconciler: offline unack przy re-arm + diagnostyka stale (zgubione recovery)")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_stagnation_battery_vs_mains, test_stagnation_recovery,
              test_stagnation_skips_unseen, test_offline_by_type, test_offline_recovery_and_grace,
@@ -282,7 +348,8 @@ if __name__ == "__main__":
              test_anomaly_batcher_split, test_stagnation_all_devices_and_emit,
              test_gateway_offline_anomaly_and_suppression,
              test_anomaly_store_handle_dedup_clear_alert,
-             test_anomaly_store_prune_stale_and_snapshot, test_anomaly_store_ghost_prune]
+             test_anomaly_store_prune_stale_and_snapshot, test_anomaly_store_ghost_prune,
+             test_reconciler_rearm_mute_and_snapshot, test_reconciler_offline_unack_and_diag]
     failed = 0
     for t in tests:
         try:

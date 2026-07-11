@@ -252,6 +252,20 @@ def test_supervisor_handle_b_merge():
     print("✅ SupervisorData.handle_b: sid→dev + MERGE + online cascade")
 
 
+def test_supervisor_apply_st():
+    """REGRESSION: `st` (sterowanie cmd) szedł przez goły pub_device_state({state,available})
+    = full-replace → kasował last_seen + capy (temp/batt). apply_st MUSI mergować + znaczyć czas."""
+    from modules.data import SupervisorData
+    ha, disc = FakeHA(), FakeSupDiscovery()
+    sd = SupervisorData(ha, disc)
+    sd.handle_b({"t": "b", "g": "G1", "ts": 1, "d": [[0, {"a": 1, "t": 22.5, "b": 95}]]})
+    sd.apply_st("G1", "Temp 1", {"state": "ON"})          # tylko state → musi zachować temp/batt
+    st = ha.published[("G1", "Temp 1")]
+    assert st["state"] == "ON" and st["temperature"] == 22.5 and st["battery"] == 95, st
+    assert "last_seen" in st and st["available"] == "ON", st
+    print("✅ apply_st: merge (zachowuje capy) + state + last_seen (st nie kasuje danych/ts)")
+
+
 def test_end_to_end():
     from modules.data import GatewayData, SupervisorData
     gdisc, lora = FakeGwDiscovery(), FakeLora()
@@ -311,7 +325,7 @@ if __name__ == "__main__":
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
              test_gateway_periodic_liveness, test_gateway_per_type_offline,
-             test_supervisor_handle_b_merge, test_end_to_end,
+             test_supervisor_handle_b_merge, test_supervisor_apply_st, test_end_to_end,
              test_avail_preserves_last_seen]
     failed = 0
     for t in tests:

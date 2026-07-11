@@ -15,7 +15,7 @@ import time
 
 class Batcher:
     def __init__(self, gw_id, flush_callback, interval=30, max_payload=150,
-                 max_items=6, tag="BATCH", logger=None):
+                 max_items=6, tag="BATCH", logger=None, arbiter=None):
         self.gw_id = gw_id
         self.flush_callback = flush_callback      # callable(packet_dict) → send over LoRa
         self.interval = interval
@@ -23,6 +23,9 @@ class Batcher:
         self.max_items = max_items
         self.tag = tag
         self.log = logger
+        # ChannelArbiter (opcjonalny): gdy trwa transfer-plik (kalendarz/devmap/ansnap) kanał
+        # należy do niego — wolumen `b` CZEKA (bufor zostaje na następny tick, zero utraty).
+        self.arbiter = arbiter
         self.buffer = {}            # {sid: fields_dict} — merged per device
         self.lock = threading.Lock()
         self.last_flush = time.time()
@@ -60,6 +63,8 @@ class Batcher:
 
     def flush(self):
         """Ship buffered deltas. Returns list of packet dicts sent (for tests)."""
+        if self.arbiter is not None and self.arbiter.busy():
+            return []                    # transfer-plik trwa → nie zapychaj kanału (bufor zostaje)
         with self.lock:
             items = list(self.buffer.items())
             self.buffer.clear()
