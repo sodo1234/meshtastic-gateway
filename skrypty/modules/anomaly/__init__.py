@@ -8,8 +8,11 @@
 from .stagnation import StagnationEngine
 from .offline import OfflineMonitor, GatewayOfflineAnomaly
 from .battery import BatteryMonitor
+from .temphum import TempHumMonitor
 from .batcher import AnomalyBatcher, CODE_CAT
 from .store import AnomalyStore
+from .reconciler import AnomalyReconciler
 
 __all__ = ["StagnationEngine", "OfflineMonitor", "GatewayOfflineAnomaly",
-           "BatteryMonitor", "AnomalyBatcher", "CODE_CAT", "AnomalyStore"]
+           "BatteryMonitor", "TempHumMonitor", "AnomalyBatcher", "CODE_CAT",
+           "AnomalyStore", "AnomalyReconciler"]

@@ -39,7 +39,7 @@ ALARMS = [("Leak 1", "binary_sensor.leak_1_water_leak", "sensor.leak_1_battery",
           ("Door 1", "binary_sensor.door_1_contact", "sensor.door_1_battery", "contact")]
 
 BADGE = ('`<span style="background:#141414;border:1px solid #22d3ee;padding:1px 5px;'
-         'border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">G1</span>`')
+         'border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">G2</span>`')
 
 # ── button_card_templates (z supervisora) ──
 TEMPLATES = {
@@ -129,13 +129,13 @@ def other_section():
 
 
 def link_card():
-    e = "binary_sensor.lora_g1_sup_link"
+    e = "binary_sensor.gw_g2_supervisor_link"
     content = (
         "[[[ var l=states['" + e + "'];var on=l&&l.state==='on';"
         "var col=on?'#4ade80':'#f87171';var lbl=on?'POŁĄCZONY':'BRAK';"
-        "var rx=states['sensor.lora_g1_sup_last_rx'];var rxT=rx?rx.state:'--';"
-        "var off=states['sensor.lora_g1_time_offset'];var offT=off?off.state:'--';"
-        "var sy=states['sensor.lora_g1_last_sync'];var syT=sy?sy.state:'--';"
+        "var rx=states['sensor.gw_g2_supervisor_last_rx'];var rxT=rx?rx.state:'--';"
+        "var off=states['sensor.gw_g2_time_offset'];var offT=off?off.state:'--';"
+        "var sy=states['sensor.gw_g2_last_sync'];var syT=sy?sy.state:'--';"
         "return `<div style=\"display:flex;flex-direction:column;gap:8px;width:100%;\">"
         "<div style=\"display:flex;align-items:center;justify-content:space-between;\">"
         "<span style=\"font-size:11px;font-weight:700;color:#525252;letter-spacing:2px;\">"
@@ -153,7 +153,7 @@ def link_card():
             "custom_fields": {"content": content},
             "styles": {"card": [{"padding": "16px"},
                                 {"border": ("[[[ var l=states['" + e + "'];return l&&l.state==='on'?"
-                                            "'1px solid #1f3a1f':'1px solid #3a1f1f'; ]]]")}]}}
+                                            "'1px solid #14532d':'1px solid #7f1d1d'; ]]]")}]}}
 
 
 # offline gdy brak raportu z2m > tyle s (= gateway data.offline_after). Martwy czujnik
@@ -349,15 +349,23 @@ def temp_stat(name, slug):
 # ── PARAMETRY (6 pól edytowalnych + 2 przyciski Send, model v38) ──
 # entity_id potwierdzone na żywo 2026-06-10 (HA generuje z nazwy, object_id ignorowany).
 PARAM_FIELDS = [
-    ("number.p1_stagnation_bateryjne",      "P1 · Stagnacja bateryjne [h]"),
-    ("number.p2_stagnation_sieciowe",       "P2 · Stagnacja sieciowe [h]"),
-    ("number.p3_placeholder",               "P3 · Raportowanie temp [min]"),
-    ("number.t1_offline_switch_light",      "T1 · Offline switch/light [min]"),
-    ("number.t2_offline_temp_hum",          "T2 · Offline temp/hum [min]"),
-    ("number.t3_offline_door_leak_motion",  "T3 · Offline door/leak [min]"),
+    # FIX 2026-07-07: realne entity_id — HA tworzy je z device-name+entity-name (object_id
+    # ignorowane); powstały po naprawie device.name w ParamSync + restarcie HA. + 6 progów.
+    ("number.lora_gateway_g2_p1_stagnation_bateryjne",      "P1 · Stagnacja bateryjne [h]"),
+    ("number.lora_gateway_g2_p2_stagnation_sieciowe",       "P2 · Stagnacja sieciowe [h]"),
+    ("number.lora_gateway_g2_p3_raportowanie_temp",         "P3 · Raportowanie temp [min]"),
+    ("number.lora_gateway_g2_t1_offline_switch_light",      "T1 · Offline switch/light [min]"),
+    ("number.lora_gateway_g2_t2_offline_temp_hum",          "T2 · Offline temp/hum [min]"),
+    ("number.lora_gateway_g2_t3_offline_door_leak_motion",  "T3 · Offline door/leak [min]"),
+    ("number.lora_gateway_g2_th_prog_temp_wysoka",          "TH · Próg temp. wysoka [°C]"),
+    ("number.lora_gateway_g2_tl_prog_temp_niska",           "TL · Próg temp. niska [°C]"),
+    ("number.lora_gateway_g2_hh_prog_wilg_wysoka",          "HH · Próg wilg. wysoka [%]"),
+    ("number.lora_gateway_g2_hl_prog_wilg_niska",           "HL · Próg wilg. niska [%]"),
+    ("number.lora_gateway_g2_bl_prog_bateria_niska",        "BL · Próg bateria niska [%]"),
+    ("number.lora_gateway_g2_bc_prog_bateria_krytyczna",    "BC · Próg bateria kryt. [%]"),
 ]
-SEND_BTN_CONFIG = "button.lora_gateway_g1_lora_wyslij_config"
-SEND_BTN_TIMEOUT = "button.lora_gateway_g1_lora_wyslij_timeout"
+SEND_BTN_CONFIG = "button.lora_gateway_g2_lora_wyslij_config"
+SEND_BTN_TIMEOUT = "button.lora_gateway_g2_lora_wyslij_timeout"
 
 
 def send_button(name, eid, icon, color):
@@ -416,14 +424,14 @@ def offline_count_tile():
 # ── HARMONOGRAM / KALENDARZ (STEP 4 — krok 16) ──
 # Encje publikowane przez bramkę (test_step4/5): tryb produkcji + next change + hash + sloty,
 # przyciski push/pull harmonogramu, oraz lokalny kalendarz odtworzony z ICS.
-SCHED_MODE       = "sensor.lora_gateway_g1_gw_g1_tryb"
-SCHED_MODE_NEXT  = "sensor.lora_gateway_g1_gw_g1_tryb_nastepna_zmiana"
-SCHED_SLOTS      = "sensor.lora_gateway_g1_gw_g1_harmonogram_slotow"
-SCHED_HASH       = "sensor.lora_gateway_g1_gw_g1_hash_kalendarza"
-SCHED_BTN_PUSH   = "button.lora_gateway_g1_gw_g1_push_schedule_up"
-SCHED_BTN_SYNC   = "button.lora_gateway_g1_gw_g1_sync_schedule"
-SCHED_CALENDAR   = "calendar.lora_g1"
-GW_MODE          = "sensor.lora_gateway_g1_gw_g1_tryb_pracy_bramki"  # STEP 5: day/night/all-time
+SCHED_MODE       = "sensor.lora_gateway_g2_gw_g2_tryb"
+SCHED_MODE_NEXT  = "sensor.lora_gateway_g2_gw_g2_tryb_nastepna_zmiana"
+SCHED_SLOTS      = "sensor.lora_gateway_g2_gw_g2_harmonogram_slotow"
+SCHED_HASH       = "sensor.lora_gateway_g2_gw_g2_hash_kalendarza"
+SCHED_BTN_PUSH   = "button.lora_gateway_g2_gw_g2_push_schedule_up"
+SCHED_BTN_SYNC   = "button.lora_gateway_g2_gw_g2_sync_schedule"
+SCHED_CALENDAR   = "calendar.lora_g2"
+GW_MODE          = "sensor.lora_gateway_g2_gw_g2_tryb_pracy_bramki"  # STEP 5: day/night/all-time
 
 
 def gw_mode_card():
@@ -445,7 +453,7 @@ def gw_mode_card():
 
 
 def schedule_view():
-    """Widok Harmonogram: bieżący tryb produkcji + synchronizacja + lokalny kalendarz G1."""
+    """Widok Harmonogram: bieżący tryb produkcji + synchronizacja + lokalny kalendarz G2."""
     return {"path": "lora-schedule", "title": "Harmonogram", "icon": "mdi:calendar-clock",
             "cards": [{"type": "vertical-stack", "cards": [
                 {"type": "custom:button-card", "template": "lora_hdr", "name": "TRYB PRACY"},
@@ -457,56 +465,230 @@ def schedule_view():
                 {"type": "horizontal-stack", "cards": [
                     stat_tile(SCHED_SLOTS, "SLOTY", "mdi:calendar-multiple"),
                     stat_tile(SCHED_HASH, "HASH KALENDARZA", "mdi:fingerprint")]},
-                {"type": "custom:button-card", "template": "lora_hdr", "name": "SYNCHRONIZACJA"},
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "SYNCHRONIZACJA HARMONOGRAMU"},
+                # PULL = pobierz z supervisora (sup→bramka), PUSH = wyślij w górę (bramka→sup).
+                # Oba kierunki na dashboardzie bramki (parytet z supervisorem).
                 {"type": "horizontal-stack", "cards": [
-                    send_button("Pobierz (Sync)", SCHED_BTN_SYNC, "mdi:calendar-sync", "#4ade80"),
-                    send_button("Wyślij w górę", SCHED_BTN_PUSH, "mdi:upload", "#22d3ee")]},
-                {"type": "custom:button-card", "template": "lora_hdr", "name": "KALENDARZ G1 (LOKALNY)"},
+                    send_button("⬇ PULL — z supervisora", SCHED_BTN_SYNC, "mdi:calendar-arrow-left", "#4ade80"),
+                    send_button("⬆ PUSH — do supervisora", SCHED_BTN_PUSH, "mdi:calendar-arrow-right", "#22d3ee")]},
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "KALENDARZ G2 (LOKALNY)"},
                 {"type": "calendar", "initial_view": "listWeek", "entities": [SCHED_CALENDAR],
                  "card_mod": {"style": "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;"
                                        "border-radius:12px;box-shadow:none;overflow:hidden;}"}},
             ]}]}
 
 
+def day_night_card():
+    """STEP 5+: WIELKA ikona Dzień/Noc + świt/zmierzch (z sensor.lora_g2_sun_period/_sunrise/_sunset).
+    Pora dnia liczona LOKALNIE na bramce (lat/lon + zegar) — niezależnie od HA."""
+    P = "sensor.lora_gateway_g2_gw_g2_pora_dnia"
+    SR = "sensor.lora_gateway_g2_gw_g2_swit"
+    SS = "sensor.lora_gateway_g2_gw_g2_zmierzch"
+    content = (
+        "[[[ var p=states['" + P + "'];var st=p?p.state:'--';"
+        "var day=/Dzie/i.test(st);"
+        "var sr=states['" + SR + "'];var ss=states['" + SS + "'];"
+        "var srT=sr?sr.state:'--';var ssT=ss?ss.state:'--';"
+        "var icon=day?'☀️':'🌙';var col=day?'#fbbf24':'#c084fc';var lbl=day?'DZIEŃ':'NOC';"
+        "return `<div style=\"display:flex;align-items:center;gap:18px;width:100%;\">"
+        "<div style=\"font-size:54px;line-height:1;filter:drop-shadow(0 0 12px ${col}55);\">${icon}</div>"
+        "<div style=\"display:flex;flex-direction:column;gap:5px;\">"
+        "<span style=\"font-size:26px;font-weight:800;color:${col};letter-spacing:3px;\">${lbl}</span>"
+        "<span style=\"font-size:11px;color:#525252;\">🌅 świt <span style=\"color:#e5e5e5;font-weight:700;\">${srT}</span>"
+        "  ·  🌇 zmierzch <span style=\"color:#e5e5e5;font-weight:700;\">${ssT}</span></span>"
+        "</div></div>`; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": P,
+            "show_icon": False, "show_name": False, "show_state": False,
+            "tap_action": {"action": "more-info"}, "custom_fields": {"content": content},
+            "styles": {"card": [{"padding": "18px 20px"}, {"height": "108px"}],
+                       "custom_fields": {"content": [{"justify-self": "start"}]}}}
+
+
+def time_compare_card():
+    """STEP 5+: porównanie CZAS BRAMKI vs CZAS SUPERVISORA (wyliczony z offsetu) + jakość czasu."""
+    LT = "sensor.lora_gateway_g2_gw_g2_czas_bramki"
+    OFF = "sensor.gw_g2_time_offset"
+    TQ = "sensor.lora_gateway_g2_gw_g2_jakosc_czasu"
+    content = (
+        "[[[ var lt=states['" + LT + "'];var ltT=lt?lt.state:'--';"
+        "var off=states['" + OFF + "'];var offS=off?off.state:'--';"
+        "var tq=states['" + TQ + "'];var tqS=tq?tq.state:'--';"
+        "var m=/([+-]?\\d+)/.exec(offS||'');var supT='—';"
+        "if(m&&ltT.indexOf(':')>=0){var pr=ltT.split(':');var d=new Date();"
+        "d.setHours(+pr[0],+pr[1],+pr[2]||0);d=new Date(d.getTime()-(+m[1])*1000);"
+        "supT=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2);}"
+        "var tqCol=/Zsynchron/i.test(tqS)?'#4ade80':(/Holdover/i.test(tqS)?'#fbbf24':'#f87171');"
+        "return `<div style=\"display:flex;flex-direction:column;gap:12px;width:100%;\">"
+        "<div style=\"display:flex;justify-content:space-between;gap:14px;\">"
+        "<div style=\"display:flex;flex-direction:column;\">"
+        "<span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;\">CZAS BRAMKI</span>"
+        "<span style=\"font-size:23px;font-weight:800;color:#22d3ee;font-variant-numeric:tabular-nums;\">${ltT}</span></div>"
+        "<div style=\"display:flex;flex-direction:column;text-align:right;\">"
+        "<span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;\">CZAS SUPERVISORA</span>"
+        "<span style=\"font-size:23px;font-weight:800;color:#22d3ee;font-variant-numeric:tabular-nums;\">${supT}</span></div></div>"
+        "<div style=\"display:flex;justify-content:space-between;font-size:10px;color:#525252;\">"
+        "<span>jakość: <span style=\"color:${tqCol};font-weight:700;\">${tqS}</span></span>"
+        "<span>Δ offset: <span style=\"color:#22d3ee;font-weight:700;\">${offS}</span></span></div>"
+        "</div>`; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": LT,
+            "show_icon": False, "show_name": False, "show_state": False,
+            "tap_action": {"action": "more-info"}, "custom_fields": {"content": content},
+            "styles": {"card": [{"padding": "16px 20px"}, {"height": "108px"}],
+                       "custom_fields": {"content": [{"justify-self": "start"}]}}}
+
+
+# ── ANOMALIE (liczniki bramki z atrybutami items — TO SAMO źródło co supervisor) ──
+ANOM_OFF = "sensor.lora_gateway_g2_gw_g2_anomalie_offline"
+ANOM_BAT = "sensor.lora_gateway_g2_gw_g2_anomalie_bateria"
+ANOM_OTH = "sensor.lora_gateway_g2_gw_g2_anomalie_inne"
+GW_PING = "button.lora_gateway_g2_gw_g2_ping"
+GW_DISC = "button.lora_gateway_g2_gw_g2_discovery"
+SEND_BTN_PROGI = "button.lora_gateway_g2_lora_wyslij_progi"
+VIO_SW = "switch.lora_virtual_i_o_g2_lora_test_switch"
+VIO_BTN = "button.lora_virtual_i_o_g2_lora_test_button"
+TQ_EID = "sensor.lora_gateway_g2_gw_g2_jakosc_czasu"
+
+
+def anom_tile(eid, label, icon):
+    """Licznik anomalii: czerwony gdy >0, szary gdy 0 (kolorystyka v10)."""
+    content = ("[[[ var s=states['" + eid + "'];var n=s?parseInt(s.state)||0:0;"
+               "var col=n>0?'#f87171':'#4ade80';"
+               "return `<div style=\"display:flex;flex-direction:column;justify-content:center;height:100%;\">"
+               "<span style=\"font-size:19px;font-weight:800;color:${col};\">${n}</span>"
+               "<span style=\"font-size:8px;font-weight:700;color:#525252;letter-spacing:2px;"
+               "margin-top:6px;\">" + label + "</span></div>`; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": eid,
+            "show_icon": False, "show_name": False, "show_state": False,
+            "tap_action": {"action": "more-info"}, "custom_fields": {"content": content},
+            "styles": {"card": [{"padding": "14px 16px"}, {"height": "88px"}],
+                       "custom_fields": {"content": [{"justify-self": "start"}]}}}
+
+
+def anom_list_card():
+    """Lista aktywnych anomalii z ATRYBUTÓW items 3 liczników (jedno źródło z MQTT/store).
+    Max 25 wierszy + licznik reszty; pusta lista = zielone ✓."""
+    ents = json.dumps([ANOM_OFF, ANOM_BAT, ANOM_OTH])
+    content = (
+        "[[[ var ents=" + ents + ";var rows='';var tot=0;"
+        "for(var k=0;k<ents.length;k++){var s=states[ents[k]];if(!s)continue;"
+        "var it=(s.attributes&&s.attributes.items)||[];"
+        "for(var i=0;i<it.length;i++){tot++;if(tot>25)continue;var r=it[i];"
+        "var v=(r.value!==undefined&&r.value!==null)?' · '+r.value:'';"
+        "rows+=`<div style=\"display:flex;justify-content:space-between;padding:4px 0;"
+        "border-bottom:1px solid #1f1f1f;\">"
+        "<span style=\"color:#e5e5e5;font-size:11px;font-weight:700;\">${r.dev||'?'}</span>"
+        "<span style=\"color:#f87171;font-size:10px;font-weight:800;letter-spacing:1px;\">"
+        "${(r.type||'').toUpperCase()}${v}</span></div>`;}}"
+        "if(tot===0)rows='<div style=\"color:#4ade80;font-size:12px;font-weight:700;padding:6px 0;\">"
+        "✓ BRAK AKTYWNYCH ANOMALII</div>';"
+        "var more=tot>25?`<div style=\"color:#525252;font-size:10px;padding-top:6px;\">… +${tot-25} kolejnych</div>`:'';"
+        "return `<div style=\"width:100%;max-height:420px;overflow-y:auto;\">${rows}${more}</div>`; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": ANOM_OFF,
+            "show_icon": False, "show_name": False, "show_state": False,
+            "tap_action": {"action": "more-info"}, "custom_fields": {"content": content},
+            "styles": {"card": [{"padding": "12px 16px"}],
+                       "grid": [{"grid-template-columns": "1fr"}],
+                       "custom_fields": {"content": [{"justify-self": "stretch"}, {"width": "100%"}]}}}
+
+
+def entities_dark(rows):
+    """Natywna karta entities w ciemnym stylu v10 (spójna z param_section)."""
+    return {"type": "entities", "show_header_toggle": False, "entities": rows,
+            "card_mod": {"style":
+                "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:12px;"
+                "box-shadow:none;padding:4px 6px;}"
+                ".card-content{padding:4px 8px;}"
+                "hui-generic-entity-row,hui-toggle-entity-row{padding:3px 4px;color:#e5e5e5;}"
+                ".text-content{color:#a0a0a0;font-size:12px;}"}}
+
+
 def build_config():
+    """7 zakładek — KAŻDA = jedna funkcja (2026-07-07, przebudowa na życzenie usera):
+    Bramka(status) / Harmonogram / Sterowanie / Pomiary / Alarmy / Parametry / Diagnostyka.
+    Wszystkie encje bindowane do REALNYCH id z HA (inwentaryzacja via REST — zero „Nie znaleziono")."""
+    # 1) BRAMKA — status łącza + statystyki + hashe (sam status, bez paneli funkcyjnych)
+    gwv = {"path": "lora-gw-stats", "title": "Bramka", "icon": "mdi:radio-tower",
+           "cards": [{"type": "vertical-stack", "cards": [
+               {"type": "custom:button-card", "template": "lora_hdr", "name": "BRAMKA G2"},
+               link_card(),
+               {"type": "custom:button-card", "template": "lora_hdr", "name": "STATYSTYKI URZĄDZEŃ"},
+               {"type": "horizontal-stack", "cards": [
+                   stat_tile("sensor.lora_gateway_g2_total", "TOTAL", "mdi:devices"),
+                   stat_tile("sensor.gw_g2_monitored", "MONITORED", "mdi:eye"),
+                   stat_tile("sensor.lora_gateway_g2_priority", "PRIORITY", "mdi:alert-octagon"),
+                   stat_tile("sensor.gw_g2_offline", "OFFLINE", "mdi:lan-disconnect")]},
+               {"type": "horizontal-stack", "cards": [
+                   stat_tile("sensor.gw_g2_uptime", "UPTIME", "mdi:timer"),
+                   stat_tile("sensor.gw_g2_last_hb", "OSTATNI HB", "mdi:heart-pulse")]},
+               {"type": "custom:button-card", "template": "lora_hdr", "name": "SYNCHRONIZACJA"},
+               {"type": "horizontal-stack", "cards": [
+                   stat_tile("sensor.gw_g2_hash_parametrow", "HASH PARAM", "mdi:tune-variant"),
+                   stat_tile("sensor.gw_g2_hash_disc", "HASH DISC", "mdi:fingerprint")]},
+           ]}]}
+    # 3) STEROWANIE — przekaźniki + wirtualne I/O + akcje LoRa (ping/discovery)
     control = {"path": "lora-control", "title": "Sterowanie", "icon": "mdi:lightbulb",
-               "type": "masonry", "cards": [
-                   {"type": "custom:button-card", "template": "lora_hdr", "name": "STEROWANIE"},
+               "cards": [{"type": "vertical-stack", "cards": [
+                   {"type": "custom:button-card", "template": "lora_hdr", "name": "PRZEKAŹNIKI"},
                    {"type": "horizontal-stack",
-                    "cards": [switch_card(n, e) for n, e in SWITCHES]}]}
-    alarms = {"path": "lora-alarms", "title": "Alarmy", "icon": "mdi:fire-alert", "cards": [
-        {"type": "custom:button-card", "template": "lora_hdr", "name": "CZUJNIKI"},
-        {"type": "horizontal-stack", "cards": [alarm_card(*a) for a in ALARMS]}]}
-    sensor_cards = [{"type": "custom:button-card", "template": "lora_hdr", "name": "POMIARY"}]
+                    "cards": [switch_card(n, e) for n, e in SWITCHES]},
+                   {"type": "custom:button-card", "template": "lora_hdr", "name": "WIRTUALNE I/O"},
+                   entities_dark([{"entity": VIO_SW, "name": "VSwitch Test (dwustronny)"},
+                                  {"entity": VIO_BTN, "name": "VButton Test (impuls)"}]),
+                   {"type": "custom:button-card", "template": "lora_hdr", "name": "AKCJE LoRa"},
+                   {"type": "horizontal-stack", "cards": [
+                       send_button("Ping (test łącza)", GW_PING, "mdi:radar", "#22d3ee"),
+                       send_button("Discovery (mapa)", GW_DISC, "mdi:magnify-scan", "#4ade80")]},
+               ]}]}
+    # 4) POMIARY — temperatury/wilgotność + wykresy + czujniki priority + pozostałe
+    sensor_cards = [{"type": "custom:button-card", "template": "lora_hdr", "name": "TEMPERATURA & WILGOTNOŚĆ"}]
     for name, slug in TEMPS:
         sensor_cards.append(temp_stat(name, slug))
         sensor_cards.append({"type": "horizontal-stack", "cards": [
             chart(f"sensor.{slug}_temperature", "Temperatura", "#22d3ee", 1),
             chart(f"sensor.{slug}_humidity", "Wilgotność", "#4ade80", 0, 0, 100)]})
+    sensor_cards += [
+        {"type": "custom:button-card", "template": "lora_hdr", "name": "CZUJNIKI PRIORITY"},
+        {"type": "horizontal-stack", "cards": [alarm_card(*a) for a in ALARMS]},
+        *other_section(),
+    ]
     sensors = {"path": "lora-sensors", "title": "Pomiary", "icon": "mdi:thermometer",
                "cards": [{"type": "vertical-stack", "cards": sensor_cards}]}
-    gwv = {"path": "lora-gw-stats", "title": "Bramka", "icon": "mdi:radio-tower",
-           "cards": [{"type": "vertical-stack", "cards": [
-               {"type": "custom:button-card", "template": "lora_hdr", "name": "BRAMKA G1"},
-               link_card(),
-               {"type": "custom:button-card", "template": "lora_hdr", "name": "STATYSTYKI URZĄDZEŃ"},
-               {"type": "horizontal-stack", "cards": [
-                   stat_tile("sensor.lora_gateway_g1_total", "TOTAL", "mdi:devices"),
-                   stat_tile("sensor.lora_g1_gw_monitored", "MONITORED", "mdi:eye"),
-                   stat_tile("sensor.lora_gateway_g1_priority", "PRIORITY", "mdi:alert-octagon"),
-                   offline_count_tile()]},
-               {"type": "horizontal-stack", "cards": [
-                   stat_tile("sensor.lora_g1_gw_uptime", "UPTIME", "mdi:timer"),
-                   stat_tile("sensor.lora_g1_gw_last_hb", "OSTATNI HB", "mdi:heart-pulse")]},
-               {"type": "custom:button-card", "template": "lora_hdr", "name": "SYNCHRONIZACJA"},
-               {"type": "horizontal-stack", "cards": [
-                   stat_tile("sensor.gw_g1_hash_parametrow", "HASH PARAM", "mdi:tune-variant"),
-                   stat_tile("sensor.gw_g1_hash_disc", "HASH DISC", "mdi:fingerprint")]},
-               *param_section(),
-               *other_section(),
-           ]}]}
-    return {"title": "LoRa Gateway G1", "button_card_templates": TEMPLATES,
-            "views": [gwv, schedule_view(), control, alarms, sensors]}
+    # 5) ALARMY — liczniki anomalii + żywa lista z atrybutów MQTT (jedno źródło ze store bramki)
+    alarms = {"path": "lora-alarms", "title": "Alarmy", "icon": "mdi:fire-alert",
+              "cards": [{"type": "vertical-stack", "cards": [
+                  {"type": "custom:button-card", "template": "lora_hdr", "name": "LICZNIKI ANOMALII"},
+                  {"type": "horizontal-stack", "cards": [
+                      anom_tile(ANOM_OFF, "OFFLINE", "mdi:lan-disconnect"),
+                      anom_tile(ANOM_BAT, "BATERIA", "mdi:battery-alert"),
+                      anom_tile(ANOM_OTH, "INNE (TEMP/WILG/…)", "mdi:alert")]},
+                  {"type": "custom:button-card", "template": "lora_hdr", "name": "AKTYWNE ANOMALIE (LISTA)"},
+                  anom_list_card(),
+              ]}]}
+    # 6) PARAMETRY — osobna zakładka: 12 pól + 3 przyciski wysyłki + hash
+    params = {"path": "lora-params", "title": "Parametry", "icon": "mdi:tune",
+              "cards": [{"type": "vertical-stack", "cards": [
+                  *param_section(),
+                  {"type": "horizontal-stack", "cards": [
+                      send_button("Wyślij Progi", SEND_BTN_PROGI, "mdi:thermometer-alert", "#fbbf24"),
+                      stat_tile("sensor.gw_g2_hash_parametrow", "HASH PARAM", "mdi:tune-variant")]},
+              ]}]}
+    # 7) DIAGNOSTYKA — czas/pora dnia, jakość czasu, łączność z supervisorem
+    diag = {"path": "lora-diag", "title": "Diagnostyka", "icon": "mdi:stethoscope",
+            "cards": [{"type": "vertical-stack", "cards": [
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "CZAS & PORA DNIA"},
+                {"type": "horizontal-stack", "cards": [day_night_card(), time_compare_card()]},
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "JAKOŚĆ CZASU & SYNC"},
+                {"type": "horizontal-stack", "cards": [
+                    stat_tile(TQ_EID, "JAKOŚĆ CZASU", "mdi:clock-check"),
+                    stat_tile("sensor.gw_g2_time_offset", "OFFSET", "mdi:clock-alert"),
+                    stat_tile("sensor.gw_g2_last_sync", "OSTATNI SYNC", "mdi:clock-sync")]},
+                {"type": "custom:button-card", "template": "lora_hdr", "name": "ŁĄCZNOŚĆ Z SUPERVISOREM"},
+                {"type": "horizontal-stack", "cards": [
+                    stat_tile("sensor.gw_g2_supervisor_last_rx", "OSTATNI RX OD SUP", "mdi:download-network"),
+                    stat_tile("sensor.gw_g2_last_hb", "OSTATNI HB → SUP", "mdi:heart-pulse")]},
+            ]}]}
+    return {"title": "LoRa Gateway G2", "button_card_templates": TEMPLATES,
+            "views": [gwv, schedule_view(), control, sensors, alarms, params, diag]}
 
 
 async def deploy():

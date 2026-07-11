@@ -1,0 +1,25 @@
+# systemd oneshot — nadaje `td` prawo zapisu do HA .storage (bramka pisze ICS kalendarza tam).
+# Problem: każdy restart HA core resetuje .storage na root:755 → bramka nie zapisze ICS (Permission denied)
+# → calendar.lora_g1 zamraża się. Ten unit przywraca dostęp po każdym boocie/starcie HA.
+#
+# INSTALACJA (na bramce, jako root):
+#   sudo cp lora-storage-perm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lora-storage-perm.service
+#
+# UWAGA (przenośność/docelowo): czystsze niż chmod 777 jest ACL tylko dla td:
+#   ExecStart=/usr/bin/setfacl -m u:td:rwx /var/lib/homeassistant/homeassistant/.storage
+# a NAJCZYŚCIEJ (docelowy fix B): bramka pisze kalendarz przez HA calendar.create_event/WS
+# zamiast pliku ICS w .storage — wtedy ten unit w ogóle niepotrzebny (zero perm-hacków).
+
+[Unit]
+Description=LoRa SCADA: grant gateway write access to HA .storage (calendar ICS)
+After=home-assistant@homeassistant.service hassio-supervisor.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 20
+ExecStart=/bin/chmod 777 /var/lib/homeassistant/homeassistant/.storage
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,56 @@
+id: '1772646904080'
+alias: Motion RA13 RA14 RA15 (Toyota)
+description: ''
+triggers:
+- entity_id:
+  - binary_sensor.ra13_s1_occupancy
+  - binary_sensor.ra13_s2_occupancy
+  - binary_sensor.ra15_s1_occupancy
+  - binary_sensor.ra15_s2_occupancy
+  to: 'on'
+  trigger: state
+- entity_id:
+  - binary_sensor.ra13_s1_occupancy
+  - binary_sensor.ra13_s2_occupancy
+  - binary_sensor.ra15_s1_occupancy
+  - binary_sensor.ra15_s2_occupancy
+  to: 'off'
+  for:
+    seconds: '{{ states(''input_number.motion_timeout'') | int(150) }}'
+  trigger: state
+conditions:
+- condition: state
+  entity_id: sun.sun
+  state: below_horizon
+- condition: state
+  entity_id: input_boolean.motion_enabled
+  state: 'on'
+actions:
+- choose:
+  - conditions:
+    - condition: template
+      value_template: "{% set ss = ['binary_sensor.ra13_s1_occupancy', 'binary_sensor.ra13_s2_occupancy', 'binary_sensor.ra15_s1_occupancy', 'binary_sensor.ra15_s2_occupancy'] %}\n{% set ns = namespace(any_on=false) %}\n{% for s in ss %}\n  {% set lqi = 'sensor.' ~ s.split('.')[1] | replace('_occupancy','') ~ '_lqi' %}\n  {% if states(s) == 'on' and states(lqi) | int(0) > 0 %}{% set ns.any_on = true %}{% endif %}\n{% endfor %}\n{{ ns.any_on }}"
+    sequence:
+    - action: switch.turn_on
+      target:
+        entity_id:
+        - switch.ra13_2
+        - switch.ra13_3
+        - switch.ra14_2
+        - switch.ra14_3
+        - switch.ra15_2
+        - switch.ra15_3
+  - conditions:
+    - condition: template
+      value_template: "{% set ss = ['binary_sensor.ra13_s1_occupancy', 'binary_sensor.ra13_s2_occupancy', 'binary_sensor.ra15_s1_occupancy', 'binary_sensor.ra15_s2_occupancy'] %}\n{% set ns = namespace(any_on=false) %}\n{% for s in ss %}\n  {% set lqi = 'sensor.' ~ s.split('.')[1] | replace('_occupancy','') ~ '_lqi' %}\n  {% if states(s) == 'on' and states(lqi) | int(0) > 0 %}{% set ns.any_on = true %}{% endif %}\n{% endfor %}\n{{ not ns.any_on }}"
+    sequence:
+    - action: switch.turn_off
+      target:
+        entity_id:
+        - switch.ra13_2
+        - switch.ra13_3
+        - switch.ra14_2
+        - switch.ra14_3
+        - switch.ra15_2
+        - switch.ra15_3
+mode: restart

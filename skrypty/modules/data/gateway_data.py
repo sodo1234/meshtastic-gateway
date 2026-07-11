@@ -28,7 +28,7 @@ class GatewayData:
                  mon_interval=30, pri_interval=10, max_payload=150,
                  thresholds=None, send_spacing=0,
                  report_interval=0, offline_after=None, offline_after_fn=None,
-                 on_avail=None):
+                 on_avail=None, report_full_every=1, avail_blob_fn=None):
         self.gw_id = gw_id
         self.disc = discovery          # GatewayDiscovery — short_ids, is_monitored, devices
         self.lora = lora
@@ -56,6 +56,20 @@ class GatewayData:
         # (ścieżka step 3 bez zmian). Naprawia fałszywe offline urządzeń bateryjnych,
         # które meldują rzadziej niż domyślne ~32 min.
         self.offline_after_fn = offline_after_fn
+        # (d) REDUKCJA RUCHU LoRa 24/7: report_liveness domyślnie re-wysyła availability
+        # WSZYSTKICH urządzeń co sweep (199 dev = ~36 pakietów/15min, w kółko, choć nic się
+        # nie zmienia — 688/728 pakietów `b` to sam bit `a:`). report_full_every=N → pełny
+        # sweep tylko co N-ty raz; pomiędzy wysyłamy TYLKO urządzenia ze ZMIENIONĄ dostępnością
+        # (delta). =1 → zachowanie jak dotąd (bezpieczny default). Supervisor OfflineMonitor to
+        # backstop na last_msg_ts — pełny resync musi mieścić się w jego timeoucie (T2=60min):
+        # report_full_every=2 przy report_interval=900 → pełny co 30min (bezpieczne), ruch −~45%.
+        self.report_full_every = max(1, int(report_full_every or 1))
+        self._sweep_n = 0
+        # (d) PEŁNY sweep availability → JEDEN skompresowany blob (ReliableTransfer kind='avail')
+        # zamiast ~33 pakietów `b` (6 dev/pakiet, ts powtórzony). Payload {ts, a:{sid:0/1}} dla
+        # WSZYSTKICH 199 → 1 transfer. DELTA (zmiany availability) nadal małymi `b` natychmiast
+        # (event-driven z2m) — responsywność bez zmian. None = stare zachowanie (per-device `b`).
+        self.avail_blob_fn = avail_blob_fn
         self.states = {}               # {dev: last full Z2M state dict}
         self.last_seen = {}            # {dev: "date HH:MM:SS"}
         self.last_msg_ts = {}          # {dev: epoch} — dowolna wiadomość z2m (dla stagnation)
@@ -63,6 +77,9 @@ class GatewayData:
         self._alive = {}               # {dev: bool} — ostatnio zaraportowana dostępność (transition log)
         self._start_ts = 0.0           # znacznik startu (grace zanim ogłosimy offline)
         self._out = deque()            # paced outbound queue (both batchers share it)
+        # ChannelArbiter (opcjonalny, ustawiany z harnessu): gdy trwa transfer-plik, spaced sender
+        # WSTRZYMUJE drenaż `_out` (poza gate w Batcher.flush — domyka backlog już zakolejkowany).
+        self.arbiter = None
         self._sender_running = False
         self._report_running = False
         self.mon_batch = Batcher(gw_id, self._send, interval=mon_interval,
@@ -125,9 +142,13 @@ class GatewayData:
             dtype = self.disc.devices[dev].get('type', 'sensor')
             full = {k: self.states[dev][k] for k in TYPE_CAPS.get(dtype, ())
                     if k in self.states.get(dev, {})}
-        self._enqueue(dev, full, force=True, available=online)
-        if self._alive.get(dev) != online and self.log:
-            self.log.info('DATA', f"{'🟢' if online else '💀'} {dev} z2m availability={p}")
+        # ANTY-SPAM: enqueue TYLKO na realną ZMIANĘ dostępności + force=False (batcher pakuje wiele
+        # urządzeń w 1 pakiet). Poprzednio force=True + brak strażnika zmiany → z2m publikujący
+        # availability 199 urządzeń (retained/re-eval) = 199 osobnych pakietów `b` [[sid,{a:0}]].
+        if self._alive.get(dev) != online:
+            self._enqueue(dev, full, force=False, available=online)
+            if self.log:
+                self.log.info('DATA', f"{'🟢' if online else '💀'} {dev} z2m availability={p}")
         self._alive[dev] = online
 
     # ── ingest ──────────────────────────────────────────
@@ -223,6 +244,16 @@ class GatewayData:
         utyka. Dla non-monitored wysyłamy TYLKO bit `a:` (puste caps, ~minimalny payload — szanuje
         LoRa), pełne wartości tylko dla monitored (heartbeat danych #8)."""
         now = time.time()
+        # (d) pełny sweep co report_full_every-ty raz; pomiędzy — tylko zmiany (delta).
+        # KOLEJNOŚĆ: sprawdź PRZED inkrementem → PIERWSZY sweep po starcie jest FULL (blob dla
+        # wszystkich zamiast 199×`b`, bo przy starcie _alive puste = changed dla wszystkich).
+        full_sweep = (self.report_full_every <= 1) or (self._sweep_n % self.report_full_every == 0)
+        self._sweep_n += 1
+        # (d) blob: pełny sweep availability jednym skompresowanym transferem (kind='avail')
+        # zamiast ~33 pakietów `b`. Zbieramy {sid: bit} dla WSZYSTKICH; monitored dalej dostają
+        # wartości `b` (heartbeat #8), non-monitored trafiają TYLKO do blobu.
+        use_blob = bool(full_sweep and self.avail_blob_fn)
+        blob = {}
         for dev, info in list(self.disc.devices.items()):
             monitored = self.disc.is_monitored(dev)
             oa = self._oa_for(info.get('type', 'sensor'))   # per-typ T1/T2/T3 (lub skalar)
@@ -236,23 +267,52 @@ class GatewayData:
                 if not seen and (now - self._start_ts) < oa:
                     continue                             # grace startowy — z2m nie retainuje stanu
                 alive = seen and (now - ts) < oa
+            sid = self.disc.short_ids.get(dev)
+            if use_blob and sid is not None:
+                blob[str(sid)] = 1 if alive else 0        # availability wszystkich → blob
+            changed = (self._alive.get(dev) != alive)    # (d) zmiana dostępności od ostatniego sweepu
+            # EFEKTYWNOŚĆ (2026-07-05): non-monitored na PEŁNYM sweepie z blobem → TYLKO blob, NIE
+            # także `b`. Bug: przy starcie (pusty _alive → changed=True dla WSZYSTKICH) słał 199×
+            # non-monitored I przez `b` I do blobu (redundancja = zalew ~33 pakietów `b`). Monitored:
+            # `b` (wartości) na zmianę/sweep. Non-monitored bez blobu (między sweepami): `b` na deltę.
+            if monitored:
+                send_b = changed or full_sweep
+            elif use_blob:
+                send_b = False                            # pełny sweep → availability przez blob (1 transfer)
+            else:
+                send_b = changed                          # między sweepami: tylko realna delta
             if alive:
-                full = {}
-                if monitored:                            # pełne wartości tylko dla monitored
-                    dtype = info.get('type', 'sensor')
-                    full = {k: self.states[dev][k] for k in TYPE_CAPS.get(dtype, ())
-                            if k in self.states.get(dev, {})}
-                self._enqueue(dev, full, force=True, available=True)
+                if send_b:
+                    full = {}
+                    if monitored:                        # pełne wartości tylko dla monitored
+                        dtype = info.get('type', 'sensor')
+                        full = {k: self.states[dev][k] for k in TYPE_CAPS.get(dtype, ())
+                                if k in self.states.get(dev, {})}
+                    self._enqueue(dev, full, force=False, available=True)   # akumuluj, NIE flush per-dev
                 if self._alive.get(dev) is False and self.log:
                     self.log.info('DATA', f'🟢 {dev} ONLINE (z2m wrócił)')
                 self._alive[dev] = True
             else:
+                if send_b:
+                    self._enqueue(dev, {}, force=False, available=False)   # akumuluj, NIE flush per-dev
                 if self._alive.get(dev) is not False and self.log:
                     silence = int(now - ts) if seen else -1
                     self.log.warn('DATA', f'💀 {dev} OFFLINE (cisza z2m '
                                   f'{silence}s > {oa}s) → available=0')
-                self._enqueue(dev, {}, force=True, available=False)
                 self._alive[dev] = False
+        # (d) pełny sweep availability → JEDEN skompresowany transfer (ts w blobie RAZ, nie per-pakiet)
+        if use_blob and blob:
+            try:
+                self.avail_blob_fn({'ts': int(now), 'a': blob})
+                if self.log:
+                    self.log.info('DATA', f'📤 avail blob: {len(blob)} sid → ReliableTransfer (1 transfer, zamiast ~{-(-len(blob)//6)} pkt `b`)')
+            except Exception as e:
+                if self.log:
+                    self.log.warn('DATA', f'avail blob błąd: {e}')
+        # JEDEN flush po sweepie → Batcher pakuje wiele urządzeń w pakiet (split do max_payload).
+        # Po wprowadzeniu blobu tu lecą tylko: wartości monitored (heartbeat #8) + delty zmian.
+        self.pri_batch.flush()
+        self.mon_batch.flush()
 
     # ── refresh on-demand (supervisor `req`) ────────────
     def handle_req(self, data):
@@ -293,6 +353,9 @@ class GatewayData:
 
     def _sender_loop(self):
         while self._sender_running:
+            if self.arbiter is not None and self.arbiter.busy():
+                time.sleep(0.2)                  # transfer-plik trwa → wstrzymaj drenaż `b` (kanał zajęty)
+                continue
             if not self._out:
                 time.sleep(0.05)
                 continue

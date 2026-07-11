@@ -1,0 +1,84 @@
+# Schedule ON — zmodyfikowana wg spec motion (timer/noc/bramka).
+# Import: Ustawienia -> Automatyzacje -> ta automatyzacja -> Edytuj w YAML -> wklej.
+id: '1774458295533'
+alias: Schedule ON
+description: ''
+triggers:
+- trigger: calendar.event_started
+  target:
+    entity_id: calendar.lora_g1
+  options:
+    offset:
+      days: 0
+      hours: 0
+      minutes: 0
+      seconds: 0
+    offset_type: before
+conditions:
+- condition: template
+  value_template: '{{ trigger.calendar_event.summary == "PRODUKCJA" }}
+
+    '
+actions:
+- action: input_boolean.turn_on
+  target:
+    entity_id: input_boolean.schedule_switch
+- action: switch.turn_off
+  target:
+    entity_id:
+    - switch.ra1_2
+    - switch.ra2_2
+    - switch.ra3_2
+    - switch.ra4_2
+    - switch.ra5_2
+    - switch.ra6_2
+    - switch.ra7_2
+    - switch.ra8_2
+    - switch.ra9_2
+    - switch.ra10_2
+    - switch.ra11_2
+    - switch.ra12_2
+    - switch.ra13_2
+    - switch.ra14_2
+    - switch.ra15_2
+    - switch.rb1_2
+    - switch.rb2_2
+    - switch.rb3_2
+    - switch.ra1_3
+    - switch.ra2_3
+    - switch.ra3_3
+    - switch.ra4_3
+    - switch.ra5_3
+    - switch.ra6_3
+    - switch.ra7_3
+    - switch.ra8_3
+    - switch.ra9_3
+    - switch.ra10_3
+    - switch.ra11_3
+    - switch.ra12_3
+    - switch.ra13_3
+    - switch.ra14_3
+    - switch.ra15_3
+    - switch.rb1_3
+    - switch.rb2_3
+    - switch.rb3_3
+    - switch.rb4_2
+    - switch.rb5_2
+    - switch.rb6_2
+    - switch.rb7_2
+    - switch.rb8_2
+    - switch.rb9_2
+    - switch.rb10_2
+    - switch.rb11_2
+    - switch.rb4_3
+    - switch.rb5_3
+    - switch.rb6_3
+    - switch.rb7_3
+    - switch.rb8_3
+    - switch.rb9_3
+    - switch.rb10_3
+    - switch.rb11_3
+- action: input_boolean.turn_off      # 22:15 PRODUKCJA start: swiatlo OFF -> motion tez OFF
+  target:
+    entity_id: input_boolean.motion_enabled
+mode: single

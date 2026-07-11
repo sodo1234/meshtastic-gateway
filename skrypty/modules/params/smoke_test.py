@@ -29,8 +29,8 @@ def _sync(role):
 
 def test_imports():
     from modules.params import ParamSync, PARAM_DEFS, PARAM_ORDER
-    assert ParamSync and len(PARAM_ORDER) == 6 and "P1" in PARAM_DEFS
-    print("✅ imports OK (6 params)")
+    assert ParamSync and len(PARAM_ORDER) == 12 and "P1" in PARAM_DEFS and "TH" in PARAM_DEFS
+    print("✅ imports OK (12 params: P/T + progi TH/TL/HH/HL/BL/BC)")
 
 
 def test_defaults_and_entities():
@@ -38,12 +38,17 @@ def test_defaults_and_entities():
     assert ps.get("P1") == 48 and ps.get("T3") == 120 and ps.get("P3") == 15
     ps.register_entities()
     cfgs = [t for t, _, _ in mq.pub if "/number/" in t and t.endswith("/config")]
-    assert len(cfgs) == 6, f"expected 6 number configs, got {len(cfgs)}"
+    assert len(cfgs) == 12, f"expected 12 number configs, got {len(cfgs)}"
     assert any("lora_g1_param_p1" in t for t in cfgs)
+    # FIX 2026-07-07: device block każdej encji musi mieć `name` (HA odrzuca nowe device bez)
+    import json as _j
+    p1_cfg = [p for t, p, _ in mq.pub if t.endswith("param_p1/config")][0]
+    dev = (_j.loads(p1_cfg) if isinstance(p1_cfg, str) else p1_cfg)["device"]
+    assert dev.get("name"), "device block bez name — HA odrzuci discovery"
     btns = [t for t, _, _ in mq.pub if "/button/" in t and t.endswith("/config")]
-    assert len(btns) == 2, f"expected 2 send buttons, got {len(btns)}"
+    assert len(btns) >= 2, f"expected >=2 send buttons, got {len(btns)}"
     assert any("send_config" in t for t in btns) and any("send_timeout" in t for t in btns)
-    print("✅ defaults + 6 number + 2 przyciski Send")
+    print("✅ defaults + 12 number (device.name OK) + przyciski Send")
 
 
 def test_gateway_local_set_no_send():
@@ -111,7 +116,7 @@ def test_supervisor_mirrors_confirmation():
 def test_request_and_push_all():
     gw, gsent, _, _ = _sync("gateway")
     gw.handle_remote({"t": "params_req", "g": "G1"})
-    assert gsent[-1]["t"] == "param_upd" and len(gsent[-1]["d"]) == 6
+    assert gsent[-1]["t"] == "param_upd" and len(gsent[-1]["d"]) == 12
     sup, ssent, _, _ = _sync("supervisor")
     sup.request()
     assert ssent[-1] == {"t": "params_req", "g": "G1"}

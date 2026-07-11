@@ -324,6 +324,10 @@ class HAEntities:
             ("gw_uptime", "Uptime", "{{ value_json.uptime | default(0) }}", "mdi:timer", "s", "sensor"),
             ("gw_monitored", "Monitored", "{{ value_json.monitored | default(0) }}", "mdi:eye", None, "sensor"),
             ("gw_last_hb", "Last HB", "{{ value_json.last_hb | default('--') }}", "mdi:heart-pulse", None, "sensor"),
+            # FIX 2026-07-07 (audyt): kafel OFFLINE dashboardu bramki czytał podzbiór urządzeń
+            # z generatora (pokazywał 2 vs realnych ~174) — autorytatywna encja z gwstat.offline
+            # (liczona z data._alive w publish_gwstat). HA nada entity_id z name → sensor.gw_g2_offline.
+            ("gw_offline", "Offline", "{{ value_json.offline | default(0) }}", "mdi:lan-disconnect", None, "sensor"),
             ("sup_link", "Supervisor Link", "{{ value_json.sup_link | default('OFF') }}", None, None, "binary_sensor"),
             ("sup_last_rx", "Supervisor Last RX", "{{ value_json.sup_last_rx | default('--') }}", "mdi:download-network", None, "sensor"),
             ("time_offset", "Time Offset", "{{ value_json.time_offset | default('--') }}", "mdi:clock-alert", None, "sensor"),

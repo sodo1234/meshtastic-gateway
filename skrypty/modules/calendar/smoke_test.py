@@ -141,10 +141,14 @@ def test_transfer_reassembly_ok():
     rx.dispatch(begin)
     for c in cf:
         rx.dispatch(c)
-    res = rx.handle_end(end)
-    assert res and res[2] == slots and got and got[0][2] == slots
+    # BEZ żadnego cal_end: znamy total (cal_begin dotarł) → komplet chunków finalizuje od razu.
+    assert got and got[0][2] == slots
     assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}
-    print("✅ transfer reassembly (wiele chunków) → on_received + ACK ok=1")
+    # cal_end dochodzi później (backup) → idempotentny re-ACK, bez ponownego on_received.
+    res = rx.handle_end(end)
+    assert res is None and len(got) == 1
+    assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}
+    print("✅ transfer reassembly (wiele chunków) → finalizacja na ostatnim chunku, cal_end=backup")
 
 
 def test_transfer_missing_chunk_nack():
@@ -174,10 +178,11 @@ def test_transfer_duplicate_end_reack():
     rx.dispatch(begin)
     for c in cf:
         rx.dispatch(c)
-    assert rx.handle_end(end)[2] == slots                       # 1. odbiór OK → on_received
+    # finalize-early: ostatni chunk finalizuje OD RAZU (bez czekania na cal_end, patrz handle_chunk)
+    assert got and got[-1] == slots                            # 1. on_received odpalił na ostatnim chunku
     assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}
     sent.clear()
-    assert rx.handle_end(end) is None                           # 2. duplikat: nie złoży drugi raz
+    assert rx.handle_end(end) is None                           # 2. duplikat cal_end: nie złoży drugi raz
     assert sent[-1] == {"t": "cal_ack", "tid": "t1", "ok": 1, "miss": []}  # ...ale re-ACK ok=1
     assert len(got) == 1                                        # on_received tylko raz (bez duplikatu)
     print("✅ transfer duplikat cal_end → idempotentny re-ACK ok=1 (bez ponownego on_received)")

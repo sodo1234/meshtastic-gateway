@@ -17,8 +17,9 @@ SSH_USER = "td"
 REMOTE_DIR = "~/meshtastic"
 REMOTE_VENV = "~/meshtastic/venv/bin/python"
 LAN_HOSTS = [
-    ("192.168.50.142", "debian-dev"),
-    ("192.168.50.49", "debian-new"),
+    ("100.93.121.31", "carport-g1"),   # PRODUKCJA fizyczna carport = G1 (Tailscale)
+    ("100.98.155.78", "carport-g2"),   # stara bramka = G2
+    ("100.79.111.24", "supervisor"),   # supervisor G0
 ]
 
 # role -> tmux session name + remote log paths (logger + stderr) + script-name hint for pgrep
@@ -98,9 +99,13 @@ def _resolve_host(host):
 
 
 def ssh(host, cmd, timeout=35, check=False):
-    """Run remote cmd over ssh. Returns (rc, stdout, stderr).
-    timeout 15→35: musi przekroczyć ConnectTimeout(20)+czas komendy, inaczej subprocess
-    ubija ssh w trakcie nawiązywania połączenia przez laggy relay → fałszywe 'stopped'."""
+    """Run remote cmd over ssh. Returns (rc, stdout, stderr). SINGLE-SHOT (bez retry!).
+
+    Retry tu był BŁĘDEM: 3 próby × timeout trzymały slot połączenia przeglądarki ~100s, a że
+    przeglądarka ma ~6 slotów/host, WOLNA maszyna (relay w dołku) głodziła SZYBKĄ → blokada
+    krzyżowa, opóźnienia, „czasem nie zaczyta". Single-shot = szybki sukces/szybki fail → slot
+    wolny od razu → obie maszyny ładują się RÓWNOLEGLE i niezależnie. Odporność dają: cache
+    last-good (zwraca natychmiast przy padzie) + frontend auto-retry (rozłożony, nie blokuje)."""
     full = ["ssh", *SSH_BASE_OPTS, f"{SSH_USER}@{_resolve_host(host)}", cmd]
     try:
         # stdin=DEVNULL: Windows ssh.exe hangs when inherited stdin is a socket
@@ -161,11 +166,22 @@ def discover_tailscale():
         return []
 
 
+# Cache last-good (USB + skrypty) — TYLKO in-memory, BEZ background-warmera (to on zapychał relay).
+# Raz wykryte przeżywa dołek relaya: gdy on-demand SSH padnie, oddajemy ostatni dobry wynik
+# zamiast pustki. Wypełniany wyłącznie udanymi zapytaniami z UI (zero ruchu w tle).
+_usb_cache = {}
+_scripts_cache = {}
+
+
 def list_scripts(host):
-    """List *.py scripts in REMOTE_DIR on host."""
+    """List *.py scripts in REMOTE_DIR on host (cache last-good przy padzie SSH)."""
     rc, out, _ = ssh(host, f"ls {REMOTE_DIR}/*.py 2>/dev/null | xargs -n1 basename")
-    if rc != 0: return []
-    return [s.strip() for s in out.splitlines() if s.strip()]
+    scripts = [s.strip() for s in out.splitlines() if s.strip()] if rc == 0 else []
+    if scripts:
+        _scripts_cache[host] = scripts
+    elif host in _scripts_cache:
+        return list(_scripts_cache[host])
+    return scripts
 
 
 def list_usb_devices(host):
@@ -192,6 +208,10 @@ def list_usb_devices(host):
         elif section == 'raw':
             if not any(d['tty'] == line for d in devs):
                 devs.append({'tty': line, 'byid': line, 'label': line.split('/')[-1]})
+    if devs:
+        _usb_cache[host] = devs
+    elif host in _usb_cache:
+        return list(_usb_cache[host])           # relay dip → ostatni dobry wynik
     return devs
 
 
@@ -349,6 +369,40 @@ def close_gnome_terminals(host, session_title):
     ssh(host, cmd, timeout=5)
 
 
+def robust_kill(host, role, session, tries=4):
+    """Kill tmux session + ALL python (prod+test) that could hold the serial port,
+    then VERIFY nothing survived; retry up to `tries`. Returns (ok, detail).
+
+    Dlaczego pętla+weryfikacja: relay 'fra' bywa laggy — pojedynczy SSH potrafi nie
+    dolecieć, a wtedy proces ŻYJE DALEJ i trzyma port CP2102 → kolejny Start dostaje
+    '[Errno 5] multiple access on port'. Stary kod strzelał raz i zawsze zwracał True
+    (UI mówił 'stopped', proces biegł). Tu: SIGTERM→(grace)→SIGKILL i sprawdzamy pgrep,
+    aż realnie zniknie. SIGKILL gwarantuje zwolnienie fd portu szeregowego przez OS."""
+    base = ROLE_META[role]
+    # -f matchuje pełną linię poleceń (venv/bin/python -u <script>); zabijamy prod ORAZ test.
+    # Trik nawiasowy [p]ython: regex łapie 'python' w realnych procesach, ale NIE łapie
+    # literału '[p]ython' w cmdline powłoki sh -c która odpala ten sam pkill/pgrep — bez tego
+    # pgrep/pkill matchował SAM SIEBIE → wieczne 'ALIVE' (false positive) i kill własnego shella.
+    pats = [f"[p]ython.*{base['pgrep']}", "[p]ython.*test_step"]
+    kill_cmd = ("tmux kill-session -t %s 2>/dev/null; " % session
+                + "".join(f"pkill -f '{p}' 2>/dev/null; " for p in pats)
+                + "sleep 0.5; "
+                + "".join(f"pkill -9 -f '{p}' 2>/dev/null; " for p in pats)
+                + "true")
+    verify_cmd = (f"tmux has-session -t {session} 2>/dev/null && echo ALIVE; "
+                  + "".join(f"pgrep -f '{p}' >/dev/null 2>&1 && echo ALIVE; " for p in pats)
+                  + "echo DONE")
+    last = ""
+    for _ in range(tries):
+        ssh(host, kill_cmd, timeout=12)
+        rc, out, _ = ssh(host, verify_cmd, timeout=12)
+        last = out
+        if rc == 0 and "DONE" in out and "ALIVE" not in out:
+            return True, "killed+verified"
+        time.sleep(1)
+    return False, f"still alive after {tries} tries: {last.strip()!r}"
+
+
 def start_remote(host, role, script, port=None, extra_args=""):
     meta = resolve_meta(role, script)
     is_test = script.startswith("test_")
@@ -357,32 +411,38 @@ def start_remote(host, role, script, port=None, extra_args=""):
         ok, msg = patch_script_port(host, script, port)
         if not ok:
             return False, f"port patch failed: {msg}"
-    # Kill tmux session + ALL python scripts that could hold the serial port
-    # (both production and test scripts for this role)
-    base = ROLE_META[role]
     stderr_log = meta["stderr_log"]
-    ssh(host, f"tmux kill-session -t {session} 2>/dev/null; "
-              f"pkill -f 'python.*{base['pgrep']}' 2>/dev/null; "
-              f"pkill -f 'python.*test_step' 2>/dev/null; "
-              f": > {stderr_log}; true")
+    # Pre-kill ROBUSTNY: zwolnij port zanim wystartujemy (inaczej 2 procesy = multiple access).
+    killed, kdetail = robust_kill(host, role, session)
+    if not killed:
+        return False, f"nie zwolniono portu (stary proces żyje): {kdetail}"
+    ssh(host, f": > {stderr_log}; true")            # truncate stale stderr
     args_str = f" {extra_args}" if extra_args else ""
     cmd = (f"cd {REMOTE_DIR} && "
            f"tmux new -d -s {session} 'venv/bin/python -u {script}{args_str} 2>>{stderr_log}'")
-    rc, out, err = ssh(host, cmd, timeout=10)
-    if rc == 0:
+    ssh(host, cmd, timeout=10)
+    # Weryfikuj że sesja realnie wstała (start SSH też bywa zjadany przez dołek relaya) — retry x3.
+    up = False
+    for _ in range(3):
+        rc, out, _ = ssh(host, f"tmux has-session -t {session} 2>/dev/null && echo UP", timeout=10)
+        if "UP" in out:
+            up = True
+            break
+        ssh(host, cmd, timeout=10)                  # ponów start jeśli pierwszy nie dolaciał
+        time.sleep(1)
+    if up:
         launch_gnome_terminal(host, session, f"{role.upper()} • {script}")
-    return rc == 0, (err or out or f"started on {port or 'default port'}")
+    return up, ("started on %s" % (port or "default port") if up else "tmux session nie wstała (relay?)")
 
 
 def stop_remote_full(host, role, script=""):
-    """Stop tmux + kill script + close attached GUI terminals."""
+    """Stop tmux + kill script (verified) + close attached GUI terminals.
+    Zwraca False jeśli proces NIE zginął — UI wtedy nie kłamie że 'stopped'."""
     meta = resolve_meta(role, script)
     session = meta["tmux"]
-    pgrep_pat = meta["pgrep"]
     close_gnome_terminals(host, session)
-    ssh(host, f"tmux kill-session -t {session} 2>/dev/null; "
-              f"pkill -f 'python.*{pgrep_pat}' 2>/dev/null; true")
-    return True
+    ok, _ = robust_kill(host, role, session)
+    return ok
 
 
 def stop_remote(host, role, script=""):
@@ -533,6 +593,34 @@ def api_status():
     return jsonify(status_remote(host, role, script))
 
 
+# ── Async operacje (start/stop) — przycisk wraca NATYCHMIAST, robota leci w tle ──
+# Stary kod robił robust_kill+verify (do ~50s) SYNCHRONICZNIE → przeglądarka wisiała na
+# fetchu = „nieresponsywne". Teraz: POST kolejkuje robotę w wątku i wraca od razu; frontend
+# pollinguje /api/op (szybkie, bez SSH) i odblokowuje przycisk gdy operacja się kończy.
+_ops = {}                       # "host|role" -> {action, busy, ok, result, ts}
+_ops_lock = threading.Lock()
+
+
+def _op_key(host, role):
+    return f"{host}|{role}"
+
+
+def _run_op(host, role, action, fn):
+    key = _op_key(host, role)
+    with _ops_lock:
+        _ops[key] = {"action": action, "busy": True, "ok": None, "result": "", "ts": time.time()}
+
+    def _worker():
+        try:
+            ok, msg = fn()
+        except Exception as e:
+            ok, msg = False, f"wyjątek: {e}"
+        with _ops_lock:
+            _ops[key] = {"action": action, "busy": False, "ok": bool(ok),
+                         "result": str(msg), "ts": time.time()}
+    threading.Thread(target=_worker, daemon=True, name=f"op-{action}-{role}").start()
+
+
 @app.route("/api/start", methods=["POST"])
 def api_start():
     d = request.get_json()
@@ -540,9 +628,15 @@ def api_start():
     port, extra_args = d.get("port"), d.get("extra_args", "")
     if not all([host, role, script]) or role not in ROLE_META:
         return jsonify({"ok": False, "err": "host, role, script required"}), 400
-    ensure_tmux(host)
-    ok, msg = start_remote(host, role, script, port=port, extra_args=extra_args)
-    return jsonify({"ok": ok, "msg": msg, "port": port})
+    with _ops_lock:
+        if _ops.get(_op_key(host, role), {}).get("busy"):
+            return jsonify({"ok": True, "busy": True, "msg": "operacja w toku"})
+
+    def _do():
+        ensure_tmux(host)
+        return start_remote(host, role, script, port=port, extra_args=extra_args)
+    _run_op(host, role, "start", _do)
+    return jsonify({"ok": True, "busy": True, "queued": True})
 
 
 @app.route("/api/stop", methods=["POST"])
@@ -551,8 +645,23 @@ def api_stop():
     host, role, script = d.get("host"), d.get("role"), d.get("script", "")
     if not host or role not in ROLE_META:
         return jsonify({"ok": False, "err": "host & role required"}), 400
-    stop_remote(host, role, script)
-    return jsonify({"ok": True})
+    with _ops_lock:
+        if _ops.get(_op_key(host, role), {}).get("busy"):
+            return jsonify({"ok": True, "busy": True, "msg": "operacja w toku"})
+
+    def _do():
+        ok = stop_remote(host, role, script)
+        return ok, ("zatrzymano (port wolny)" if ok else "proces NIE zginął (relay?)")
+    _run_op(host, role, "stop", _do)
+    return jsonify({"ok": True, "busy": True, "queued": True})
+
+
+@app.route("/api/op")
+def api_op():
+    host = request.args.get("host"); role = request.args.get("role")
+    with _ops_lock:
+        st = _ops.get(_op_key(host, role))
+    return jsonify(st or {"busy": False, "action": None, "ok": None, "result": ""})
 
 
 @app.route("/api/pull-log", methods=["POST"])

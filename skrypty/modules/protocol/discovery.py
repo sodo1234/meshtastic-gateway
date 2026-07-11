@@ -76,6 +76,12 @@ class GatewayDiscovery:
         self.short_ids = {}
         self.short_rev = {}
         self.disc_hash = ""
+        # (a) gdy ustawione: send_discovery wysyła MAPĘ jako skompresowany blob (ReliableTransfer
+        # kind='devmap') zamiast pętli `db` 2-dev/pakiet (199 dev: 94 pkt → ~10 chunków). Wpięcie:
+        # discovery.map_send_fn = lambda payload: rt.start_send(gw_id,'devmap',payload). None = stary db.
+        self.map_send_fn = None
+        self._devmap_hash = None      # anti-spam: nie re-wysyłaj devmap dla tego samego hash w oknie
+        self._devmap_ts = 0.0
 
     def is_monitored(self, dev):
         if dev in self.priority_names:
@@ -106,20 +112,21 @@ class GatewayDiscovery:
                           f'{mon} monitored, hash={self.disc_hash}')
 
     def _assign_short_ids(self):
-        monitored = sorted(d for d in self.devices if self.is_monitored(d))
-        self.short_ids = {name: idx for idx, name in enumerate(monitored)}
+        # Override 2026-06-25: sid dla WSZYSTKICH urządzeń bramki (anomalie muszą działać dla
+        # każdego, też nie-monitored / nie-autodiscover). Identyfikacja po nazwie u supervisora
+        # przez db (sid→nazwa). Dane (batch t/h) nadal tylko monitored — gate w GatewayData.
+        all_devs = sorted(self.devices.keys())
+        self.short_ids = {name: idx for idx, name in enumerate(all_devs)}
         self.short_rev = {idx: name for name, idx in self.short_ids.items()}
 
     def _compute_hash(self):
-        monitored_devs = {}
-        for dev, info in sorted(self.devices.items()):
-            if not self.is_monitored(dev):
-                continue
+        all_devs_h = {}
+        for dev, info in sorted(self.devices.items()):   # WSZYSTKIE urządzenia (anomalie dla każdego)
             sid = self.short_ids.get(dev, -1)
-            monitored_devs[dev] = {"type": info['type'],
-                                   "caps": sorted(info['caps']), "sid": sid}
+            all_devs_h[dev] = {"type": info['type'],
+                               "caps": sorted(info['caps']), "sid": sid}
         vio_defs = [(v['id'], v['type']) for v in self.vio_config]
-        raw = json.dumps({"devs": monitored_devs, "vio": vio_defs},
+        raw = json.dumps({"devs": all_devs_h, "vio": vio_defs},
                          separators=(',', ':'), sort_keys=True)
         self.disc_hash = hashlib.sha256(raw.encode()).hexdigest()[:12]
 
@@ -127,15 +134,22 @@ class GatewayDiscovery:
         """Send without delay (backward compat). Use send_discovery_with_delay for LoRa."""
         self.send_discovery_with_delay(0)
 
-    def send_discovery_with_delay(self, delay=4.0):
-        """Send disc_meta + disc_vio + db with delay between packets (LoRa cooldown)."""
+    def send_discovery_with_delay(self, delay=4.0, meta_only=False):
+        """Send disc_meta + disc_vio + db with delay between packets (LoRa cooldown).
+
+        meta_only=True → wyślij TYLKO disc_meta (lekki advertise hash), pomiń disc_vio+db.
+        Używane przez anti-spam: gdy supervisor już ma aktualny zestaw (hash zgodny), bramka
+        nie marnuje LoRa na pełne `db` — odsyła sam hash, supervisor potwierdza zgodność."""
         import time as _time
         meta = {'t': 'disc_meta', 'g': self.gw_id,
                 'hash': self.disc_hash,
-                'dev_n': len([d for d in self.devices if self.is_monitored(d)])}
+                'dev_n': len(self.devices)}                # WSZYSTKIE urządzenia
         self.lora.send(json.dumps(meta, separators=(',', ':')))
         if self.log:
-            self.log.info('DISC', f'📤 disc_meta: hash={self.disc_hash} dev_n={meta["dev_n"]}')
+            self.log.info('DISC', f'📤 disc_meta: hash={self.disc_hash} dev_n={meta["dev_n"]}'
+                          f'{" (meta_only — anti-spam)" if meta_only else ""}')
+        if meta_only:
+            return
 
         if self.vio_config:
             if delay > 0:
@@ -151,10 +165,27 @@ class GatewayDiscovery:
             if self.log:
                 self.log.info('DISC', f'📤 disc_vio: {len(vio_items)} items')
 
+        # (a) MAPA: skompresowany blob (devmap) przez ReliableTransfer — JEDEN transfer zamiast
+        # ~94 pakietów `db`. Fallback do starej pętli `db` gdy map_send_fn niewpięte.
+        if self.map_send_fn:
+            import time as _t
+            now = _t.time()
+            # anti-spam: nie startuj nowego devmap gdy ten sam hash wysłany <180s temu
+            # (supervisor pytał o disc w pętli bo devmap nie lądował → nowy rt_begin za każdym razem = zator)
+            if self.disc_hash == self._devmap_hash and (now - self._devmap_ts) < 180:
+                if self.log:
+                    self.log.info('DISC', '⏭️ devmap pominięty (ten sam hash <180s) — anti-spam')
+                return
+            payload = self.build_devmap()
+            self.map_send_fn(payload)
+            self._devmap_hash = self.disc_hash
+            self._devmap_ts = now
+            if self.log:
+                self.log.info('DISC', f'📤 devmap: {len(payload.get("devs", {}))} urządzeń → ReliableTransfer (1 blob)')
+            return
+
         items = []
-        for dev, info in self.devices.items():
-            if not self.is_monitored(dev):
-                continue
+        for dev, info in self.devices.items():   # db: WSZYSTKIE urządzenia (sid→nazwa u supervisora)
             sid = self.short_ids.get(dev, -1)
             type_char = TYPE_MAP.get(info['type'], '?')
             caps_str = encode_caps(info.get('caps', []))
@@ -184,6 +215,36 @@ class GatewayDiscovery:
         if current:
             packets.append({"t": "db", "g": self.gw_id, "d": current})
         return packets
+
+    # ── (a) MAPA URZĄDZEŃ jako skompresowany plik (ReliableTransfer kind='devmap') ──
+    def build_devmap(self):
+        """Snapshot mapy sid→(nazwa,typ,caps) dla WSZYSTKICH urządzeń jako payload
+        ReliableTransfer (JSON→zlib→base64→chunk+CRC w warstwie rt). Zastępuje pętlę
+        `db` po ~2 dev/pakiet (199 dev = 94 pakiety) JEDNYM transferem (~10 chunków zlib).
+        Wysyłany RAZ na starcie + WYŁĄCZNIE RĘCZNIE (przycisk). Supervisor rejestruje encje
+        z devs identycznie jak z `db`. hash = weryfikacja spójności (== disc_hash)."""
+        devs = {}
+        for dev, info in self.devices.items():
+            sid = self.short_ids.get(dev, -1)
+            devs[str(sid)] = [dev, TYPE_MAP.get(info['type'], '?'),
+                              encode_caps(info.get('caps', []))]
+        return {'hash': self.disc_hash, 'dev_n': len(self.devices), 'devs': devs}
+
+    # ── (b) AUTODISCOVERY monitored+priority — OSOBNA funkcja (oddzielona od pełnej mapy) ──
+    def send_autodiscovery(self):
+        """Lekki advertise TYLKO zbiorów monitored+priority (sid-y) — bez pełnego `db`/devmap.
+        Pozwala odświeżyć „które urządzenia są istotne" tanio (1 pakiet), gdy zmieni się skład
+        monitored/priority, nie ruszając ciężkiej mapy 199 urządzeń. Typ `disc_ap` P0."""
+        mon = [self.short_ids[d] for d, i in self.devices.items()
+               if i.get('monitored') and not i.get('priority') and d in self.short_ids]
+        pri = [self.short_ids[d] for d, i in self.devices.items()
+               if i.get('priority') and d in self.short_ids]
+        pkt = {'t': 'disc_ap', 'g': self.gw_id, 'hash': self.disc_hash,
+               'mon': sorted(mon), 'pri': sorted(pri)}
+        self.lora.send(json.dumps(pkt, separators=(',', ':')))
+        if self.log:
+            self.log.info('DISC', f'📤 autodiscovery: mon={len(mon)} pri={len(pri)} (osobno od devmap)')
+        return pkt
 
     def get_devices_summary(self):
         return {name: info for name, info in self.devices.items()}
@@ -300,6 +361,38 @@ class SupervisorDiscovery:
         if self.log:
             self.log.info('DISC', f'📋 db {gw}: {len(data.get("d",[]))} urządzeń '
                           f'zarejestrowanych (synced hash={self.gw_synced[gw]})')
+
+    def handle_devmap(self, gw, payload):
+        """(a) Odbiór skompresowanej MAPY urządzeń (ReliableTransfer kind='devmap').
+        payload = {'hash','dev_n','devs':{sid:[name,type_char,caps]}}. Rejestruje encje
+        identycznie jak handle_db (jedna ścieżka rejestracji), po czym oznacza synced."""
+        devs = (payload or {}).get('devs', {})
+        if gw not in self.gw_devices:
+            self.gw_devices[gw] = {}
+        for sid, item in devs.items():
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                continue
+            name, type_char, caps_str = item[0], item[1], item[2]
+            dtype = TYPE_REV.get(type_char, 'sensor')
+            caps = caps_str if isinstance(caps_str, str) else ''
+            try:
+                sid_i = int(sid)
+            except (TypeError, ValueError):
+                sid_i = sid
+            self.gw_devices[gw][name] = {'sid': sid_i, 'type': dtype, 'caps': caps}
+            if dtype == 'switch':
+                self.ha.reg_switch_dev(gw, name)
+            elif dtype == 'binary_sensor':
+                self.ha.reg_binary(gw, name, caps)
+            else:
+                self.ha.reg_sensor(gw, name, caps)
+        h = (payload or {}).get('hash', '') or self.gw_hashes.get(gw, '')
+        self.gw_hashes[gw] = h
+        self.gw_synced[gw] = h
+        self._pending.pop(gw, None)
+        if self.log:
+            self.log.info('DISC', f'📋 devmap {gw}: {len(devs)} urządzeń zarejestrowanych '
+                          f'(synced hash={h})')
 
     @staticmethod
     def _safe(s):
