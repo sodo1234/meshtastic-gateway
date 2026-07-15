@@ -1,0 +1,1612 @@
+button_card_templates:
+  lora_base:
+    styles:
+      card:
+        - background: '#0a0a0a'
+        - border-radius: 12px
+        - border: '1px solid #1f1f1f'
+        - box-shadow: none
+        - overflow: hidden
+        - '-webkit-tap-highlight-color': transparent
+  lora_hdr:
+    show_icon: false
+    show_state: false
+    styles:
+      card:
+        - background: none
+        - box-shadow: none
+        - border: none
+        - padding: 12px 0 4px 0
+      name:
+        - font-size: 10px
+        - font-weight: 700
+        - color: '#525252'
+        - letter-spacing: 3px
+        - text-transform: uppercase
+        - justify-self: start
+  lora_stat:
+    template: lora_base
+    show_state: true
+    styles:
+      card:
+        - padding: 16px
+      state:
+        - font-size: 24px
+        - font-weight: 800
+        - font-variant-numeric: tabular-nums
+        - line-height: 1
+      name:
+        - font-size: 8px
+        - font-weight: 700
+        - color: '#525252'
+        - letter-spacing: 2px
+      icon:
+        - width: 20px
+  lora_btn:
+    template: lora_base
+    styles:
+      card:
+        - padding: 12px
+      icon:
+        - width: 18px
+      name:
+        - font-size: 9px
+        - font-weight: 700
+        - letter-spacing: 1.5px
+  lora_bin_tile:
+    template: lora_base
+    show_name: false
+    show_state: false
+    show_icon: false
+    layout: fill
+    styles:
+      card:
+        - padding: 10px 12px
+        - margin-bottom: 4px
+        - border-radius: 10px
+        - border: 1px solid
+        - box-shadow: none
+    custom_fields:
+      row: |
+        [[[
+          const fn = entity.attributes.friendly_name || entity.entity_id;
+          const dev = fn.replace('LoRa ','');
+          const eid = entity.entity_id;
+
+          // supervisor mirror mirrors gateway G2
+          const gw = 'G2';
+
+          let type = 'bin';
+          if (eid.endsWith('_contact')) type = 'contact';
+          if (eid.endsWith('_occupancy')) type = 'motion';
+
+          const isOn = entity.state === 'on';
+
+          let ico = 'mdi:checkbox-blank-circle-outline';
+          if (type === 'contact') ico = isOn ? 'mdi:door-open' : 'mdi:door-closed';
+          if (type === 'motion')  ico = isOn ? 'mdi:motion-sensor' : 'mdi:motion-sensor-off';
+
+          let col = '#525252';
+          let label = entity.state;
+
+          if (type === 'contact') {
+            col = isOn ? '#fbbf24' : '#4ade80';
+            label = isOn ? 'OPEN' : 'CLOSED';
+          }
+
+          if (type === 'motion') {
+            col = isOn ? '#fbbf24' : '#525252';
+            label = isOn ? 'MOTION' : 'CLEAR';
+          }
+
+          const lsId  = eid.replace('binary_sensor.','sensor.').replace(/_(contact|occupancy)$/,'_last_seen');
+          const batId = eid.replace('binary_sensor.','sensor.').replace(/_(contact|occupancy)$/,'_battery');
+
+          const ls  = states[lsId];
+          const bat = states[batId];
+
+          const lsT  = ls && ls.state !== 'unavailable' ? ls.state : '--';
+          const batT = bat && bat.state !== 'unavailable' ? bat.state + '%' : '--';
+
+          const batN = (batT !== '--') ? parseInt(bat.state) : 100;
+          const batC = (batT !== '--' && batN < 25) ? '#f87171' : '#525252';
+
+          return `
+            <div style="display:flex;align-items:center;gap:10px;width:100%;">
+              <ha-icon icon="${ico}" style="width:20px;height:20px;color:${col};"></ha-icon>
+
+              <span style="background:#141414;border:1px solid #22d3ee;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">
+                ${gw}
+              </span>
+
+              <div style="flex:1;overflow:hidden;">
+                <div style="font-size:12px;font-weight:700;color:#e5e5e5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  ${dev}
+                </div>
+                <div style="font-size:9px;color:#525252;">
+                  ${lsT} · 🔋<span style="color:${batC};">${batT}</span>
+                </div>
+              </div>
+
+              <span style="font-size:10px;font-weight:800;color:${col};letter-spacing:1px;">
+                ${label}
+              </span>
+            </div>
+          `;
+        ]]]
+  lora_alarm_tile:
+    template: lora_base
+    show_name: false
+    show_state: false
+    show_icon: false
+    layout: fill
+    styles:
+      card:
+        - padding: 10px 12px
+        - margin-bottom: 4px
+        - border-radius: 10px
+        - border: 1px solid
+        - box-shadow: none
+    custom_fields:
+      row: |
+        [[[
+          const fn = entity.attributes.friendly_name || entity.entity_id;
+          const dev = fn.replace('LoRa ','');
+          const eid = entity.entity_id;
+
+          // supervisor mirror mirrors gateway G2
+          const gw = 'G2';
+
+          const isOn = entity.state === 'on';
+
+          let type = 'alarm';
+          if (eid.endsWith('_smoke')) type = 'smoke';
+          if (eid.endsWith('_water_leak')) type = 'leak';
+
+          let ico = 'mdi:alert';
+          if (type === 'smoke') ico = 'mdi:smoke-detector';
+          if (type === 'leak')  ico = 'mdi:water-alert';
+
+          const col = isOn ? '#f87171' : '#4ade80';
+          const label = isOn ? (type === 'smoke' ? 'SMOKE!' : 'LEAK!') : 'OK';
+
+          const lsId  = eid.replace('binary_sensor.','sensor.').replace(/_(smoke|water_leak)$/,'_last_seen');
+          const batId = eid.replace('binary_sensor.','sensor.').replace(/_(smoke|water_leak)$/,'_battery');
+
+          const ls  = states[lsId];
+          const bat = states[batId];
+
+          const lsT  = ls && ls.state !== 'unavailable' ? ls.state : '--';
+          const batT = bat && bat.state !== 'unavailable' ? bat.state + '%' : '--';
+
+          const batN = (batT !== '--') ? parseInt(bat.state) : 100;
+          const batC = (batT !== '--' && batN < 25) ? '#f87171' : '#525252';
+
+          return `
+            <div style="display:flex;align-items:center;gap:10px;width:100%;">
+              <ha-icon icon="${ico}" style="width:20px;height:20px;color:${col};"></ha-icon>
+
+              <span style="background:#141414;border:1px solid #22d3ee;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">
+                ${gw}
+              </span>
+
+              <div style="flex:1;overflow:hidden;">
+                <div style="font-size:12px;font-weight:700;color:#e5e5e5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  ${dev}
+                </div>
+                <div style="font-size:9px;color:#525252;">
+                  ${lsT} · 🔋<span style="color:${batC};">${batT}</span>
+                </div>
+              </div>
+
+              <span style="font-size:10px;font-weight:800;color:${col};letter-spacing:1px;">
+                ${label}
+              </span>
+            </div>
+          `;
+        ]]]
+  lora_anom_tile:
+    template: lora_base
+    show_icon: false
+    show_name: false
+    show_state: false
+    layout: fill
+    styles:
+      card:
+        - background: '#0a0a0a'
+        - border-radius: 10px
+        - padding: 10px 12px
+        - margin: 4px 0
+        - border: '1px solid #1f1f1f'
+        - box-shadow: none
+    tap_action:
+      action: call-service
+      confirmation:
+        text: Usunąć anomalię?
+      service: mqtt.publish
+      service_data:
+        topic: >-
+          [[[ return 'lora/anomaly/' +
+          entity.entity_id.replace('sensor.lora_an_', '') + '/clear' ]]]
+        payload: press
+    custom_fields:
+      row: |
+        [[[
+          const a = entity.attributes || {};
+          const gw  = a.gw || '?';
+          const dev = a.dev || entity.entity_id;
+          const dt  = a.detected_at || '--';
+          const t   = a.type || '';
+
+          const val = entity.state || '';
+          const numVal = parseFloat(val);
+          const isNum = !isNaN(numVal);
+
+          let tail = '';
+          if ((t === 'low_battery' || t === 'critical_battery') && isNum) {
+            const c = t === 'critical_battery' ? '#f87171' : '#fbbf24';
+            tail = `<span style="font-size:10px;font-weight:800;color:${c};">${numVal}%</span>`;
+          } else if ((t === 'temp_high' || t === 'temp_low') && isNum) {
+            tail = `<span style="font-size:10px;font-weight:800;color:#fb923c;">${numVal}°C</span>`;
+          } else if ((t === 'hum_high' || t === 'hum_low') && isNum) {
+            tail = `<span style="font-size:10px;font-weight:800;color:#38bdf8;">${numVal}%</span>`;
+          } else if (t === 'stagnation' && isNum && numVal > 0) {
+            tail = `<span style="font-size:10px;font-weight:800;color:#c084fc;">${Math.round(numVal)}h</span>`;
+          }
+
+          // Type label mapping
+          const typeLabels = {
+            'device_offline': 'OFFLINE',
+            'low_battery': 'LOW BATT',
+            'critical_battery': 'CRIT BATT',
+            'temp_high': 'TEMP ↑',
+            'temp_low': 'TEMP ↓',
+            'hum_high': 'HUM ↑',
+            'hum_low': 'HUM ↓',
+            'stagnation': 'STAGNATION',
+            'smoke': 'SMOKE',
+            'water_leak': 'LEAK'
+          };
+          const typeLabel = typeLabels[t] || t.toUpperCase();
+
+          // Type color mapping
+          const typeColors = {
+            'device_offline': '#f87171',
+            'low_battery': '#fbbf24',
+            'critical_battery': '#f87171',
+            'temp_high': '#fb923c',
+            'temp_low': '#38bdf8',
+            'hum_high': '#38bdf8',
+            'hum_low': '#fb923c',
+            'stagnation': '#c084fc',
+            'smoke': '#f87171',
+            'water_leak': '#f87171'
+          };
+          const typeColor = typeColors[t] || '#c084fc';
+
+          return `
+            <div style="display:flex;align-items:center;gap:8px;width:100%;">
+              <span style="background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">
+                ${gw}
+              </span>
+
+              <span style="font-size:12px;color:#e5e5e5;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                ${dev}
+              </span>
+
+              <span style="font-size:8px;font-weight:700;color:${typeColor};letter-spacing:1px;">
+                ${typeLabel}
+              </span>
+
+              ${tail}
+
+              <span style="font-size:9px;color:#525252;white-space:nowrap;">
+                ${dt}
+              </span>
+
+              <span style="font-size:14px;color:#f87171;cursor:pointer;">✕</span>
+            </div>
+          `;
+        ]]]
+views:
+  - path: lora-control
+    title: Sterowanie
+    icon: mdi:lightbulb
+    type: masonry
+    cards:
+      - type: custom:button-card
+        template: lora_hdr
+        name: STEROWANIE
+      - type: horizontal-stack
+        cards:
+          - type: custom:button-card
+            template: lora_base
+            entity: switch.lora_test_1_lora_test_1
+            name: Test 1
+            show_state: false
+            tap_action:
+              action: toggle
+            icon: |
+              [[[
+                var av = states['binary_sensor.lora_test_1_test_1_available'];
+                if (av && av.state === 'off') return 'mdi:alert-octagon';
+                return entity.state === 'on' ? 'mdi:lightbulb-on' : 'mdi:lightbulb-off-outline';
+              ]]]
+            custom_fields:
+              badge: |
+                [[[
+                  return `<span style="background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">G2</span>`;
+                ]]]
+              info: |
+                [[[
+                  var av = states['binary_sensor.lora_test_1_test_1_available'];
+                  var ls = states['sensor.lora_test_1_test_1_last_seen'];
+                  var lqe = states['sensor.lora_test_1_test_1_link_quality'];
+                  var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null;
+                  var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171'));
+                  var lqTxt = lqv === null ? '--' : lqv;
+                  var on = av && av.state === 'on';
+                  var col = on ? '#4ade80' : '#f87171';
+                  var label = on ? 'online' : 'offline';
+                  var t = ls && ls.state !== 'unavailable' ? ls.state : '--';
+                  return `<div style="font-size:10px;color:#525252;margin-top:6px;">
+                    <span style="color:${col};">● ${label}</span> · <span style="color:${lqCol};">📶 ${lqTxt}</span><br/>${t}
+                  </div>`;
+                ]]]
+            styles:
+              card:
+                - height: 120px
+                - padding: 16px
+                - border: |
+                    [[[
+                      var av = states['binary_sensor.lora_test_1_test_1_available'];
+                      if (av && av.state === 'off') return '1px solid #f87171';
+                      return entity.state === 'on' ? '1px solid #facc15' : '1px solid #1f1f1f';
+                    ]]]
+              icon:
+                - width: 35px
+                - height: 35px
+                - color: |
+                    [[[
+                      var av = states['binary_sensor.lora_test_1_test_1_available'];
+                      if (av && av.state === 'off') return '#f87171';
+                      return entity.state === 'on' ? '#facc15' : '#525252';
+                    ]]]
+              name:
+                - font-size: 11px
+                - font-weight: 700
+                - color: '#e5e5e5'
+              custom_fields:
+                badge:
+                  - position: absolute
+                  - top: 10px
+                  - right: 15px
+                info:
+                  - justify-self: start
+                  - padding: 0
+          - type: custom:button-card
+            template: lora_base
+            entity: switch.lora_test_2_lora_test_2
+            name: Test 2
+            show_state: false
+            tap_action:
+              action: toggle
+            icon: |
+              [[[
+                var av = states['binary_sensor.lora_test_2_test_2_available'];
+                if (av && av.state === 'off') return 'mdi:alert-octagon';
+                return entity.state === 'on' ? 'mdi:lightbulb-on' : 'mdi:lightbulb-off-outline';
+              ]]]
+            custom_fields:
+              badge: |
+                [[[
+                  return `<span style="background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">G2</span>`;
+                ]]]
+              info: |
+                [[[
+                  var av = states['binary_sensor.lora_test_2_test_2_available'];
+                  var ls = states['sensor.lora_test_2_test_2_last_seen'];
+                  var lqe = states['sensor.lora_test_2_test_2_link_quality'];
+                  var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null;
+                  var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171'));
+                  var lqTxt = lqv === null ? '--' : lqv;
+                  var on = av && av.state === 'on';
+                  var col = on ? '#4ade80' : '#f87171';
+                  var label = on ? 'online' : 'offline';
+                  var t = ls && ls.state !== 'unavailable' ? ls.state : '--';
+                  return `<div style="font-size:10px;color:#525252;margin-top:6px;">
+                    <span style="color:${col};">● ${label}</span> · <span style="color:${lqCol};">📶 ${lqTxt}</span><br/>${t}
+                  </div>`;
+                ]]]
+            styles:
+              card:
+                - height: 120px
+                - padding: 16px
+                - border: |
+                    [[[
+                      var av = states['binary_sensor.lora_test_2_test_2_available'];
+                      if (av && av.state === 'off') return '1px solid #f87171';
+                      return entity.state === 'on' ? '1px solid #facc15' : '1px solid #1f1f1f';
+                    ]]]
+              icon:
+                - width: 35px
+                - height: 35px
+                - color: |
+                    [[[
+                      var av = states['binary_sensor.lora_test_2_test_2_available'];
+                      if (av && av.state === 'off') return '#f87171';
+                      return entity.state === 'on' ? '#facc15' : '#525252';
+                    ]]]
+              name:
+                - font-size: 11px
+                - font-weight: 700
+                - color: '#e5e5e5'
+              custom_fields:
+                badge:
+                  - position: absolute
+                  - top: 10px
+                  - right: 15px
+                info:
+                  - justify-self: start
+                  - padding: 0
+      - type: horizontal-stack
+        cards:
+          - type: custom:button-card
+            template: lora_base
+            entity: binary_sensor.lora_leak_1_leak_1_water_leak
+            name: Leak 1
+            show_state: false
+            tap_action:
+              action: none
+            icon: |
+              [[[
+                var av = states['binary_sensor.lora_leak_1_leak_1_available'];
+                if (av && av.state === 'off') return 'mdi:alert-octagon';
+                return entity.state === 'on' ? 'mdi:water-alert' : 'mdi:water';
+              ]]]
+            custom_fields:
+              badge: |
+                [[[
+                  return `<span style="background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">G2</span>`;
+                ]]]
+              info: |
+                [[[
+                  var av = states['binary_sensor.lora_leak_1_leak_1_available'];
+                  var ls = states['sensor.lora_leak_1_leak_1_last_seen'];
+                  var lqe = states['sensor.lora_leak_1_leak_1_link_quality'];
+                  var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null;
+                  var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171'));
+                  var lqTxt = lqv === null ? '--' : lqv;
+                  var batt = states['sensor.lora_leak_1_leak_1_battery'];
+                  var on = av && av.state === 'on';
+                  var col = on ? '#4ade80' : '#f87171';
+                  var label = on ? 'online' : 'offline';
+                  var t = ls && ls.state !== 'unavailable' ? ls.state : '--';
+                  var b = batt && batt.state !== 'unavailable' ? batt.state : '--';
+                  var battColor = '#4ade80';
+                  if (b !== '--') {
+                    var bVal = parseInt(b);
+                    if (bVal < 10) battColor = '#f87171';
+                    else if (bVal < 25) battColor = '#fbbf24';
+                  }
+                  return `<div style="display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;">
+                    <div><span style="color:${col};">● ${label}</span> · <span style="color:${battColor};">🔋 ${b}%</span> · <span style="color:${lqCol};">📶 ${lqTxt}</span></div>
+                    <div>${t}</div>
+                  </div>`;
+                ]]]
+            styles:
+              card:
+                - height: 120px
+                - padding: 16px
+                - border: |
+                    [[[
+                      var av = states['binary_sensor.lora_leak_1_leak_1_available'];
+                      if (av && av.state === 'off') return '1px solid #f87171';
+                      return entity.state === 'on' ? '1px solid #f87171' : '1px solid #1f1f1f';
+                    ]]]
+              icon:
+                - width: 35px
+                - height: 35px
+                - color: |
+                    [[[
+                      var av = states['binary_sensor.lora_leak_1_leak_1_available'];
+                      if (av && av.state === 'off') return '#f87171';
+                      return entity.state === 'on' ? '#f87171' : '#525252';
+                    ]]]
+              name:
+                - font-size: 11px
+                - font-weight: 700
+                - color: '#e5e5e5'
+              custom_fields:
+                badge:
+                  - position: absolute
+                  - top: 10px
+                  - right: 15px
+                info:
+                  - justify-self: start
+                  - padding: 0
+          - type: custom:button-card
+            template: lora_base
+            entity: binary_sensor.lora_door_1_door_1_available
+            name: Door 1
+            show_state: false
+            tap_action:
+              action: none
+            icon: |
+              [[[
+                var av = states['binary_sensor.lora_door_1_door_1_available'];
+                if (av && av.state === 'off') return 'mdi:alert-octagon';
+                return 'mdi:door-closed';
+              ]]]
+            custom_fields:
+              badge: |
+                [[[
+                  return `<span style="background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;">G2</span>`;
+                ]]]
+              info: |
+                [[[
+                  var av = states['binary_sensor.lora_door_1_door_1_available'];
+                  var ls = states['sensor.lora_door_1_door_1_last_seen'];
+                  var lqe = states['sensor.lora_door_1_door_1_link_quality'];
+                  var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null;
+                  var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171'));
+                  var lqTxt = lqv === null ? '--' : lqv;
+                  var batt = states['sensor.lora_door_1_door_1_battery'];
+                  var on = av && av.state === 'on';
+                  var col = on ? '#4ade80' : '#f87171';
+                  var label = on ? 'online' : 'offline';
+                  var t = ls && ls.state !== 'unavailable' ? ls.state : '--';
+                  var b = batt && batt.state !== 'unavailable' ? batt.state : '--';
+                  var battColor = '#4ade80';
+                  if (b !== '--') {
+                    var bVal = parseInt(b);
+                    if (bVal < 10) battColor = '#f87171';
+                    else if (bVal < 25) battColor = '#fbbf24';
+                  }
+                  return `<div style="display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;">
+                    <div><span style="color:${col};">● ${label}</span> · <span style="color:${battColor};">🔋 ${b}%</span> · <span style="color:${lqCol};">📶 ${lqTxt}</span></div>
+                    <div>${t}</div>
+                  </div>`;
+                ]]]
+            styles:
+              card:
+                - height: 120px
+                - padding: 16px
+                - border: |
+                    [[[
+                      var av = states['binary_sensor.lora_door_1_door_1_available'];
+                      if (av && av.state === 'off') return '1px solid #f87171';
+                      return '1px solid #1f1f1f';
+                    ]]]
+              icon:
+                - width: 35px
+                - height: 35px
+                - color: |
+                    [[[
+                      var av = states['binary_sensor.lora_door_1_door_1_available'];
+                      if (av && av.state === 'off') return '#f87171';
+                      return '#525252';
+                    ]]]
+              name:
+                - font-size: 11px
+                - font-weight: 700
+                - color: '#e5e5e5'
+              custom_fields:
+                badge:
+                  - position: absolute
+                  - top: 10px
+                  - right: 15px
+                info:
+                  - justify-self: start
+                  - padding: 0
+  - path: lora-sensors
+    title: Pomiary
+    icon: mdi:thermometer
+    cards:
+      - type: vertical-stack
+        cards:
+          - type: custom:button-card
+            template: lora_hdr
+            name: POMIARY
+          - type: custom:button-card
+            template: lora_base
+            entity: sensor.lora_temp_1_temp_1_temperature
+            show_icon: false
+            show_state: false
+            show_name: false
+            tap_action:
+              action: none
+            custom_fields:
+              content: |
+                [[[
+                  var t = states['sensor.lora_temp_1_temp_1_temperature'];
+                  var h = states['sensor.lora_temp_1_temp_1_humidity'];
+                  var b = states['sensor.lora_temp_1_temp_1_battery'];
+                  var ls = states['sensor.lora_temp_1_temp_1_last_seen'];
+                  var lqe = states['sensor.lora_temp_1_temp_1_link_quality'];
+                  var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null;
+                  var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171'));
+                  var lqTxt = lqv === null ? '--' : lqv;
+                  var av = states['binary_sensor.lora_temp_1_temp_1_available'];
+
+                  var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--';
+                  var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--';
+                  var batt = b && b.state !== 'unavailable' ? b.state : '--';
+                  var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--';
+
+                  var battColor = '#4ade80';
+                  if (batt !== '--') {
+                    var battVal = parseInt(batt);
+                    if (battVal < 10) {
+                      battColor = '#f87171';
+                    } else if (battVal < 25) {
+                      battColor = '#fbbf24';
+                    }
+                  }
+
+                  var online = av && av.state === 'on';
+                  var col = online ? '#4ade80' : '#f87171';
+                  var label = online ? 'online' : 'offline';
+
+                  var gw = 'G2';
+                  var devName = 'Temp 1';
+
+                  return `
+                    <div style="display: flex; flex-direction: column; height: 100%; width: 100%;">
+                      <div style="display: flex; align-items: center; width: 100%; margin-bottom: 8px; justify-content: space-between; gap: 370px">
+                        <div style="font-size: 14px; font-weight: 600; color: #e5e5e5;">
+                          ${devName}
+                        </div>
+                        <div>
+                          <span style="background:#141414; border:1px solid #22d3ee; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;">${gw}</span>
+                        </div>
+                      </div>
+
+                      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-grow: 1; gap: 180px;">
+                        <div style="display: flex; align-items: baseline; gap: 10px;">
+                          <div>
+                            <span style="font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;">${temp}</span>
+                            <span style="font-size:22px; color:#525252;">°C</span>
+                          </div>
+                          <div>
+                            <span style="font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;">${hum}</span>
+                            <span style="font-size:22px; color:#525252;">%</span>
+                          </div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size:10px; color:#525252;">
+                          <div>
+                            <span style="color:${col};">● ${label}</span> · <span style="color:${battColor};">🔋 ${batt}%</span> · <span style="color:${lqCol};">📶 ${lqTxt}</span>
+                          </div>
+                          <div>${lsT}</div>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                ]]]
+            styles:
+              card:
+                - height: 90px
+                - padding: 16px
+                - border-radius: 12px
+                - background: '#0a0a0a'
+              icon:
+                - display: none
+              name:
+                - display: none
+          - type: horizontal-stack
+            cards:
+              - type: custom:button-card
+                show_icon: false
+                show_name: false
+                show_state: false
+                entity: this.entity.does.not.exist
+                styles:
+                  card:
+                    - background: '#0a0a0a'
+                    - border-radius: 12px
+                    - box-shadow: none
+                    - padding: 0
+                    - overflow: hidden
+                    - height: auto
+                  custom_fields:
+                    chart:
+                      - pointer-events: none
+                custom_fields:
+                  chart:
+                    card:
+                      type: custom:apexcharts-card
+                      header:
+                        show: true
+                        title: Temperatura
+                        show_states: false
+                        colorize_states: true
+                      graph_span: 24h
+                      span:
+                        end: minute
+                      yaxis:
+                        - decimals: 1
+                      apex_config:
+                        chart:
+                          height: 160
+                          toolbar:
+                            show: false
+                          background: transparent
+                        grid:
+                          show: true
+                          borderColor: '#1f1f1f'
+                        stroke:
+                          width: 2
+                          curve: smooth
+                        dataLabels:
+                          enabled: false
+                        legend:
+                          show: false
+                        tooltip:
+                          enabled: true
+                          theme: dark
+                          x:
+                            format: dd.MM HH:mm
+                      series:
+                        - entity: sensor.lora_temp_1_temp_1_temperature
+                          name: Temperatura
+                          type: line
+                          color: '#22d3ee'
+                      card_mod:
+                        style: |
+                          ha-card {
+                            background: transparent !important;
+                            border: none !important;
+                            box-shadow: none !important;
+                          }
+                          ha-card .header {
+                            padding: 4px 8px !important;
+                            min-height: 24px !important;
+                          }
+                          ha-card .header .title {
+                            font-size: 12px !important;
+                          }
+                          ha-card .header .states {
+                            font-size: 10px !important;
+                          }
+                tap_action:
+                  action: fire-dom-event
+                  browser_mod:
+                    service: browser_mod.popup
+                    data:
+                      title: Temperatura
+                      content:
+                        type: vertical-stack
+                        cards:
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 24h
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 24h
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 1
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_1_temp_1_temperature
+                                name: Temp
+                                type: line
+                                color: '#22d3ee'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 7 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 7d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 1
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_1_temp_1_temperature
+                                name: Temp
+                                type: line
+                                color: '#22d3ee'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 30 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 30d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 1
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_1_temp_1_temperature
+                                name: Temp
+                                type: line
+                                color: '#22d3ee'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                      style:
+                        '--popup-background-color': '#0a0a0a'
+                        '--popup-border-radius': 12px
+                        '--popup-min-width': 650px
+              - type: custom:button-card
+                show_icon: false
+                show_name: false
+                show_state: false
+                entity: this.entity.does.not.exist
+                styles:
+                  card:
+                    - background: '#0a0a0a'
+                    - border-radius: 12px
+                    - box-shadow: none
+                    - padding: 0
+                    - overflow: hidden
+                    - height: auto
+                  custom_fields:
+                    chart:
+                      - pointer-events: none
+                custom_fields:
+                  chart:
+                    card:
+                      type: custom:apexcharts-card
+                      header:
+                        show: true
+                        title: Wilgotność
+                        show_states: false
+                        colorize_states: true
+                      graph_span: 24h
+                      span:
+                        end: minute
+                      yaxis:
+                        - decimals: 0
+                          min: 0
+                          max: 100
+                      apex_config:
+                        chart:
+                          height: 160
+                          toolbar:
+                            show: false
+                          background: transparent
+                        grid:
+                          show: true
+                          borderColor: '#1f1f1f'
+                        stroke:
+                          width: 2
+                          curve: smooth
+                        dataLabels:
+                          enabled: false
+                        legend:
+                          show: false
+                        tooltip:
+                          enabled: true
+                          theme: dark
+                          x:
+                            format: dd.MM HH:mm
+                      series:
+                        - entity: sensor.lora_temp_1_temp_1_humidity
+                          name: Wilgotność
+                          type: line
+                          color: '#4ade80'
+                      card_mod:
+                        style: |
+                          ha-card {
+                            background: transparent !important;
+                            border: none !important;
+                            box-shadow: none !important;
+                          }
+                          ha-card .header {
+                            padding: 4px 8px !important;
+                            min-height: 24px !important;
+                          }
+                          ha-card .header .title {
+                            font-size: 12px !important;
+                          }
+                          ha-card .header .states {
+                            font-size: 10px !important;
+                          }
+                tap_action:
+                  action: fire-dom-event
+                  browser_mod:
+                    service: browser_mod.popup
+                    data:
+                      title: Wilgotność
+                      content:
+                        type: vertical-stack
+                        cards:
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 24h
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 24h
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 0
+                                min: 0
+                                max: 100
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_1_temp_1_humidity
+                                name: Wilgotność
+                                type: line
+                                color: '#4ade80'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 7 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 7d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 0
+                                min: 0
+                                max: 100
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_1_temp_1_humidity
+                                name: Wilgotność
+                                type: line
+                                color: '#4ade80'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 30 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 30d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 0
+                                min: 0
+                                max: 100
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_1_temp_1_humidity
+                                name: Wilgotność
+                                type: line
+                                color: '#4ade80'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                      style:
+                        '--popup-background-color': '#0a0a0a'
+                        '--popup-border-radius': 12px
+                        '--popup-min-width': 650px
+          - type: custom:button-card
+            template: lora_base
+            entity: sensor.lora_temp_2_temp_2_temperature
+            show_icon: false
+            show_state: false
+            show_name: false
+            tap_action:
+              action: none
+            custom_fields:
+              content: |
+                [[[
+                  var t = states['sensor.lora_temp_2_temp_2_temperature'];
+                  var h = states['sensor.lora_temp_2_temp_2_humidity'];
+                  var b = states['sensor.lora_temp_2_temp_2_battery'];
+                  var ls = states['sensor.lora_temp_2_temp_2_last_seen'];
+                  var lqe = states['sensor.lora_temp_2_temp_2_link_quality'];
+                  var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null;
+                  var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171'));
+                  var lqTxt = lqv === null ? '--' : lqv;
+                  var av = states['binary_sensor.lora_temp_2_temp_2_available'];
+
+                  var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--';
+                  var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--';
+                  var batt = b && b.state !== 'unavailable' ? b.state : '--';
+                  var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--';
+
+                  var battColor = '#4ade80';
+                  if (batt !== '--') {
+                    var battVal = parseInt(batt);
+                    if (battVal < 10) {
+                      battColor = '#f87171';
+                    } else if (battVal < 25) {
+                      battColor = '#fbbf24';
+                    }
+                  }
+
+                  var online = av && av.state === 'on';
+                  var col = online ? '#4ade80' : '#f87171';
+                  var label = online ? 'online' : 'offline';
+
+                  var gw = 'G2';
+                  var devName = 'Temp 2';
+
+                  return `
+                    <div style="display: flex; flex-direction: column; height: 100%; width: 100%;">
+                      <div style="display: flex; align-items: center; width: 100%; margin-bottom: 8px; justify-content: space-between; gap: 370px">
+                        <div style="font-size: 14px; font-weight: 600; color: #e5e5e5;">
+                          ${devName}
+                        </div>
+                        <div>
+                          <span style="background:#141414; border:1px solid #22d3ee; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;">${gw}</span>
+                        </div>
+                      </div>
+
+                      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-grow: 1; gap: 180px;">
+                        <div style="display: flex; align-items: baseline; gap: 10px;">
+                          <div>
+                            <span style="font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;">${temp}</span>
+                            <span style="font-size:22px; color:#525252;">°C</span>
+                          </div>
+                          <div>
+                            <span style="font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;">${hum}</span>
+                            <span style="font-size:22px; color:#525252;">%</span>
+                          </div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size:10px; color:#525252;">
+                          <div>
+                            <span style="color:${col};">● ${label}</span> · <span style="color:${battColor};">🔋 ${batt}%</span> · <span style="color:${lqCol};">📶 ${lqTxt}</span>
+                          </div>
+                          <div>${lsT}</div>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                ]]]
+            styles:
+              card:
+                - height: 90px
+                - padding: 16px
+                - border-radius: 12px
+                - background: '#0a0a0a'
+              icon:
+                - display: none
+              name:
+                - display: none
+          - type: horizontal-stack
+            cards:
+              - type: custom:button-card
+                show_icon: false
+                show_name: false
+                show_state: false
+                entity: this.entity.does.not.exist
+                styles:
+                  card:
+                    - background: '#0a0a0a'
+                    - border-radius: 12px
+                    - box-shadow: none
+                    - padding: 0
+                    - overflow: hidden
+                    - height: auto
+                  custom_fields:
+                    chart:
+                      - pointer-events: none
+                custom_fields:
+                  chart:
+                    card:
+                      type: custom:apexcharts-card
+                      header:
+                        show: true
+                        title: Temperatura
+                        show_states: false
+                        colorize_states: true
+                      graph_span: 24h
+                      span:
+                        end: minute
+                      yaxis:
+                        - decimals: 1
+                      apex_config:
+                        chart:
+                          height: 160
+                          toolbar:
+                            show: false
+                          background: transparent
+                        grid:
+                          show: true
+                          borderColor: '#1f1f1f'
+                        stroke:
+                          width: 2
+                          curve: smooth
+                        dataLabels:
+                          enabled: false
+                        legend:
+                          show: false
+                        tooltip:
+                          enabled: true
+                          theme: dark
+                          x:
+                            format: dd.MM HH:mm
+                      series:
+                        - entity: sensor.lora_temp_2_temp_2_temperature
+                          name: Temperatura
+                          type: line
+                          color: '#22d3ee'
+                      card_mod:
+                        style: |
+                          ha-card {
+                            background: transparent !important;
+                            border: none !important;
+                            box-shadow: none !important;
+                          }
+                          ha-card .header {
+                            padding: 4px 8px !important;
+                            min-height: 24px !important;
+                          }
+                          ha-card .header .title {
+                            font-size: 12px !important;
+                          }
+                          ha-card .header .states {
+                            font-size: 10px !important;
+                          }
+                tap_action:
+                  action: fire-dom-event
+                  browser_mod:
+                    service: browser_mod.popup
+                    data:
+                      title: Temperatura
+                      content:
+                        type: vertical-stack
+                        cards:
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 24h
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 24h
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 1
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_2_temp_2_temperature
+                                name: Temp
+                                type: line
+                                color: '#22d3ee'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 7 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 7d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 1
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_2_temp_2_temperature
+                                name: Temp
+                                type: line
+                                color: '#22d3ee'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 30 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 30d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 1
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_2_temp_2_temperature
+                                name: Temp
+                                type: line
+                                color: '#22d3ee'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                      style:
+                        '--popup-background-color': '#0a0a0a'
+                        '--popup-border-radius': 12px
+                        '--popup-min-width': 650px
+              - type: custom:button-card
+                show_icon: false
+                show_name: false
+                show_state: false
+                entity: this.entity.does.not.exist
+                styles:
+                  card:
+                    - background: '#0a0a0a'
+                    - border-radius: 12px
+                    - box-shadow: none
+                    - padding: 0
+                    - overflow: hidden
+                    - height: auto
+                  custom_fields:
+                    chart:
+                      - pointer-events: none
+                custom_fields:
+                  chart:
+                    card:
+                      type: custom:apexcharts-card
+                      header:
+                        show: true
+                        title: Wilgotność
+                        show_states: false
+                        colorize_states: true
+                      graph_span: 24h
+                      span:
+                        end: minute
+                      yaxis:
+                        - decimals: 0
+                          min: 0
+                          max: 100
+                      apex_config:
+                        chart:
+                          height: 160
+                          toolbar:
+                            show: false
+                          background: transparent
+                        grid:
+                          show: true
+                          borderColor: '#1f1f1f'
+                        stroke:
+                          width: 2
+                          curve: smooth
+                        dataLabels:
+                          enabled: false
+                        legend:
+                          show: false
+                        tooltip:
+                          enabled: true
+                          theme: dark
+                          x:
+                            format: dd.MM HH:mm
+                      series:
+                        - entity: sensor.lora_temp_2_temp_2_humidity
+                          name: Wilgotność
+                          type: line
+                          color: '#4ade80'
+                      card_mod:
+                        style: |
+                          ha-card {
+                            background: transparent !important;
+                            border: none !important;
+                            box-shadow: none !important;
+                          }
+                          ha-card .header {
+                            padding: 4px 8px !important;
+                            min-height: 24px !important;
+                          }
+                          ha-card .header .title {
+                            font-size: 12px !important;
+                          }
+                          ha-card .header .states {
+                            font-size: 10px !important;
+                          }
+                tap_action:
+                  action: fire-dom-event
+                  browser_mod:
+                    service: browser_mod.popup
+                    data:
+                      title: Wilgotność
+                      content:
+                        type: vertical-stack
+                        cards:
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 24h
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 24h
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 0
+                                min: 0
+                                max: 100
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_2_temp_2_humidity
+                                name: Wilgotność
+                                type: line
+                                color: '#4ade80'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 7 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 7d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 0
+                                min: 0
+                                max: 100
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_2_temp_2_humidity
+                                name: Wilgotność
+                                type: line
+                                color: '#4ade80'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                          - type: custom:apexcharts-card
+                            header:
+                              show: true
+                              title: 30 dni
+                              show_states: true
+                              colorize_states: true
+                            graph_span: 30d
+                            span:
+                              end: minute
+                            yaxis:
+                              - decimals: 0
+                                min: 0
+                                max: 100
+                            apex_config:
+                              chart:
+                                height: 200
+                                toolbar:
+                                  show: false
+                              grid:
+                                show: true
+                                borderColor: '#1f1f1f'
+                              stroke:
+                                width: 2
+                                curve: smooth
+                              dataLabels:
+                                enabled: false
+                              tooltip:
+                                enabled: true
+                                theme: dark
+                                x:
+                                  format: dd.MM HH:mm
+                            series:
+                              - entity: sensor.lora_temp_2_temp_2_humidity
+                                name: Wilgotność
+                                type: line
+                                color: '#4ade80'
+                            card_mod:
+                              style: >
+                                ha-card { background: #141414 !important;
+                                border: none !important; border-radius: 12px
+                                !important; box-shadow: none !important; }
+                      style:
+                        '--popup-background-color': '#0a0a0a'
+                        '--popup-border-radius': 12px
+                        '--popup-min-width': 650px
