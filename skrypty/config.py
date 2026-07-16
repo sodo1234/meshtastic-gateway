@@ -104,7 +104,7 @@ SUPERVISOR_CONFIG = {
     # odpinania + restartu. usb_reset_after=N nieudanych reconnectów. rx_timeout=backstop (brak RX>Ns
     # gdy connected ⇒ zwis; >2×heartbeat=900 by nie resetować przy 1 zgubionej HB). 0=off.
     "mesh_reconnect": {"enabled": True, "interval": 15, "max_backoff": 120,
-                       "usb_reset": True, "usb_reset_after": 2, "rx_timeout": 2000},
+                       "usb_reset": True, "usb_reset_after": 2, "rx_timeout": 1100},
     "mqtt": {"host": "localhost", "port": 1883, "user": "mqtt", "pass": MQTT_PASS},
     "lora": {"max_size": 220, "tx_cooldown": 3.0},
     # Generyczny kanał ReliableTransfer (devmap/avail blob/ansnap) — TEN SAM empirycznie
@@ -192,7 +192,7 @@ GATEWAY_CONFIG = {
     "id": _GW_ID,                                          # env LORA_GW_ID nadpisuje (test 2 bramek/maszyna)
     "mesh_port": os.environ.get("LORA_MESH_PORT", _MESH_PORT),  # env LORA_MESH_PORT = by-id drugiego Helteca
     "mesh_reconnect": {"enabled": True, "interval": 10, "max_backoff": 120,
-                       "usb_reset": True, "usb_reset_after": 2, "rx_timeout": 2000},  # auto-recovery USB (patrz wyżej)
+                       "usb_reset": True, "usb_reset_after": 2, "rx_timeout": 1100},  # auto-recovery USB (patrz wyżej)
     "mqtt": {"host": "172.17.0.1", "port": 1883, "user": "mqtt", "pass": MQTT_PASS},
     "lora": {"max_size": 220, "tx_cooldown": 3.0},
     # Generyczny kanał ReliableTransfer (devmap/avail blob) — TEN SAM empirycznie sprawdzony
