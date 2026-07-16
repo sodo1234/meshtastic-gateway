@@ -323,6 +323,9 @@ def popup_row(bucket, i):
     payload = row_payload_js(ie, i).replace("'BUCKET'", f"'{bucket}'")
     return {"type": "custom:button-card", "entity": ie,
             "show_icon": False, "show_name": False, "show_state": False,
+            # F8 (2026-07-16): re-render wiersza przy KAŻDEJ zmianie stanu — popup ma się
+            # odświeżać na żywo po klik-clear (backend optymistyczny = 0.00s, winny był frontend).
+            "triggers_update": "all",
             "custom_fields": {"content": content},
             "tap_action": {"action": "call-service", "service": "mqtt.publish",
                            "confirmation": {"text": "Usunąć anomalię?"},
@@ -346,6 +349,7 @@ def popup_empty(bucket):
                f"width:100%;\">✅ Brak anomalii {b['label']}</div>`; ]]]")
     return {"type": "custom:button-card", "entity": b["items"],
             "show_icon": False, "show_name": False, "show_state": False,
+            "triggers_update": "all",                    # F8: pusty stan reaguje na żywo
             "custom_fields": {"content": content},
             "styles": {"card": [{"background": "#0a0a0a"}, {"box-shadow": "none"},
                                 {"border": "none"}, {"padding": "0"}]}}
@@ -359,6 +363,7 @@ def popup_more(bucket):
                f"… +${{n-{N_ROWS}}} kolejnych (lista pokazuje {N_ROWS})</div>`; ]]]")
     return {"type": "custom:button-card", "entity": b["items"],
             "show_icon": False, "show_name": False, "show_state": False,
+            "triggers_update": "all",                    # F8: licznik "+N kolejnych" na żywo
             "custom_fields": {"content": content},
             "styles": {"card": [{"background": "#0a0a0a"}, {"box-shadow": "none"},
                                 {"border": "none"}, {"padding": "0"}]}}
