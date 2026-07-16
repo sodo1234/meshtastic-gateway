@@ -6,6 +6,7 @@ Supervisor: receives db, registers device entities in HA.
 """
 import json
 import hashlib
+import os
 import time
 
 
@@ -82,6 +83,10 @@ class GatewayDiscovery:
         self.map_send_fn = None
         self._devmap_hash = None      # anti-spam: nie re-wysyłaj devmap dla tego samego hash w oknie
         self._devmap_ts = 0.0
+        # F7 (cichy start): to samo dla pary disc_meta+disc_vio — obserwowany spam ×3/40s przy
+        # starcie (kilka wyzwalaczy naraz wysyła identyczny hash). devmap miał już swój gate.
+        self._meta_hash = None
+        self._meta_ts = 0.0
 
     def is_monitored(self, dev):
         if dev in self.priority_names:
@@ -134,13 +139,25 @@ class GatewayDiscovery:
         """Send without delay (backward compat). Use send_discovery_with_delay for LoRa."""
         self.send_discovery_with_delay(0)
 
-    def send_discovery_with_delay(self, delay=4.0, meta_only=False):
+    def send_discovery_with_delay(self, delay=4.0, meta_only=False, force=False):
         """Send disc_meta + disc_vio + db with delay between packets (LoRa cooldown).
 
         meta_only=True → wyślij TYLKO disc_meta (lekki advertise hash), pomiń disc_vio+db.
         Używane przez anti-spam: gdy supervisor już ma aktualny zestaw (hash zgodny), bramka
-        nie marnuje LoRa na pełne `db` — odsyła sam hash, supervisor potwierdza zgodność."""
+        nie marnuje LoRa na pełne `db` — odsyła sam hash, supervisor potwierdza zgodność.
+
+        F7 (cichy start): anti-spam 180s na PARZE disc_meta+disc_vio — ten sam disc_hash
+        wysłany <180s temu → NIC (devmap ma już własny gate niżej). force=True (jawne żądanie
+        `disc` z supervisora / ręczny przycisk Discovery) omija ten guard."""
         import time as _time
+        now = _time.time()
+        if not force and self.disc_hash == self._meta_hash and (now - self._meta_ts) < 180:
+            if self.log:
+                self.log.info('DISC', f'⏭️ disc_meta/disc_vio pominięte (ten sam hash <180s) — '
+                              f'anti-spam cichego startu')
+            return
+        self._meta_hash = self.disc_hash
+        self._meta_ts = now
         meta = {'t': 'disc_meta', 'g': self.gw_id,
                 'hash': self.disc_hash,
                 'dev_n': len(self.devices)}                # WSZYSTKIE urządzenia
@@ -253,17 +270,23 @@ class GatewayDiscovery:
 class SupervisorDiscovery:
     """Supervisor side: processes incoming disc_meta + db, registers HA entities."""
 
-    def __init__(self, ha_entities, logger=None, request_disc_fn=None, disc_retry=90):
+    def __init__(self, ha_entities, logger=None, request_disc_fn=None, disc_retry=90,
+                 persist_path=None):
         """
         request_disc_fn: callable(gw) → sends a `disc` request over LoRa. When set,
                          the supervisor auto-requests a fresh device list whenever an
                          incoming HB/disc_meta hash differs from the synced one.
         disc_retry:      seconds before re-requesting if db never arrived.
+        persist_path:    F7 (cichy start) — plik {gw:{devices,synced}} przetrwały restart.
+                         Po restarcie supervisora hashe zgadzają się od razu → note_hash nie
+                         żąda niczego → koniec sztormu devmap/db po starcie. Encje re-rejestracja
+                         NIEPOTRZEBNA (configi MQTT discovery są retained w brokerze).
         """
         self.ha = ha_entities
         self.log = logger
         self.request_disc_fn = request_disc_fn
         self.disc_retry = disc_retry
+        self.persist_path = persist_path
         self.gw_devices = {}  # {gw: {dev: {type, caps, sid}}}
         self.gw_hashes = {}   # {gw: last advertised hash (disc_meta/hb)}
         self.gw_synced = {}   # {gw: hash for which device list is registered}
@@ -271,6 +294,36 @@ class SupervisorDiscovery:
         self.gw_devn = {}     # {gw: expected device count (from disc_meta dev_n)}
         self.gw_disc_ts = {}  # {gw: ts of last disc_meta / re-request}
         self.gw_disc_try = {} # {gw: completeness re-request count}
+        self._load()
+
+    # ── persistence (F7) ────────────────────────────────
+    def _load(self):
+        if not self.persist_path or not os.path.exists(self.persist_path):
+            return
+        try:
+            raw = json.load(open(self.persist_path, encoding="utf-8"))
+            for gw, d in raw.items():
+                self.gw_devices[gw] = d.get('devices', {})
+                self.gw_synced[gw] = d.get('synced', '')
+            if self.log:
+                self.log.info('DISC', f'💾 persist wczytany: {len(raw)} bramek '
+                              f'({sum(len(v) for v in self.gw_devices.values())} urządzeń)')
+        except Exception as e:
+            if self.log:
+                self.log.warn('DISC', f'persist load: {e}')
+
+    def _save(self):
+        if not self.persist_path:
+            return
+        try:
+            raw = {gw: {'devices': self.gw_devices.get(gw, {}),
+                       'synced': self.gw_synced.get(gw, '')}
+                  for gw in self.gw_devices}
+            json.dump(raw, open(self.persist_path, "w", encoding="utf-8"),
+                      separators=(',', ':'))
+        except Exception as e:
+            if self.log:
+                self.log.warn('DISC', f'persist save: {e}')
 
     def handle_disc_meta(self, data):
         gw = data.get('g', '?')
@@ -358,6 +411,7 @@ class SupervisorDiscovery:
         # device list now matches the last advertised hash → mark synced
         self.gw_synced[gw] = self.gw_hashes.get(gw, '')
         self._pending.pop(gw, None)
+        self._save()          # F7: przetrwaj restart supervisora (koniec sztormu re-transferu)
         if self.log:
             self.log.info('DISC', f'📋 db {gw}: {len(data.get("d",[]))} urządzeń '
                           f'zarejestrowanych (synced hash={self.gw_synced[gw]})')
@@ -390,6 +444,7 @@ class SupervisorDiscovery:
         self.gw_hashes[gw] = h
         self.gw_synced[gw] = h
         self._pending.pop(gw, None)
+        self._save()          # F7: przetrwaj restart supervisora (koniec sztormu re-transferu)
         if self.log:
             self.log.info('DISC', f'📋 devmap {gw}: {len(devs)} urządzeń zarejestrowanych '
                           f'(synced hash={h})')

@@ -92,6 +92,8 @@ class HAEntities:
         for eid, name, icon in [
             ("ping", "Ping", "mdi:lan-connect"),
             ("discovery", "Discovery", "mdi:magnify"),
+            ("dump", "Dump anomalii", "mdi:database-export"),          # F5: reconcyliacja teraz
+            ("sync_req", "Sync czasu", "mdi:clock-sync"),               # F5: poproś supervisora o sync
         ]:
             uid = f"lora_gw_{gl}_{eid}"
             self._pub("button", uid, {
@@ -330,6 +332,7 @@ class HAEntities:
             ("gw_offline", "Offline", "{{ value_json.offline | default(0) }}", "mdi:lan-disconnect", None, "sensor"),
             ("sup_link", "Supervisor Link", "{{ value_json.sup_link | default('OFF') }}", None, None, "binary_sensor"),
             ("sup_last_rx", "Supervisor Last RX", "{{ value_json.sup_last_rx | default('--') }}", "mdi:download-network", None, "sensor"),
+            ("sup_lost_pong", "Sup Lost Pong", "{{ value_json.sup_lost_pong | default(0) }}", "mdi:sync-alert", None, "sensor"),
             ("time_offset", "Time Offset", "{{ value_json.time_offset | default('--') }}", "mdi:clock-alert", None, "sensor"),
             ("last_sync", "Last Sync", "{{ value_json.last_sync | default('--') }}", "mdi:clock-sync", None, "sensor"),
         ]
