@@ -45,12 +45,21 @@ PARAM_DEFS = {
            "name": "Próg bateria niska", "icon": "mdi:battery-low"},
     "BC": {"default": 15,  "min": 1, "max": 100, "step": 1, "unit": "%",
            "name": "Próg bateria krytyczna", "icon": "mdi:battery-alert"},
+    # F3 (2026-07-15): parametry probe'a supervisor-link per-bramka (SupervisorLinkProbe) —
+    # czytane na żywo, więc strojenie interwału/timeoutu z dashboardu bez restartu.
+    "P4": {"default": 15,  "min": 1, "max": 1440, "step": 1, "unit": "min",
+           "name": "Ping sup interwał", "icon": "mdi:timer-sync"},
+    "T4": {"default": 25,  "min": 5, "max": 300,  "step": 1, "unit": "s",
+           "name": "Ping sup timeout", "icon": "mdi:timer-alert"},
+    "PR": {"default": 2,   "min": 0, "max": 10,   "step": 1, "unit": "x",
+           "name": "Ping sup retry", "icon": "mdi:repeat"},
 }
-PARAM_ORDER = ["P1", "P2", "P3", "T1", "T2", "T3", "TH", "TL", "HH", "HL", "BL", "BC"]
+PARAM_ORDER = ["P1", "P2", "P3", "T1", "T2", "T3", "TH", "TL", "HH", "HL", "BL", "BC",
+              "P4", "T4", "PR"]
 # Trzy grupy wysyłki (przyciski jak v38 send_config) — model edytuj→Send (nie auto):
-CONFIG_KEYS = ["P1", "P2", "P3"]      # przycisk „Send Config"  (stagnation + raportowanie)
-TIMEOUT_KEYS = ["T1", "T2", "T3"]     # przycisk „Send Timeout" (offline switch/sensor/binary)
-THRESHOLD_KEYS = ["TH", "TL", "HH", "HL", "BL", "BC"]   # „Send Progi" (temp/hum/bateria)
+CONFIG_KEYS = ["P1", "P2", "P3", "P4"]      # przycisk „Send Config"  (stagnation + raportowanie)
+TIMEOUT_KEYS = ["T1", "T2", "T3", "T4"]     # przycisk „Send Timeout" (offline switch/sensor/binary)
+THRESHOLD_KEYS = ["TH", "TL", "HH", "HL", "BL", "BC", "PR"]   # „Send Progi" (temp/hum/bateria)
 SEND_BUTTONS = [
     ("send_config",    "Wyślij Config",  "mdi:cog-sync",   CONFIG_KEYS),
     ("send_timeout",   "Wyślij Timeout", "mdi:timer-cog",  TIMEOUT_KEYS),
@@ -68,6 +77,10 @@ class ParamSync:
         self.mqtt = mqtt
         self.send = send_fn              # callable(dict) → send over LoRa
         self.log = logger
+        # F3 (2026-07-15): topic-role — gateway bez zmian; supervisor per-bramka
+        # (lora/params/supervisor/<gl>/...) → jedna instancja ParamSync per bramka zamiast
+        # jednej wspólnej (poprzednio timeouty/progi „per-bramka" nie działały naprawdę).
+        self.tp = self.role if self.role == "gateway" else f"supervisor/{self.gw_id.lower()}"
         self.persist_path = persist_path
         self.ha = ha_prefix
         self.sp = state_prefix
@@ -108,9 +121,11 @@ class ParamSync:
     def _eid(self, key):
         if self.role == "gateway":
             return f"lora_{self.gw_id.lower()}_param_{key.lower()}"
-        # 'supg1' = świeży uid, by HA utworzył liczniki pod device LoRa Gateway G1
+        # F3: de-hardcode — per-bramka uid (dla gw_id="G1" daje identyczny
+        # lora_supg1_param_* jak dotąd = zero breakage; G2/G3 dostają własne encje).
+        # 'sup{gw}' = świeży uid, by HA utworzył liczniki pod device LoRa Gateway Gx
         # (stare lora_sup_param_* utknęły pod LoRa Supervisor — lepki rejestr device)
-        return f"lora_supg1_param_{key.lower()}"
+        return f"lora_sup{self.gw_id.lower()}_param_{key.lower()}"
 
     def _device(self):
         """Wszystkie encje (number + przyciski Send) wpięte pod urządzenie
@@ -129,8 +144,8 @@ class ParamSync:
         for key in PARAM_ORDER:
             d, uid = PARAM_DEFS[key], self._eid(key)
             cfg = {"name": f"{key} · {d['name']}", "object_id": uid, "unique_id": uid,
-                   "command_topic": f"{self.sp}/params/{self.role}/set/{key}",
-                   "state_topic": f"{self.sp}/params/{self.role}/state/{key}",
+                   "command_topic": f"{self.sp}/params/{self.tp}/set/{key}",
+                   "state_topic": f"{self.sp}/params/{self.tp}/state/{key}",
                    "min": d["min"], "max": d["max"], "step": d["step"],
                    "mode": "box", "icon": d["icon"], "device": device}
             if d["unit"]:
@@ -142,7 +157,7 @@ class ParamSync:
             buid = self._btn_uid(eid)
             self.mqtt.publish(f"{self.ha}/button/{buid}/config", json.dumps({
                 "name": f"LoRa {name}", "object_id": buid, "unique_id": buid,
-                "command_topic": f"{self.sp}/params/{self.role}/cmd/{eid}",
+                "command_topic": f"{self.sp}/params/{self.tp}/cmd/{eid}",
                 "icon": icon, "device": device}, separators=(',', ':')), retain=True)
         self._publish_states()
         if self.log:
@@ -152,20 +167,22 @@ class ParamSync:
     def _btn_uid(self, eid):
         if self.role == "gateway":
             return f"lora_{self.gw_id.lower()}_param_{eid}"
-        return f"lora_sup_param_{eid}"
+        # F3: per-bramka uid (jak _eid) — inaczej przyciski Send N instancji nadpisywałyby
+        # się nawzajem (ten sam retained config, różne command_topic → wygrywa ostatni).
+        return f"lora_sup{self.gw_id.lower()}_param_{eid}"
 
     def subscribe(self):
-        self.mqtt.subscribe(f"{self.sp}/params/{self.role}/set/+")
+        self.mqtt.subscribe(f"{self.sp}/params/{self.tp}/set/+")
         # cmd/# (nie +): łapie i `cmd/send_x` (broadcast/self) i `cmd/<gw>/send_x` (per-bramka, supervisor).
-        self.mqtt.subscribe(f"{self.sp}/params/{self.role}/cmd/#")    # przyciski Send (per-gw)
+        self.mqtt.subscribe(f"{self.sp}/params/{self.tp}/cmd/#")    # przyciski Send (per-gw)
 
     def _publish_states(self):
         for key in PARAM_ORDER:
-            self.mqtt.publish(f"{self.sp}/params/{self.role}/state/{key}",
+            self.mqtt.publish(f"{self.sp}/params/{self.tp}/state/{key}",
                               str(self.values[key]), retain=True)
 
     def _publish_state(self, key):
-        self.mqtt.publish(f"{self.sp}/params/{self.role}/state/{key}",
+        self.mqtt.publish(f"{self.sp}/params/{self.tp}/state/{key}",
                           str(self.values[key]), retain=True)
 
     # ── local HA edit ───────────────────────────────────
@@ -205,7 +222,7 @@ class ParamSync:
             ParamSync._GROUPS = {"send_config": (CONFIG_KEYS, "Config"),
                                  "send_timeout": (TIMEOUT_KEYS, "Timeout"),
                                  "send_threshold": (THRESHOLD_KEYS, "Progi")}
-        tail = topic.split(f"/params/{self.role}/cmd/", 1)[-1].split('/')  # (<gw>,) <eid>
+        tail = topic.split(f"/params/{self.tp}/cmd/", 1)[-1].split('/')  # (<gw>,) <eid>
         target_gw = tail[0].upper() if len(tail) == 2 else None
         grp = ParamSync._GROUPS.get(tail[-1])
         if grp:

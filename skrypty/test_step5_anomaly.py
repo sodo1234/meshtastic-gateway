@@ -48,7 +48,7 @@ from config import CONFIG, ROLE
 from modules.transport import Dispatcher, MqttTransport, LoraTransport
 from modules.transport.tx_queue import PriorityTxQueue
 from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
-                               GatewayDiscovery, SupervisorDiscovery)
+                               GatewayDiscovery, SupervisorDiscovery, SupervisorLinkProbe)
 from modules.data import GatewayData, SupervisorData
 from modules.params import ParamSync
 from modules.anomaly import (StagnationEngine, OfflineMonitor, GatewayOfflineAnomaly,
@@ -254,7 +254,8 @@ def run_gateway(log):
     vio_states = {v['id']: ('ON' if v.get('default') else 'OFF')
                   for v in vio_config if v['type'] == 'switch'}
     gw_stats = {'last_sup_rx_ts': 0.0, 'last_sup_rx': '--',
-                'last_sync': '--', 'time_offset': '--', '_last_sync_ts': 0.0}
+                'last_sync': '--', 'time_offset': '--', '_last_sync_ts': 0.0,
+                'sup_link': 'ON', 'sup_lost_pong': 0}   # F2: nadpisywane przez SupervisorLinkProbe.on_state
     SUP_LINK_TIMEOUT = CONFIG.get('sup_link_timeout', 3600)
 
     # ── STEP 5+: jakość czasu — restart bez RTC/internetu = zegar Debiana niepewny do 1. sync ──
@@ -332,6 +333,22 @@ def run_gateway(log):
         v = param_sync.get(key)
         return v * 60 if v else None                 # None → fallback skalar offline_after
     data.offline_after_fn = _offline_after_for
+
+    # ── F2: SupervisorLinkProbe — aktywny ping/pong sup_ping/sup_pong (siatka bezpieczeństwa
+    # na ciszę modelu pasywnego z CLAUDE.md). P4/T4/PR czytane NA ŻYWO z param_sync (strojenie
+    # z dashboardu bez restartu, wzorzec jak progi TH/TL wyżej). Callback aktualizuje TYLKO
+    # gw_stats (bez wołania publish_gwstat — ta jest zdefiniowana niżej; late-bind przez
+    # gwstat_loop/kolejne wywołania, ten sam wzorzec co time_offset/last_sync).
+    def _sup_link_params():
+        return (param_sync.get('P4'), param_sync.get('T4'), param_sync.get('PR'))
+
+    def _on_sup_link_state(online, lost_pongs):
+        gw_stats['sup_link'] = 'ON' if online else 'OFF'
+        gw_stats['sup_lost_pong'] = lost_pongs
+
+    sup_link_probe = SupervisorLinkProbe(
+        gw_id, lora, get_params=_sup_link_params,
+        on_state=_on_sup_link_state, logger=log)
 
     # ── STEP 5: tryb bramki (day/night/all-time) — supresja offline gdy nieaktywna ──
     gm_cfg = CONFIG.get('gateway_mode', {})
@@ -609,7 +626,10 @@ def run_gateway(log):
             log.info('CMD', f'⚡ Discovery req — hash supervisora zgodny ({sup_hash}) → meta_only (anti-spam, bez db)')
         else:
             log.info('CMD', f'⚡ Discovery requested (sup_hash={sup_hash} ≠ {discovery.disc_hash}) → pełna')
-        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay, meta_only=meta_only),
+        # F7: żądanie JAWNE z supervisora → force=True omija anti-spam 180s (odpowiedz zawsze,
+        # nawet gdy identyczny hash wysłany przed chwilą — supervisor mógł zgubić poprzedni pakiet)
+        threading.Thread(target=lambda: discovery.send_discovery_with_delay(
+                         tx_delay, meta_only=meta_only, force=True),
                          daemon=True).start()
     dispatcher.register('disc', handle_disc_request)
 
@@ -704,6 +724,7 @@ def run_gateway(log):
             log.info('CMD', f'🕐 sync: offset={offset:+d}s (time_quality→synced)')
     dispatcher.register('sync', handle_sync)
     dispatcher.register('req', lambda d: for_me(d) and data.handle_req(d))   # STEP 3: refresh on-demand (per-gw)
+    dispatcher.register('sup_pong', lambda d: for_me(d) and sup_link_probe.handle_sup_pong(d))  # F2: odpowiedź na sup_ping
 
     def handle_ac_b(d):                                  # CLEAR supervisor→bramka: usuń z lokalnego store + ACK
         if d.get('g') not in (gw_id, None):
@@ -793,8 +814,15 @@ def run_gateway(log):
             log.info('BTN', '🔘 Ping button pressed'); heartbeat.send_heartbeat()
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/discovery':
             log.info('BTN', '🔘 Discovery button pressed')
-            threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay),
+            # F7: ręczny przycisk = jawne żądanie → force=True omija anti-spam 180s disc_meta/vio
+            threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay, force=True),
                              daemon=True).start()
+        elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/dump':
+            log.info('BTN', '🔘 Dump anomalii (bramka) pressed')     # F5: reconcyliacja teraz
+            handle_dump_anom({'g': gw_id})
+        elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/sync_req':
+            log.info('BTN', '🔘 Sync czasu (bramka) pressed')        # F5: poproś supervisora o sync
+            lora_send({'t': 'sync_req', 'g': gw_id})
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/push_schedule':
             log.info('BTN', '🔘 Push Schedule Up pressed')          # STEP 4: reverse gw→sup
             threading.Thread(target=push_schedule_up, daemon=True, name='cal-push-up').start()
@@ -875,6 +903,7 @@ def run_gateway(log):
             t = json.loads(text).get('t', '?')
             gw_stats['last_sup_rx_ts'] = time.time()
             gw_stats['last_sup_rx'] = f"{datetime.now().strftime('%H:%M:%S')} ({t})"
+            sup_link_probe.note_rx()          # F2: DOWOLNA wiadomość od supervisora = dowód życia
         except Exception:
             pass
         dispatcher.dispatch_raw(text)
@@ -935,7 +964,7 @@ def run_gateway(log):
 
     heartbeat.start()
     data.start()                                         # STEP 3: start batchers
-    param_sync.register_entities()                       # STEP 17: 12 encji number (6 param + 6 progi) na HA bramki
+    param_sync.register_entities()                       # STEP 17→F2: 15 encji number (6 param + 6 progi + P4/T4/PR) na HA bramki
     stagnation.start()                                   # STEP 15: pętla stagnacji
     anomaly_batcher.start()                              # STEP 5: flush `ab` co flush_interval
     gw_anom_pub.publish(gw_id)                            # STEP 5: encje anomalii bramki (offline/battery/other + devices_*) — start z 0
@@ -943,6 +972,7 @@ def run_gateway(log):
     battery_mon.start()                                  # STEP 5: low/critical battery (lb/cb/bo)
     temphum_mon.start()                                  # STEP 5: temp/hum high/low (th/tl/hh/hl) ALL devices
     an_reconciler.start()                                # FAZA 1: pętla re-scan/re-arm + uplink ansnap
+    sup_link_probe.start()                               # F2: aktywny ping/pong sup_ping/sup_pong (siatka na ciszę)
     log.info('MAIN', f'  tryb bramki: {gw_mode.mode} (aktywna teraz: {gw_mode.is_active()})')
 
     # STEP 4: encje trybu/harmonogramu (pod urządzeniem LoRa Gateway Gx)
@@ -1050,6 +1080,9 @@ def run_gateway(log):
 
     def publish_gwstat():
         now = time.time()
+        # F2: sup_link jest teraz napędzany przez SupervisorLinkProbe (gw_stats['sup_link'],
+        # aktualizowane z _on_sup_link_state — aktywny ping/pong + note_rx na KAŻDYM ruchu od
+        # supervisora). `linked`/SUP_LINK_TIMEOUT zostają jako fallback, gdyby klucz kiedyś zniknął.
         linked = gw_stats['last_sup_rx_ts'] > 0 and (now - gw_stats['last_sup_rx_ts']) < SUP_LINK_TIMEOUT
         total = len(discovery.devices)
         prio = sum(1 for d in discovery.devices.values() if d.get('priority'))
@@ -1077,7 +1110,9 @@ def run_gateway(log):
             'uptime': int(now - heartbeat.start_time),
             'total': total, 'monitored': mon, 'priority': prio, 'offline': offline,
             'last_hb': last_hb,
-            'sup_link': 'ON' if linked else 'OFF', 'sup_last_rx': gw_stats['last_sup_rx'],
+            'sup_link': gw_stats.get('sup_link', 'ON' if linked else 'OFF'),
+            'sup_lost_pong': gw_stats.get('sup_lost_pong', 0),   # F2: licznik epizodów braku pong
+            'sup_last_rx': gw_stats['last_sup_rx'],
             'time_offset': gw_stats['time_offset'], 'last_sync': gw_stats['last_sync'],
             'disc_hash': discovery.disc_hash or '--',        # STEP 17: hash disc
             'param_hash': param_sync.params_hash()})         # STEP 17: hash parametrów
@@ -1123,7 +1158,10 @@ def run_supervisor(log):
         ha, logger=log,
         # ANTI-SPAM: dołącz hash KTÓRY SUPERVISOR MA (gw_synced) → bramka porówna i wyśle
         # pełne `db` tylko gdy różny; zgodny → sama meta. Mutualne porównanie hashy.
-        request_disc_fn=lambda gw: send_to_all({"t": "disc", "g": gw, "h": sup_disc.gw_synced.get(gw, "")}))
+        request_disc_fn=lambda gw: send_to_all({"t": "disc", "g": gw, "h": sup_disc.gw_synced.get(gw, "")}),
+        # F7 (cichy start): persist gw_devices+gw_synced → po restarcie supervisora hashe
+        # zgadzają się od razu (note_hash nie żąda niczego) → koniec sztormu devmap/db po starcie.
+        persist_path='/tmp/lora_sup_devices.json')
 
     # STEP 3: data layer — `b` → merged HA state
     dev_avail = {}                       # {(gw,dev): bool} — REALNY licznik offline (A)
@@ -1186,6 +1224,11 @@ def run_supervisor(log):
         elif kind == 'devmap' and isinstance(payload, dict):
             # (a) skompresowana MAPA urządzeń (zamiast `db`) → rejestracja encji jak handle_db
             sup_disc.handle_devmap(gw, payload)
+            # FIX 2026-07-15: pełna ścieżka jak on_db — encje app-level (link_quality/contact/
+            # last_seen/refresh/stagnant) + licznik offline + ghost prune (dotąd tylko przy `db`)
+            augment_mirror(gw)
+            publish_offline_count(gw)
+            anomaly_store.ghost_prune(gw, list(sup_disc.devices(gw).keys()))
         elif kind == 'avail' and isinstance(payload, dict):
             # (d) pełny sweep availability jednym blobem {ts, a:{sid:0/1}} → update wszystkich naraz
             bits = payload.get('a', {})
@@ -1290,12 +1333,29 @@ def run_supervisor(log):
             log.info('SYNC', f'🏁 sync kalendarza zakończony {targets}')
         threading.Thread(target=_run, daemon=True, name='cal-sync').start()
 
-    # STEP 17: parametry — MIRROR (bramka = master). gw_id = pierwsza znana bramka.
-    param_sync = ParamSync(
-        'supervisor', known_gateways[0], mqtt, send_to_all, logger=log,
-        persist_path='/tmp/lora_params_sup.json',
-        ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
-        on_change=lambda k, v: log.info('PARAM', f'↻ mirror {k}={v} (offline T1/T2/T3)'))
+    # STEP 17→F3: parametry — MIRROR per-BRAMKA (bramka = master). Jedna instancja ParamSync
+    # na każdą bramkę (lazy — 1. kontakt HB/param_upd/MQTT tworzy), własny persist + encje pod
+    # device LoRa Gateway Gx + topics lora/params/supervisor/<gl>/... (routing niżej).
+    sup_params = {}                                       # gw → ParamSync (mirror per-bramka)
+
+    def get_sup_params(gw):
+        if not gw or gw == '?':
+            return None
+        ps = sup_params.get(gw)
+        if ps is None:
+            persist = f'/tmp/lora_params_sup_{gw.lower()}.json'
+            fresh = not os.path.exists(persist)
+            ps = ParamSync(
+                'supervisor', gw, mqtt, send_to_all, logger=log,
+                persist_path=persist,
+                ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
+                on_change=lambda k, v, _g=gw: log.info('PARAM', f'↻ mirror[{_g}] {k}={v}'))
+            sup_params[gw] = ps
+            ps.register_entities(); ps.subscribe()
+            if fresh:                                     # F7: pull TYLKO świeży mirror (brak persistu)
+                log.info('PARAM', f'⚙️ {gw}: świeży mirror → params_req (pull od bramki)')
+                ps.request()
+        return ps
 
     # STEP 5: aktywność bramek (z HB ga) — bramka nieaktywna (np. nocna w dzień) → supresja offline
     gw_active = {}                                        # gw → bool (domyślnie aktywna)
@@ -1604,12 +1664,15 @@ def run_supervisor(log):
         if key in lq_regd:
             return
         gl, safe = gw.lower(), _safe(dev)
-        uid = f"lora_{gl}_{safe}_linkquality"
+        # FIX 2026-07-15: uid = slug_slug (realne entity_id z manglingu HA device-name —
+        # to co czyta dashboard: sensor.lora_<slug>_<slug>_link_quality) + force_update
+        # (LQI bywa stałe np. 255 → bez tego last_reported zamarza jak w reg_gw_lqi).
+        uid = f"lora_{safe}_{safe}_link_quality"
         mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
             "name": f"{dev} Link Quality", "object_id": uid, "unique_id": uid,
             "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
             "value_template": "{{ value_json.linkquality | default('') }}",
-            "icon": "mdi:signal", "state_class": "measurement",
+            "icon": "mdi:signal", "state_class": "measurement", "force_update": True,
             "device": {"identifiers": [f"lora_{gl}_{safe}"],
                        "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
             retain=True)
@@ -1655,6 +1718,23 @@ def run_supervisor(log):
                        "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
             retain=True)
         stag_regd.add(key)
+
+    def augment_mirror(gw):
+        """Wspólna dorejestracja encji app-level (refresh/link_quality/stagnation/binary
+        last_seen/contact) po odbudowie mapy urządzeń. FIX 2026-07-15: dotąd wołane TYLKO
+        z on_db (stara ścieżka `db`) — mirror odbudowany przez devmap (ReliableTransfer)
+        nie dostawał tych encji (objaw po cleanup MQTT: brak link_quality/contact na sup)."""
+        for dev, info in sup_disc.devices(gw).items():
+            buf = pending_hydrate.pop((gw, _safe(dev)), None)   # hydratacja z retained (jeśli był)
+            if buf is not None:
+                sup_data.hydrate(gw, dev, buf)
+            reg_refresh_button(gw, dev)
+            reg_linkquality(gw, dev)                      # Zigbee LQI dla wszystkich
+            reg_stagnant(gw, dev)                         # STEP 15: encja stagnacji
+            if info.get('type') == 'binary_sensor':      # fix: binary brak _last_seen
+                reg_binary_last_seen(gw, dev)
+                if 'c' in (info.get('caps') or ''):       # fix: contact device_class + inwersja
+                    reg_contact_fix(gw, dev)
 
     def handle_ab(d):
         """STEP 5: anomalia z bramki (offline/battery/stagnation, ALL devices).
@@ -1774,8 +1854,9 @@ def run_supervisor(log):
         # offline-hash `oh` w HB: zostawiony jako sygnał diagnostyczny, ale NIE triggeruje reconcile —
         # availability jest napędzana CIĄGŁYM batch `a:` (przez _set_avail), więc lista zawsze == licznik.
         # (Wcześniej `oh` z GatewayOfflineAnomaly ≠ hash z batch-a: → ciągłe niepotrzebne dumpy.)
+        psync = get_sup_params(gw)                       # F3: lazy mirror per-bramka (1. kontakt tworzy)
         ph = d.get('ph')                                 # STEP 17: hash parametrów (wskaźnik driftu)
-        if ph and ph != param_sync.params_hash():
+        if ph and psync is not None and ph != psync.params_hash():
             now = time.time()
             if psync_guard['ph'] != ph or now - psync_guard['ts'] > 120:
                 psync_guard['ph'] = ph; psync_guard['ts'] = now
@@ -1790,17 +1871,7 @@ def run_supervisor(log):
     def on_db(d):
         sup_disc.handle_db(d)
         gw = d.get('g', '?')                             # STEP 3: per-device app-level entities
-        for dev, info in sup_disc.devices(gw).items():
-            buf = pending_hydrate.pop((gw, _safe(dev)), None)   # hydratacja z retained (jeśli był)
-            if buf is not None:
-                sup_data.hydrate(gw, dev, buf)
-            reg_refresh_button(gw, dev)
-            reg_linkquality(gw, dev)                      # Zigbee LQI dla wszystkich
-            reg_stagnant(gw, dev)                         # STEP 15: encja stagnacji
-            if info.get('type') == 'binary_sensor':      # fix: binary brak _last_seen
-                reg_binary_last_seen(gw, dev)
-                if 'c' in (info.get('caps') or ''):       # fix: contact device_class + inwersja
-                    reg_contact_fix(gw, dev)
+        augment_mirror(gw)
         publish_offline_count(gw)                         # A: realny licznik po hydratacji/db
         anomaly_store.ghost_prune(gw, list(sup_disc.devices(gw).keys()))  # STEP 5: usuń anomalie znikłych
     dispatcher.register('db', on_db)
@@ -1816,9 +1887,17 @@ def run_supervisor(log):
         log.info('CAL', f'⤵️ {gw} prosi o harmonogram → odczyt HA + push')
         read_ha_calendar(); targeted_calendar_sync([gw])
     dispatcher.register('cal_req', handle_cal_req)
-    dispatcher.register('param_upd', param_sync.handle_remote)   # STEP 17: confirmed z bramki
+    def on_param_upd(d):                                  # STEP 17→F3: confirmed z bramki → JEJ mirror
+        ps = get_sup_params(d.get('g'))
+        if ps is not None:
+            ps.handle_remote(d)
+    dispatcher.register('param_upd', on_param_upd)
     dispatcher.register('ab', handle_ab)                 # STEP 15: anomalie (stagnacja sg/sc)
     dispatcher.register('an_d', handle_an_d)             # DELTA anomalii: 1 pakiet, hash-chain verify
+    # F2: bramka pinguje supervisora → natychmiastowy pong (reactive, z id bramki)
+    dispatcher.register('sup_ping', lambda d: send_to_all({"t": "sup_pong", "g": d.get('g')}))
+    # F5: bramka prosi o sync czasu → targeted sync (to samo co przycisk per-gw)
+    dispatcher.register('sync_req', lambda d: send_to_all({"t": "sync", "sec": int(time.time()), "g": d.get('g')}))
 
     def handle_st(d):
         gw = d.get('g', '?'); dev = d.get('d'); val = str(d.get('v', '')).upper()
@@ -1850,10 +1929,16 @@ def run_supervisor(log):
             except Exception:
                 pass
             return
-        if topic.startswith(f'{STATE_PREFIX}/params/supervisor/set/'):   # STEP 17: edycja z HA sup
-            param_sync.on_mqtt_set(topic, payload); return
-        if topic.startswith(f'{STATE_PREFIX}/params/supervisor/cmd/'):   # przyciski Send Config/Timeout
-            param_sync.on_cmd(topic, payload); return
+        if topic.startswith(f'{STATE_PREFIX}/params/supervisor/'):       # STEP 17→F3: per-bramka
+            segs = topic.split('/')                       # lora/params/supervisor/<gl>/set|cmd/...
+            if len(segs) >= 6:
+                ps = get_sup_params(segs[3].upper())
+                if ps is not None:
+                    if segs[4] == 'set':
+                        ps.on_mqtt_set(topic, payload)
+                    elif segs[4] == 'cmd':
+                        ps.on_cmd(topic, payload)
+            return
         if topic.startswith(f'{STATE_PREFIX}/supervisor/req/'):   # STEP 3: refresh button
             if len(segs) == 5:
                 gw, safe = segs[3].upper(), segs[4]
@@ -2034,8 +2119,7 @@ def run_supervisor(log):
     mqtt.subscribe(f'{STATE_PREFIX}/supervisor/cmd/#')
     mqtt.subscribe(f'{STATE_PREFIX}/anomaly/+/clear')      # v10: clear per-anomalia (button.lora_an_*_clear)
     mqtt.subscribe(f'{STATE_PREFIX}/supervisor/req/+/+')   # STEP 3: refresh buttons
-    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/set/+')   # STEP 17: edycja parametrów
-    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/cmd/#')   # przyciski Send (per-gw: cmd/<gw>/send_*)
+    mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/#')   # STEP 17→F3: per-bramka <gl>/set|cmd (+instancje same subskrybują)
     mqtt.subscribe(f'{STATE_PREFIX}/+/+/state')   # hydratacja: retained stany urządzeń (seed merge)
     mqtt.subscribe(f'{STATE_PREFIX}/+/+/set')
     mqtt.subscribe(f'{STATE_PREFIX}/+/+/+/set')
@@ -2058,7 +2142,8 @@ def run_supervisor(log):
             publish_anomalies(_gw); an_v10.publish(_gw)
         except Exception as _e:
             log.warn('ANOM', f'startup republish {_gw}: {_e}')
-    param_sync.register_entities()                       # STEP 17: 12 encji number (6 param + 6 progi) na HA supervisora
+    for _gw in known_gateways:                           # STEP 17→F3: mirror parametrów per-bramka (pre-create)
+        get_sup_params(_gw)
     # UNIFIKACJA: offline_mon usunięty — availability liczona z offline-set bramki (reconcile)
     reg_cal_button_global()                              # STEP 4: przycisk Sync Calendar All
     _da_uid = 'lora_sup_dump_anom_all'                   # STEP 5: przycisk Dump Anomalies All
@@ -2097,11 +2182,17 @@ def run_supervisor(log):
 
     def initial_discovery():
         time.sleep(8)
-        log.info('CMD', '⚡ startowe discovery')
-        send_to_all({"t": "disc"})
-        time.sleep(2)
-        log.info('PARAM', '⚙️ startowy pull parametrów (params_req → bramka push_all)')
-        param_sync.request()                             # model v38: pull na starcie (nie auto-HB)
+        # F7: cichy start — disc TYLKO dla bramek bez zsynchronizowanej mapy (persist przeżył
+        # restart → drift załatwia note_hash z HB; świeża instalacja = pełny disc jak dotąd).
+        missing = [g for g in known_gateways if not sup_disc.gw_synced.get(g)]
+        if missing:
+            log.info('CMD', f'⚡ startowe discovery (brak mapy: {missing})')
+            for g in missing:
+                send_to_all({"t": "disc", "g": g})
+                time.sleep(2)
+        else:
+            log.info('CMD', '⚡ start: mapy urządzeń z persistu — bez disc (cichy start)')
+        # F3/F7: pull parametrów robi get_sup_params przy tworzeniu mirrora (tylko świeży persist)
     threading.Thread(target=initial_discovery, daemon=True).start()
 
     def initial_calendar():                              # STEP 4: odczyt HA + push (po starcie bramek)
