@@ -490,6 +490,238 @@ def alarm_sensor_card(name, eid, batt_eid, emoji):
                                 {"border": on_border}]}}
 
 
+# ── zakładki Sterowanie/Pomiary supervisora — WIERNA transkrypcja z
+#    supervisor_lovelace_fixed.yaml (source of truth, widoki: Sterowanie/Pomiary).
+#    Dotyczy WYŁĄCZNIE ROLE=='supervisor' — gateway (view_control/view_measure
+#    else-branch) pozostaje nietknięty. ──
+def sup_switch_card(name, eid, avail_eid):
+    ls_eid = avail_eid.replace("binary_sensor.", "sensor.").replace("_available", "_last_seen")
+    lq_eid = avail_eid.replace("binary_sensor.", "sensor.").replace("_available", "_link_quality")
+    icon = (f"[[[ var av = states['{avail_eid}']; "
+            "if (av && av.state === 'off') return 'mdi:alert-octagon'; "
+            "return entity.state === 'on' ? 'mdi:lightbulb-on' : 'mdi:lightbulb-off-outline'; ]]]")
+    badge = ("[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;"
+             "padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">"
+             f"{GW}</span>`; ]]]")
+    info = (f"[[[ var av = states['{avail_eid}']; var ls = states['{ls_eid}']; "
+            f"var lqe = states['{lq_eid}']; "
+            "var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; "
+            "var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); "
+            "var lqTxt = lqv === null ? '--' : lqv; "
+            "var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; "
+            "var label = on ? 'online' : 'offline'; "
+            "var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; "
+            "return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\">"
+            "<span style=\"color:${col};\">● ${label}</span> · "
+            "<span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${t}</div>`; ]]]")
+    border = (f"[[[ var av = states['{avail_eid}']; "
+              "if (av && av.state === 'off') return '1px solid #f87171'; "
+              "return entity.state === 'on' ? '1px solid #facc15' : '1px solid #1f1f1f'; ]]]")
+    icon_color = (f"[[[ var av = states['{avail_eid}']; "
+                 "if (av && av.state === 'off') return '#f87171'; "
+                 "return entity.state === 'on' ? '#facc15' : '#525252'; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": eid, "name": name,
+            "show_state": False, "tap_action": {"action": "toggle"}, "icon": icon,
+            "custom_fields": {"badge": badge, "info": info},
+            "styles": {"card": [{"height": "120px"}, {"padding": "16px"}, {"border": border}],
+                       "icon": [{"width": "35px"}, {"height": "35px"}, {"color": icon_color}],
+                       "name": [{"font-size": "11px"}, {"font-weight": 700}, {"color": "#e5e5e5"}],
+                       "custom_fields": {
+                           "badge": [{"position": "absolute"}, {"top": "10px"}, {"right": "15px"}],
+                           "info": [{"justify-self": "start"}, {"padding": 0}]}}}
+
+
+def sup_leak_card(name, eid, batt_eid):
+    avail_eid = eid.replace("_water_leak", "_available")
+    ls_eid = eid.replace("_water_leak", "_last_seen")
+    lq_eid = eid.replace("_water_leak", "_link_quality")
+    icon = (f"[[[ var av = states['{avail_eid}']; "
+            "if (av && av.state === 'off') return 'mdi:alert-octagon'; "
+            "return entity.state === 'on' ? 'mdi:water-alert' : 'mdi:water'; ]]]")
+    badge = ("[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;"
+             "padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">"
+             f"{GW}</span>`; ]]]")
+    info = (f"[[[ var av = states['{avail_eid}']; var ls = states['{ls_eid}']; "
+            f"var lqe = states['{lq_eid}']; "
+            "var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; "
+            "var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); "
+            "var lqTxt = lqv === null ? '--' : lqv; "
+            f"var batt = states['{batt_eid}']; "
+            "var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; "
+            "var label = on ? 'online' : 'offline'; "
+            "var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; "
+            "var b = batt && batt.state !== 'unavailable' ? batt.state : '--'; "
+            "var battColor = '#4ade80'; if (b !== '--') { var bVal = parseInt(b); "
+            "if (bVal < 10) battColor = '#f87171'; else if (bVal < 25) battColor = '#fbbf24'; } "
+            "return `<div style=\"display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;\">"
+            "<div><span style=\"color:${col};\">● ${label}</span> · "
+            "<span style=\"color:${battColor};\">🔋 ${b}%</span> · "
+            "<span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${t}</div></div>`; ]]]")
+    border = (f"[[[ var av = states['{avail_eid}']; "
+              "if (av && av.state === 'off') return '1px solid #f87171'; "
+              "return entity.state === 'on' ? '1px solid #f87171' : '1px solid #1f1f1f'; ]]]")
+    icon_color = (f"[[[ var av = states['{avail_eid}']; "
+                 "if (av && av.state === 'off') return '#f87171'; "
+                 "return entity.state === 'on' ? '#f87171' : '#525252'; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": eid, "name": name,
+            "show_state": False, "tap_action": {"action": "none"}, "icon": icon,
+            "custom_fields": {"badge": badge, "info": info},
+            "styles": {"card": [{"height": "120px"}, {"padding": "16px"}, {"border": border}],
+                       "icon": [{"width": "35px"}, {"height": "35px"}, {"color": icon_color}],
+                       "name": [{"font-size": "11px"}, {"font-weight": 700}, {"color": "#e5e5e5"}],
+                       "custom_fields": {
+                           "badge": [{"position": "absolute"}, {"top": "10px"}, {"right": "15px"}],
+                           "info": [{"justify-self": "start"}, {"padding": 0}]}}}
+
+
+def sup_door_card(name, avail_eid, batt_eid):
+    """Wzór (YAML): entity KARTY = sam avail_eid — status kontaktu nie jest pokazywany."""
+    ls_eid = avail_eid.replace("_available", "_last_seen")
+    lq_eid = avail_eid.replace("_available", "_link_quality")
+    icon = (f"[[[ var av = states['{avail_eid}']; "
+            "if (av && av.state === 'off') return 'mdi:alert-octagon'; "
+            "return 'mdi:door-closed'; ]]]")
+    badge = ("[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;"
+             "padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">"
+             f"{GW}</span>`; ]]]")
+    info = (f"[[[ var av = states['{avail_eid}']; var ls = states['{ls_eid}']; "
+            f"var lqe = states['{lq_eid}']; "
+            "var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; "
+            "var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); "
+            "var lqTxt = lqv === null ? '--' : lqv; "
+            f"var batt = states['{batt_eid}']; "
+            "var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; "
+            "var label = on ? 'online' : 'offline'; "
+            "var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; "
+            "var b = batt && batt.state !== 'unavailable' ? batt.state : '--'; "
+            "var battColor = '#4ade80'; if (b !== '--') { var bVal = parseInt(b); "
+            "if (bVal < 10) battColor = '#f87171'; else if (bVal < 25) battColor = '#fbbf24'; } "
+            "return `<div style=\"display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;\">"
+            "<div><span style=\"color:${col};\">● ${label}</span> · "
+            "<span style=\"color:${battColor};\">🔋 ${b}%</span> · "
+            "<span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${t}</div></div>`; ]]]")
+    border = (f"[[[ var av = states['{avail_eid}']; "
+              "if (av && av.state === 'off') return '1px solid #f87171'; "
+              "return '1px solid #1f1f1f'; ]]]")
+    icon_color = (f"[[[ var av = states['{avail_eid}']; "
+                 "if (av && av.state === 'off') return '#f87171'; return '#525252'; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": avail_eid, "name": name,
+            "show_state": False, "tap_action": {"action": "none"}, "icon": icon,
+            "custom_fields": {"badge": badge, "info": info},
+            "styles": {"card": [{"height": "120px"}, {"padding": "16px"}, {"border": border}],
+                       "icon": [{"width": "35px"}, {"height": "35px"}, {"color": icon_color}],
+                       "name": [{"font-size": "11px"}, {"font-weight": 700}, {"color": "#e5e5e5"}],
+                       "custom_fields": {
+                           "badge": [{"position": "absolute"}, {"top": "10px"}, {"right": "15px"}],
+                           "info": [{"justify-self": "start"}, {"padding": 0}]}}}
+
+
+def sup_temp_content_card(dev_name, t_eid, h_eid, b_eid, ls_eid, lq_eid, avail_eid):
+    content = (
+        f"[[[ var t = states['{t_eid}']; var h = states['{h_eid}']; var b = states['{b_eid}']; "
+        f"var ls = states['{ls_eid}']; var lqe = states['{lq_eid}']; "
+        "var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; "
+        "var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); "
+        "var lqTxt = lqv === null ? '--' : lqv; "
+        f"var av = states['{avail_eid}']; "
+        "var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--'; "
+        "var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--'; "
+        "var batt = b && b.state !== 'unavailable' ? b.state : '--'; "
+        "var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--'; "
+        "var battColor = '#4ade80'; if (batt !== '--') { var battVal = parseInt(batt); "
+        "if (battVal < 10) { battColor = '#f87171'; } else if (battVal < 25) { battColor = '#fbbf24'; } } "
+        "var online = av && av.state === 'on'; var col = online ? '#4ade80' : '#f87171'; "
+        "var label = online ? 'online' : 'offline'; "
+        f"var gw = '{GW}'; var devName = '{dev_name}'; "
+        "return `<div style=\"display: flex; flex-direction: column; height: 100%; width: 100%;\">"
+        "<div style=\"display: flex; align-items: center; width: 100%; margin-bottom: 8px; "
+        "justify-content: space-between; gap: 370px\">"
+        "<div style=\"font-size: 14px; font-weight: 600; color: #e5e5e5;\">${devName}</div>"
+        "<div><span style=\"background:#141414; border:1px solid #22d3ee; padding:2px 8px; "
+        "border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;\">${gw}</span></div></div>"
+        "<div style=\"display: flex; justify-content: space-between; align-items: center; width: 100%; "
+        "flex-grow: 1; gap: 180px;\">"
+        "<div style=\"display: flex; align-items: baseline; gap: 10px;\">"
+        "<div><span style=\"font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;\">${temp}</span>"
+        "<span style=\"font-size:22px; color:#525252;\">°C</span></div>"
+        "<div><span style=\"font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;\">${hum}</span>"
+        "<span style=\"font-size:22px; color:#525252;\">%</span></div></div>"
+        "<div style=\"display: flex; flex-direction: column; align-items: flex-end; gap: 2px; "
+        "font-size:10px; color:#525252;\">"
+        "<div><span style=\"color:${col};\">● ${label}</span> · "
+        "<span style=\"color:${battColor};\">🔋 ${batt}%</span> · "
+        "<span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div>`; ]]]")
+    return {"type": "custom:button-card", "template": "lora_base", "entity": t_eid,
+            "show_icon": False, "show_state": False, "show_name": False,
+            "tap_action": {"action": "none"},
+            "custom_fields": {"content": content},
+            "styles": {"card": [{"height": "90px"}, {"padding": "16px"},
+                                {"border-radius": "12px"}, {"background": "#0a0a0a"}],
+                       "icon": [{"display": "none"}], "name": [{"display": "none"}]}}
+
+
+def sup_apex_mini(entity, title, color, yaxis):
+    return {"type": "custom:apexcharts-card",
+            "header": {"show": True, "title": title, "show_states": False, "colorize_states": True},
+            "graph_span": "24h", "span": {"end": "minute"}, "yaxis": [yaxis],
+            "apex_config": {"chart": {"height": 160, "toolbar": {"show": False},
+                                      "background": "transparent"},
+                            "grid": {"show": True, "borderColor": "#1f1f1f"},
+                            "stroke": {"width": 2, "curve": "smooth"},
+                            "dataLabels": {"enabled": False}, "legend": {"show": False},
+                            "tooltip": {"enabled": True, "theme": "dark",
+                                       "x": {"format": "dd.MM HH:mm"}}},
+            "series": [{"entity": entity, "name": title, "type": "line", "color": color}],
+            "card_mod": {"style": (
+                "ha-card { background: transparent !important; border: none !important; "
+                "box-shadow: none !important; } "
+                "ha-card .header { padding: 4px 8px !important; min-height: 24px !important; } "
+                "ha-card .header .title { font-size: 12px !important; } "
+                "ha-card .header .states { font-size: 10px !important; }")}}
+
+
+def sup_apex_popup_span(entity, name, color, span, yaxis):
+    return {"type": "custom:apexcharts-card",
+            "header": {"show": True, "title": span, "show_states": True, "colorize_states": True},
+            "graph_span": span, "span": {"end": "minute"}, "yaxis": [yaxis],
+            "apex_config": {"chart": {"height": 200, "toolbar": {"show": False}},
+                            "grid": {"show": True, "borderColor": "#1f1f1f"},
+                            "stroke": {"width": 2, "curve": "smooth"},
+                            "dataLabels": {"enabled": False},
+                            "tooltip": {"enabled": True, "theme": "dark",
+                                       "x": {"format": "dd.MM HH:mm"}}},
+            "series": [{"entity": entity, "name": name, "type": "line", "color": color}],
+            "card_mod": {"style": ("ha-card { background: #141414 !important; border: none !important; "
+                                   "border-radius: 12px !important; box-shadow: none !important; }")}}
+
+
+def sup_chart_tile(entity, popup_title, mini_name, popup_name, color, yaxis):
+    mini = sup_apex_mini(entity, mini_name, color, yaxis)
+    popup_cards = [sup_apex_popup_span(entity, popup_name, color, span, yaxis)
+                   for span in ("24h", "7d", "30d")]
+    return {"type": "custom:button-card", "show_icon": False, "show_name": False,
+            "show_state": False, "entity": "this.entity.does.not.exist",
+            "styles": {"card": [{"background": "#0a0a0a"}, {"border-radius": "12px"},
+                                {"box-shadow": "none"}, {"padding": 0}, {"overflow": "hidden"},
+                                {"height": "auto"}],
+                       "custom_fields": {"chart": [{"pointer-events": "none"}]}},
+            "custom_fields": {"chart": {"card": mini}},
+            "tap_action": {"action": "fire-dom-event", "browser_mod": {
+                "service": "browser_mod.popup",
+                "data": {"title": popup_title,
+                         "content": {"type": "vertical-stack", "cards": popup_cards},
+                         "style": {"--popup-background-color": "#0a0a0a",
+                                   "--popup-border-radius": "12px",
+                                   "--popup-min-width": "650px"}}}}}
+
+
+def sup_temp_charts(t_eid, h_eid):
+    return {"type": "horizontal-stack", "cards": [
+        sup_chart_tile(t_eid, "Temperatura", "Temperatura", "Temp", "#22d3ee", {"decimals": 1}),
+        sup_chart_tile(h_eid, "Wilgotność", "Wilgotność", "Wilgotność", "#4ade80",
+                       {"decimals": 0, "min": 0, "max": 100})]}
+
+
 # ── WIDOKI ──
 def view_bramka():
     return {"path": "scada-gw", "title": f"Bramka {GW}", "icon": "mdi:radio-tower",
@@ -507,6 +739,21 @@ def view_bramka():
 
 
 def view_control():
+    if ROLE == "supervisor":
+        # WIERNIE wg supervisor_lovelace_fixed.yaml (widok Sterowanie): 3 karty top-level.
+        leak_name, leak_eid, leak_batt = ALARM_SENSORS[0][0], ALARM_SENSORS[0][1], ALARM_SENSORS[0][2]
+        door_name, door_eid, door_batt = ALARM_SENSORS[1][0], ALARM_SENSORS[1][1], ALARM_SENSORS[1][2]
+        door_avail = door_eid.replace("_contact", "_available")
+        cards = [
+            hdr("STEROWANIE"),
+            {"type": "horizontal-stack",
+             "cards": [sup_switch_card(n, e, a) for n, e, a in SWITCHES]},
+            {"type": "horizontal-stack", "cards": [
+                sup_leak_card(leak_name, leak_eid, leak_batt),
+                sup_door_card(door_name, door_avail, door_batt)]},
+        ]
+        return {"path": "scada-ctl", "title": "Sterowanie", "icon": "mdi:toggle-switch",
+                "cards": cards}
     rows = [hdr("PRZEKAŹNIKI"),
             {"type": "horizontal-stack",
              "cards": [switch_card(n, e, a) for n, e, a in SWITCHES]},
@@ -525,6 +772,18 @@ def view_control():
 
 
 def view_measure():
+    if ROLE == "supervisor":
+        # WIERNIE wg supervisor_lovelace_fixed.yaml (widok Pomiary): 1 vertical-stack,
+        # tylko Temp 1/2 + wykresy — leak/door NIE występują tu (są w Sterowaniu).
+        rows = [hdr("POMIARY")]
+        for name, t_eid, h_eid, b_eid, _xl, _xi in TEMPS:
+            avail_eid = "binary_sensor." + t_eid.split(".", 1)[1].replace("_temperature", "_available")
+            ls_eid = t_eid.replace("_temperature", "_last_seen")
+            lq_eid = t_eid.replace("_temperature", "_link_quality")
+            rows.append(sup_temp_content_card(name, t_eid, h_eid, b_eid, ls_eid, lq_eid, avail_eid))
+            rows.append(sup_temp_charts(t_eid, h_eid))
+        return {"path": "scada-meas", "title": "Pomiary", "icon": "mdi:thermometer",
+                "cards": [{"type": "vertical-stack", "cards": rows}]}
     rows = [hdr("CZUJNIKI TEMP/WILG")]
     for name, t, h, x, xl, xi in TEMPS:
         rows.append(temp_card(name, t, h, x, xl, xi))
