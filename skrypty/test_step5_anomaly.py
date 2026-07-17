@@ -1373,9 +1373,11 @@ def run_supervisor(log):
                 on_change=lambda k, v, _g=gw: log.info('PARAM', f'↻ mirror[{_g}] {k}={v}'))
             sup_params[gw] = ps
             ps.register_entities(); ps.subscribe()
-            if fresh:                                     # F7: pull TYLKO świeży mirror (brak persistu)
-                log.info('PARAM', f'⚙️ {gw}: świeży mirror → params_req (pull od bramki)')
-                ps.request()
+            # #9 (2026-07-17): pull ZAWSZE przy tworzeniu mirrora (start sesji = brak edycji do
+            # zclobberowania; bramka=master). Dotąd tylko „świeży persist" → po restarcie sup
+            # mirror miał stary/domyślny stan ≠ bramka → param_ok=ROZJAZD na zawsze. 1 pakiet/sesja.
+            log.info('PARAM', f'⚙️ {gw}: mirror utworzony → params_req (pull od bramki, master)')
+            ps.request()
         return ps
 
     # STEP 5: aktywność bramek (z HB ga) — bramka nieaktywna (np. nocna w dzień) → supresja offline
@@ -1793,10 +1795,16 @@ def run_supervisor(log):
         gl = gw.lower()
         di = {"identifiers": [f"lora_gateway_{gl}"]}
         for eid, nm, icon, key in [
+                # #9: KOMPLET hashy zgodności bramka↔supervisor w JEDNYM miejscu (topic hashes).
                 ('disc_hash', 'Hash Disc (bramka)', 'mdi:fingerprint', 'disc'),
+                ('disc_hash_ok', 'Disc — zgodność', 'mdi:check-decagram', 'disc_ok'),      # #9
                 ('param_hash', 'Hash Param (bramka)', 'mdi:tune-variant', 'param'),
+                ('param_hash_ok', 'Param — zgodność', 'mdi:check-decagram', 'param_ok'),   # #9
                 ('cal_hash', 'Hash kalendarza (bramka)', 'mdi:calendar-sync', 'cal'),      # F9
-                ('cal_hash_ok', 'Kalendarz — zgodność', 'mdi:calendar-check', 'cal_ok')]:  # F9
+                ('cal_hash_ok', 'Kalendarz — zgodność', 'mdi:calendar-check', 'cal_ok'),   # F9
+                ('anom_hash', 'Hash anomalii (bramka)', 'mdi:alert-decagram', 'anomaly'),  # #9
+                ('anom_hash_ok', 'Anomalie — zgodność', 'mdi:check-decagram', 'anomaly_ok'),  # #9
+                ('all_hashes_ok', 'Zgodność OGÓLNA', 'mdi:shield-check', 'all_ok')]:       # #9 zbiorczy
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
                 "name": f"{nm}", "object_id": uid, "unique_id": uid,
@@ -1870,13 +1878,6 @@ def run_supervisor(log):
             reg_cal_button_gw(gw)                         # STEP 4: per-bramka Sync Calendar
             reg_anomaly_entities(gw)                      # STEP 5: encje an_offline/_battery/_other
             reg_gw_time_entities(gw)                      # STEP 5+: encje jakość czasu + pora dnia
-            _cal = d.get('cal', '--')                     # F9: hash kalendarza bramki (z HB)
-            _cal_exp = expected_cal_hash.get(gw, '--')
-            mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes",
-                         {'disc': d.get('hash', '--'), 'param': d.get('ph', '--'),
-                          'cal': _cal, 'cal_expected': _cal_exp,
-                          'cal_ok': 'zgodny ✅' if (_cal and _cal != '--' and _cal == _cal_exp)
-                                    else 'ROZJAZD ⚠️'}, retain=True)
             publish_gw_time(gw, d)                        # STEP 5+: tq/gm/ga → dashboard supervisora
             ah = d.get('ah')                              # AH-GATE: hash stanu anomalii z bramki
             if ah:
@@ -1926,6 +1927,25 @@ def run_supervisor(log):
                 # model v38: pull dzieje się na starcie i przyciskiem Send — NIE auto,
                 # bo auto-pull klobbersował lokalne edycje przed naciśnięciem Send.
                 log.debug('PARAM', f'⚙️ drift hash bramki={ph} ≠ mirror (Send aby zsync.)')
+        # #9: KOMPLET hashy + zgodności w JEDNYM topicu (na końcu — wszystkie flagi policzone).
+        # disc: gw_synced (mapa zarejestrowana), param: mirror, cal: expected, anomaly: gw_ah_sync.
+        if gw:
+            def _mark(ok):
+                return 'zgodny ✅' if ok else 'ROZJAZD ⚠️'
+            _disc = d.get('hash', '--'); _param = d.get('ph', '--')
+            _cal = d.get('cal', '--'); _ah = d.get('ah', '--')
+            _disc_ok = bool(_disc and _disc != '--' and _disc == sup_disc.gw_synced.get(gw))
+            _param_ok = bool(psync is not None and _param != '--' and _param == psync.params_hash())
+            _cal_ok = bool(_cal and _cal != '--' and _cal == expected_cal_hash.get(gw))
+            _ah_ok = bool(gw_ah_sync.get(gw)) if _ah != '--' else True
+            _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok
+            mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes", json.dumps({
+                'disc': _disc, 'disc_ok': _mark(_disc_ok),
+                'param': _param, 'param_ok': _mark(_param_ok),
+                'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok),
+                'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
+                'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
+                separators=(',', ':')), retain=True)
     dispatcher.register('hb', on_hb)
     dispatcher.register('pong', on_hb)
     dispatcher.register('disc_meta', sup_disc.handle_disc_meta)
