@@ -114,10 +114,16 @@ class HAEntities:
             return
         gl, di = gw.lower(), self._gw_device(gw)
         # eid → entity object_id (matches dashboard), action → supervisor cmd topic
+        # #5 (2026-07-17): komplet funkcji PER-BRAMKA (dotąd clear/dump były tylko globalne
+        # supervisora). eid → object_id (=entity_id z konwencją lora_<gw>_<eid>), action → cmd topic.
         for eid, action, name, icon in [
             ("ping", "ping", "Ping", "mdi:lan-connect"),
             ("discovery", "disc", "Discovery", "mdi:magnify"),
             ("sync", "sync", "Sync Time", "mdi:clock-sync"),
+            ("dump", "dump", "Dump anomalii", "mdi:database-export"),
+            ("clear_offline", "clear_offline", "Clear Offline", "mdi:lan-disconnect"),
+            ("clear_battery", "clear_battery", "Clear Bateria", "mdi:battery-alert"),
+            ("clear_other", "clear_other", "Clear Inne", "mdi:alert-circle"),
         ]:
             uid = f"lora_gw_{gl}_{eid}"
             self._pub("button", uid, {
@@ -126,7 +132,7 @@ class HAEntities:
                 "device": di, "icon": icon})
         self._registered.add(key)
         if self.log:
-            self.log.info('HA', f'🏠 {gw}: 3 control buttons (ping/disc/sync) w supervisor HA')
+            self.log.info('HA', f'🏠 {gw}: 7 przyciskow per-bramka (ping/disc/sync/dump/clear×3) w supervisor HA')
 
     # ── Supervisor entities ─────────────────────────────
     def reg_supervisor(self):

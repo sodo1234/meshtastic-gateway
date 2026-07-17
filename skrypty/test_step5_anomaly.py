@@ -2069,6 +2069,21 @@ def run_supervisor(log):
                 elif a == 'sync':
                     log.info('BTN', f'🔘 Sync {gw}')
                     send_to_all({"t": "sync", "sec": int(time.time()), "g": gw})
+                elif a == 'dump':                         # #5: dump anomalii TYLKO tej bramki
+                    log.info('BTN', f'🔘 Dump anomalii {gw}')
+                    send_to_all({"t": "dump_anom", "g": gw})
+                    threading.Thread(target=lambda g=gw: (time.sleep(an_cfg.get('prune_after', 90)),
+                                     anomaly_store.prune_stale(g, an_cfg.get('prune_after', 90) + 30)),
+                                     daemon=True).start()
+                elif a in ('clear_offline', 'clear_battery', 'clear_other'):  # #5: clear kubełka TYLKO tej bramki
+                    bucket = a.split('_', 1)[1]
+                    for it in list(anomaly_store.items(gw, bucket)):
+                        if bucket == 'offline':
+                            cmd_failed.discard((gw, it['dev'])); ack_offline.add((gw, it['dev']))
+                        anomaly_store.remove_one(gw, it['dev'], bucket)
+                    send_to_all({"t": "ac_all", "g": gw, "b": bucket})   # kompaktowa flaga → bramka
+                    publish_offline_count(gw)
+                    log.info('BTN', f'🔘 Clear [{bucket}] {gw} (ack) + ac_all→{gw}')
                 elif a == 'calendar':                     # STEP 4: re-read HA + push do tej bramki
                     log.info('BTN', f'🔘 Sync Calendar {gw}')
                     read_ha_calendar(); targeted_calendar_sync([gw])
