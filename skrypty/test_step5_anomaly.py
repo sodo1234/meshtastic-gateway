@@ -1770,7 +1770,9 @@ def run_supervisor(log):
         di = {"identifiers": [f"lora_gateway_{gl}"]}
         for eid, nm, icon, key in [
                 ('disc_hash', 'Hash Disc (bramka)', 'mdi:fingerprint', 'disc'),
-                ('param_hash', 'Hash Param (bramka)', 'mdi:tune-variant', 'param')]:
+                ('param_hash', 'Hash Param (bramka)', 'mdi:tune-variant', 'param'),
+                ('cal_hash', 'Hash kalendarza (bramka)', 'mdi:calendar-sync', 'cal'),      # F9
+                ('cal_hash_ok', 'Kalendarz — zgodność', 'mdi:calendar-check', 'cal_ok')]:  # F9
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
                 "name": f"GW {gw} {nm}", "object_id": uid, "unique_id": uid,
@@ -1793,6 +1795,8 @@ def run_supervisor(log):
         for eid, nm, icon, key in [
                 ('time_quality', 'Jakość czasu', 'mdi:clock-check-outline', 'tq_label'),
                 ('sun_mode', 'Pora dnia / tryb', 'mdi:theme-light-dark', 'mode'),
+                ('gw_clock', 'Czas bramki', 'mdi:clock-outline', 'czas'),                  # F9
+                ('gw_offset', 'Offset czasu [s]', 'mdi:clock-alert-outline', 'offset'),    # F9
                 ('mode_active', 'Tryb — stan', 'mdi:power', 'active')]:
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
@@ -1804,9 +1808,19 @@ def run_supervisor(log):
 
     def publish_gw_time(gw, d):
         tq = d.get('tq'); gm = d.get('gm'); ga_v = d.get('ga')
+        # F9: czas bramki + offset vs zegar supervisora — z HB `ts` (epoch bramki) w chwili
+        # odbioru; dokładność ± latencja LoRa (sekundy) — wystarcza na wskaźnik "czy zsync".
+        gts = d.get('ts'); czas = '--'; off = '--'
+        if gts:
+            try:
+                czas = datetime.fromtimestamp(int(gts)).strftime('%H:%M:%S')
+                off = round(time.time() - int(gts), 1)
+            except (TypeError, ValueError, OSError):
+                pass
         mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/timestat", json.dumps({
             'tq': tq or '--', 'tq_label': _TQ_L.get(tq, tq or '--'),
             'mode': _GM_L.get(gm, gm or '--'),
+            'czas': czas, 'offset': off,
             'active': 'aktywna' if ga_v else 'wstrzymana'}, separators=(',', ':')), retain=True)
 
     wd = CONFIG.get('watchdog', {})
@@ -1829,8 +1843,13 @@ def run_supervisor(log):
             reg_cal_button_gw(gw)                         # STEP 4: per-bramka Sync Calendar
             reg_anomaly_entities(gw)                      # STEP 5: encje an_offline/_battery/_other
             reg_gw_time_entities(gw)                      # STEP 5+: encje jakość czasu + pora dnia
+            _cal = d.get('cal', '--')                     # F9: hash kalendarza bramki (z HB)
+            _cal_exp = expected_cal_hash.get(gw, '--')
             mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes",
-                         {'disc': d.get('hash', '--'), 'param': d.get('ph', '--')}, retain=True)
+                         {'disc': d.get('hash', '--'), 'param': d.get('ph', '--'),
+                          'cal': _cal, 'cal_expected': _cal_exp,
+                          'cal_ok': 'zgodny ✅' if (_cal and _cal != '--' and _cal == _cal_exp)
+                                    else 'ROZJAZD ⚠️'}, retain=True)
             publish_gw_time(gw, d)                        # STEP 5+: tq/gm/ga → dashboard supervisora
             ah = d.get('ah')                              # AH-GATE: hash stanu anomalii z bramki
             if ah:
