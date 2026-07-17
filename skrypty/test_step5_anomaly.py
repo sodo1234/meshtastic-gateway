@@ -1421,8 +1421,11 @@ def run_supervisor(log):
                 separators=(',', ':')), retain=True)
             if cnt_eid:                                   # count (przycisk) — battery/other
                 cuid = f"lora_gw_{gl}_{cnt_eid}"
+                # FIX 2026-07-17: „{nm} #" slugowało się do tego samego entity_id co encja
+                # items („Anomalie Bateria" — `#` wypada przy slugifikacji) → HA odrzucał
+                # rename (Entity with this ID is already registered). „licznik" = odrębny slug.
                 mqtt.publish(f"{HA_PREFIX}/sensor/{cuid}/config", json.dumps({
-                    "name": f"{nm} #", "object_id": cuid, "unique_id": cuid,
+                    "name": f"{nm} licznik", "object_id": cuid, "unique_id": cuid,
                     "state_topic": topic, "value_template": "{{ value_json.count | default(0) }}",
                     "icon": icon, "device": di}, separators=(',', ':')), retain=True)
         an_regd.add(gw)
