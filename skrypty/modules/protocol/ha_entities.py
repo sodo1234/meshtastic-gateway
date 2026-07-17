@@ -13,9 +13,13 @@ STATE_PREFIX = "lora"
 
 
 class HAEntities:
-    def __init__(self, mqtt, logger=None):
+    def __init__(self, mqtt, logger=None, gw_name_fmt="LoRa Gateway {gw}",
+                 vio_name_fmt="LoRa Virtual I/O {gw}", vio_entity_prefix="LoRa "):
         self.mqtt = mqtt
         self.log = logger
+        self.gw_name_fmt = gw_name_fmt
+        self.vio_name_fmt = vio_name_fmt
+        self.vio_entity_prefix = vio_entity_prefix
         self._registered = set()
         self._dev_state = {}       # {(gw,dev): last full fields} — by avail-only nie kasował last_seen/capów
 
@@ -24,7 +28,7 @@ class HAEntities:
 
     def _gw_device(self, gw):
         return {"identifiers": [f"lora_gateway_{gw.lower()}"],
-                "name": f"LoRa Gateway {gw}",
+                "name": self.gw_name_fmt.format(gw=gw),
                 "model": "LoRa Zigbee Gateway", "manufacturer": "Custom"}
 
     def _sup_device(self):
@@ -34,7 +38,7 @@ class HAEntities:
 
     def _dev_device(self, gw, dev, model="Zigbee Device"):
         return {"identifiers": [f"lora_{gw.lower()}_{self._safe(dev)}"],
-                "name": f"LoRa {dev}", "model": model,
+                "name": f"LoRa {gw} {dev}", "model": model,
                 "manufacturer": "LoRa Gateway",
                 "via_device": f"lora_gateway_{gw.lower()}"}
 
@@ -65,12 +69,12 @@ class HAEntities:
             uid = f"lora_gw_{gl}_{eid}"
             if domain == "binary_sensor":
                 self._pub(domain, uid, {
-                    "name": f"GW {gw} {name}", "object_id": uid, "unique_id": uid,
+                    "name": f"{name}", "object_id": uid, "unique_id": uid,
                     "state_topic": st, "value_template": tpl,
                     "payload_on": "online", "payload_off": "offline",
                     "device_class": "connectivity", "device": di})
             else:
-                cfg = {"name": f"GW {gw} {name}", "object_id": uid, "unique_id": uid,
+                cfg = {"name": f"{name}", "object_id": uid, "unique_id": uid,
                        "state_topic": st, "value_template": tpl, "device": di}
                 if icon:
                     cfg["icon"] = icon
@@ -117,7 +121,7 @@ class HAEntities:
         ]:
             uid = f"lora_gw_{gl}_{eid}"
             self._pub("button", uid, {
-                "name": f"GW {gw} {name}", "object_id": uid, "unique_id": uid,
+                "name": f"{name}", "object_id": uid, "unique_id": uid,
                 "command_topic": f"{STATE_PREFIX}/supervisor/cmd/{gl}/{action}",
                 "device": di, "icon": icon})
         self._registered.add(key)
@@ -188,10 +192,10 @@ class HAEntities:
         gl = gw.lower()
         safe = self._safe(vid)
         di = {"identifiers": [f"lora_vio_{gl}"],
-              "name": f"LoRa Virtual I/O {gw}",
+              "name": self.vio_name_fmt.format(gw=gw),
               "model": "Virtual I/O", "manufacturer": "LoRa Gateway"}
         self._pub("switch", f"lora_{gl}_vsw_{safe}", {
-            "name": f"LoRa {name}", "object_id": f"lora_{gl}_vsw_{safe}",
+            "name": f"{self.vio_entity_prefix}{name}", "object_id": f"lora_{gl}_vsw_{safe}",
             "unique_id": f"lora_{gl}_vsw_{safe}",
             "state_topic": f"{STATE_PREFIX}/{gl}/vio/{safe}/state",
             "command_topic": f"{STATE_PREFIX}/{gl}/vio/{safe}/set",
@@ -211,10 +215,10 @@ class HAEntities:
         gl = gw.lower()
         safe = self._safe(vid)
         di = {"identifiers": [f"lora_vio_{gl}"],
-              "name": f"LoRa Virtual I/O {gw}",
+              "name": self.vio_name_fmt.format(gw=gw),
               "model": "Virtual I/O", "manufacturer": "LoRa Gateway"}
         self._pub("button", f"lora_{gl}_vbtn_{safe}", {
-            "name": f"LoRa {name}", "object_id": f"lora_{gl}_vbtn_{safe}",
+            "name": f"{self.vio_entity_prefix}{name}", "object_id": f"lora_{gl}_vbtn_{safe}",
             "unique_id": f"lora_{gl}_vbtn_{safe}",
             "command_topic": f"{STATE_PREFIX}/{gl}/vio/{safe}/press",
             "device": di, "icon": "mdi:gesture-tap-button"})
@@ -237,18 +241,18 @@ class HAEntities:
                 eid, name, unit = cap_map[c]
                 uid = f"lora_{gl}_{safe}_{eid}"
                 self._pub("sensor", uid, {
-                    "name": f"{dev} {name.title()}", "object_id": uid, "unique_id": uid,
+                    "name": f"{name.title()}", "object_id": uid, "unique_id": uid,
                     "state_topic": st,
                     "value_template": f"{{{{ value_json.{name} | default('') }}}}",
                     "unit_of_measurement": unit, "device": di})
         uid_ls = f"lora_{gl}_{safe}_last_seen"
         self._pub("sensor", uid_ls, {
-            "name": f"{dev} Last Seen", "object_id": uid_ls, "unique_id": uid_ls,
+            "name": "Last Seen", "object_id": uid_ls, "unique_id": uid_ls,
             "state_topic": st, "value_template": "{{ value_json.last_seen | default('--') }}",
             "device": di, "icon": "mdi:clock-outline"})
         uid_av = f"lora_{gl}_{safe}_available"
         self._pub("binary_sensor", uid_av, {
-            "name": f"{dev} Available", "object_id": uid_av, "unique_id": uid_av,
+            "name": "Available", "object_id": uid_av, "unique_id": uid_av,
             "state_topic": st, "value_template": "{{ value_json.available | default('OFF') }}",
             "payload_on": "ON", "payload_off": "OFF",
             "device_class": "connectivity", "device": di})
@@ -268,19 +272,19 @@ class HAEntities:
                 name, dc = cap_map[c]
                 uid = f"lora_{gl}_{safe}_{name}"
                 self._pub("binary_sensor", uid, {
-                    "name": f"{dev} {name.replace('_',' ').title()}", "object_id": uid,
+                    "name": f"{name.replace('_',' ').title()}", "object_id": uid,
                     "unique_id": uid, "state_topic": st,
                     "value_template": f"{{{{ 'ON' if value_json.{name} else 'OFF' }}}}",
                     "device_class": dc, "device": di})
         if 'b' in caps:
             uid = f"lora_{gl}_{safe}_batt"
             self._pub("sensor", uid, {
-                "name": f"{dev} Battery", "object_id": uid, "unique_id": uid,
+                "name": "Battery", "object_id": uid, "unique_id": uid,
                 "state_topic": st, "value_template": "{{ value_json.battery | default('') }}",
                 "unit_of_measurement": "%", "device_class": "battery", "device": di})
         uid_av = f"lora_{gl}_{safe}_available"
         self._pub("binary_sensor", uid_av, {
-            "name": f"{dev} Available", "object_id": uid_av, "unique_id": uid_av,
+            "name": "Available", "object_id": uid_av, "unique_id": uid_av,
             "state_topic": st, "value_template": "{{ value_json.available | default('OFF') }}",
             "payload_on": "ON", "payload_off": "OFF",
             "device_class": "connectivity", "device": di})
@@ -295,7 +299,7 @@ class HAEntities:
         st = f"{STATE_PREFIX}/{gl}/{safe}/state"
         uid = f"lora_{gl}_{safe}"
         self._pub("switch", uid, {
-            "name": f"LoRa {dev}", "object_id": uid, "unique_id": f"{uid}_switch",
+            "name": None, "object_id": uid, "unique_id": f"{uid}_switch",
             "state_topic": st, "command_topic": f"{STATE_PREFIX}/{gl}/{safe}/set",
             "value_template": "{{ value_json.state }}",
             "state_on": "ON", "state_off": "OFF",
@@ -303,13 +307,13 @@ class HAEntities:
         # availability + last_seen (dashboard: switch online/offline badge + last_seen)
         uid_av = f"lora_{gl}_{safe}_available"
         self._pub("binary_sensor", uid_av, {
-            "name": f"{dev} Available", "object_id": uid_av, "unique_id": uid_av,
+            "name": "Available", "object_id": uid_av, "unique_id": uid_av,
             "state_topic": st, "value_template": "{{ value_json.available | default('OFF') }}",
             "payload_on": "ON", "payload_off": "OFF",
             "device_class": "connectivity", "device": di})
         uid_ls = f"lora_{gl}_{safe}_last_seen"
         self._pub("sensor", uid_ls, {
-            "name": f"{dev} Last Seen", "object_id": uid_ls, "unique_id": uid_ls,
+            "name": "Last Seen", "object_id": uid_ls, "unique_id": uid_ls,
             "state_topic": st, "value_template": "{{ value_json.last_seen | default('--') }}",
             "icon": "mdi:clock-outline", "device": di})
         self._registered.add(key)

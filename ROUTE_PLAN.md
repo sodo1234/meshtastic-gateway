@@ -1,140 +1,111 @@
-# ROUTE_PLAN: F2/F3/F5/F7 — LoRa SCADA step5 (local repo only, NO deploy)
+# ROUTE_PLAN: konwencja nazw encji SUPERVISORA `lora_<gw>_<dev>_<param>` (pkt 6)
 
-Repo root: `C:\Users\sodoj\Documents\Meshtastic Gateway` (branch step-04-calendar).
-Code lives in `skrypty/`. Spec (approved): `docs/superpowers/specs/2026-07-15-supervisor-linkquality-pingpong-params.md`.
+Repo: `C:\Users\sodoj\Documents\Meshtastic Gateway` (branch step-04-calendar). Kod w `skrypty/`.
+Cel usera: na supervisorze jest `binary_sensor.lora_door_1_door_1_contact`, ma być
+`binary_sensor.lora_g2_door_1_contact`. Dotyczy WSZYSTKICH encji urządzeń, availability,
+oraz parametrów/timeoutów/progów. Rozwiązuje też kolizję multi-gw (G1 „Temp 1" vs G2 „Temp 1").
+
+## MECHANIZM (ZBADANY LIVE — NIE ZGADUJ, NIE ZMIENIAJ TEGO ZAŁOŻENIA)
+HA MQTT discovery: gdy config zawiera blok `device`, HA włącza `has_entity_name` i **ignoruje
+`object_id`** — `entity_id = slug(device.name) + "_" + slug(entity.name)`.
+- Dziś: device `LoRa Door 1` (→`lora_door_1`) + encja `Door 1 Contact` (→`door_1_contact`)
+  = `binary_sensor.lora_door_1_door_1_contact` (stąd podwojenie).
+- Cel: device `LoRa G2 Door 1` (→`lora_g2_door_1`) + encja `Contact` (→`contact`)
+  = `binary_sensor.lora_g2_door_1_contact`. ✅
+- Encja główna urządzenia (switch): `"name": None` → entity_id = sam slug device.name
+  = `switch.lora_g2_test_1`. ✅
+- `unique_id` = tożsamość encji: **NIE ZMIENIAJ unique_id nigdzie** (zmiana = osierocenie).
+  Zmieniamy WYŁĄCZNIE `name` encji i `name` w bloku `device`.
+- entity_id jest nadawany TYLKO przy pierwszym utworzeniu → istniejące encje zachowają stare
+  id. Purge encji + odtworzenie robi Claude LIVE po review. **Ty NIE dotykasz maszyn.**
 
 ## HARD RULES
-1. Touch ONLY: `skrypty/modules/params/manager.py`, `skrypty/modules/protocol/heartbeat.py`,
-   `skrypty/modules/protocol/discovery.py`, NEW `skrypty/modules/protocol/supervisor_link.py`,
-   `skrypty/modules/protocol/__init__.py`, `skrypty/test_step5_anomaly.py`, smoke tests in
-   `skrypty/modules/params/smoke_test.py` + NEW `skrypty/modules/protocol/link_smoke_test.py`,
-   and `skrypty/modules/protocol/ha_entities.py` (only the two additions named below).
-2. Do NOT touch `skrypty/modules/transport/` (verified) nor the NESTED duplicate
-   `skrypty/modules/protocol/protocol/` (legacy copy — leave as is). Do NOT touch PLAN.md.
-3. `skrypty/test_step5_anomaly.py` is 131 KB — edit surgically, never reformat. After EVERY
-   file edit run `python -c "import ast; ast.parse(open(FILE,encoding='utf-8').read())"`.
-4. NO deploy, NO git commit, NO network calls to remote machines. Local edits + local smoke runs only.
-5. No new HA param groups/buttons: new params join existing groups (Config/Timeout/Progi).
-6. JSON on the wire: `separators=(',',':')`; LoRa payload budget ~150 B/packet; reactive replies
-   (pong) are sent immediately (never slotted/queued).
-7. Comments in code: Polish, style matching surrounding code.
+1. Pliki do edycji (TYLKO te): `skrypty/modules/protocol/ha_entities.py`,
+   `skrypty/modules/params/manager.py`, `skrypty/test_step5_anomaly.py`,
+   `skrypty/modules/params/smoke_test.py`, NOWY `skrypty/modules/protocol/naming_smoke_test.py`.
+2. NIE dotykaj `skrypty/modules/transport/` (verified) ani zagnieżdżonego
+   `skrypty/modules/protocol/protocol/` (legacy). NIE dotykaj PLAN.md, `homeassistant/gen_*`
+   (generatory są WYCOFANE — user przerobił dashboardy ręcznie).
+3. **Rola `gateway` MUSI zostać nietknięta** — user ma ręcznie zrobiony dashboard bramki
+   oparty o obecne entity_id. Zmiany dotyczą wyłącznie ścieżek używanych przez supervisora.
+   Rejestratory wg roli (zweryfikowane):
+   - SUPERVISOR: `reg_sensor`, `reg_binary`, `reg_switch_dev`, `reg_gateway`, `reg_gw_controls`,
+     `reg_vswitch`, `reg_vbutton`, `ParamSync(role="supervisor")`, oraz inline w harnessie:
+     `reg_linkquality`, `reg_stagnant`, `reg_contact_fix`, `reg_binary_last_seen`,
+     `reg_refresh_button`, `reg_gw_hashes`, `reg_gw_time_entities`, `reg_anomaly_entities`.
+   - GATEWAY (NIE RUSZAĆ): `reg_gw_local_stats`, `reg_gw_buttons_local`,
+     `ParamSync(role="gateway")`, encje `calstat`, `reg_gw_lqi`.
+4. `test_step5_anomaly.py` ma 131 KB — edytuj chirurgicznie, nie formatuj całości.
+   Po KAŻDEJ edycji: `python -c "import ast; ast.parse(open(FILE,encoding='utf-8').read())"`.
+5. ZERO `git commit`, ZERO deployu, ZERO ruchu do maszyn zdalnych. Edycje lokalne + testy.
+6. Komentarze po polsku, styl otoczenia. JSON wire: `separators=(',',':')`.
 
-## EXISTING FACTS (verified — do not rediscover)
-- `ParamSync` (modules/params/manager.py): PARAM_DEFS keys P1,P2,P3,T1,T2,T3,TH,TL,HH,HL,BL,BC;
-  groups CONFIG_KEYS=[P1,P2,P3], TIMEOUT_KEYS=[T1,T2,T3], THRESHOLD_KEYS=[TH..BC]; role
-  'gateway'|'supervisor'; supervisor uid hardcoded `lora_supg1_param_*` / `lora_sup_param_<btn>`;
-  topics `lora/params/<role>/set|state|cmd/...`; `on_cmd` already parses optional
-  `cmd/<gw>/<send_x>` segment and `_send_group(keys,label,target_gw)` sends proposal
-  `{"t":"params","g":gw,"d":{...}}`; `params_hash()` returns 8-hex over all values.
-- `GatewayHeartbeat` (protocol/heartbeat.py): `build_payload(pkt_type)` merges `diag_fn()` dict
-  into hb/pong. `SupervisorHeartbeat.handle_hb` stores `hash` and calls `self.ha.reg_gateway(gw)`.
-- `GatewayDiscovery.send_discovery_with_delay(delay, meta_only)` (protocol/discovery.py) sends
-  disc_meta + disc_vio + devmap; devmap has anti-spam (same hash <180 s skip) via
-  `self._devmap_hash/_devmap_ts`; disc_meta/disc_vio have NO anti-spam (observed spam ×3 in 40 s).
-- `SupervisorDiscovery`: `gw_devices/gw_hashes/gw_synced` in-memory only (lost on restart →
-  causes the startup re-transfer storm); `note_hash` auto-requests disc on mismatch;
-  `handle_devmap(gw, payload)` registers entities.
-- Harness `skrypty/test_step5_anomaly.py` (single file, role from `.role`/config):
-  - gateway wiring: `param_sync` exists; `dispatcher.register('ping', ...)` line ~599;
-    MQTT cmd handler `lora/gw/<gl>/cmd/ping` line ~792; `handle_dump_anom(d)` def ~line 439;
-    `reg_gw_local_stats(gw)`/`pub_gw_stats` in modules/protocol/ha_entities.py already create
-    gateway-local entities incl. `sup_link` (binary) and `sup_last_rx` fed from dict `gw_stats`
-    (`{'last_sup_rx_ts','last_sup_rx','last_sync','time_offset','_last_sync_ts'}`, ~line 256,
-    `SUP_LINK_TIMEOUT` ~line 258) — REUSE this path for F2 indicator.
-  - supervisor wiring: `sup_disc = SupervisorDiscovery(...)` ~1122; `sup_hb = SupervisorHeartbeat(...)`
-    ~1734 (`send_ping_fn`, `ping_timeout=wd.get('ping_timeout',25)`); `dispatcher.register('hb'/'pong', on_hb)`
-    ~1785; supervisor ParamSync instance exists (role='supervisor') — find via `ParamSync(` search;
-    `augment_mirror(gw)` exists (defined after reg_stagnant) and is called from on_db + devmap branch.
-  - supervisor sends `sync` time packets somewhere (search `"t": "sync"` / `'t':'sync'`) — reuse
-    that send function for F5 sync_req reply.
+## ZADANIA
 
-## TASKS
+### T1 — encje per-urządzenie (ha_entities.py)
+- `_dev_device(self, gw, dev, model=...)`: `"name": f"LoRa {gw} {dev}"` (było `f"LoRa {dev}"`).
+  `identifiers` ZOSTAJĄ `lora_{gw.lower()}_{safe}` (już są per-gw).
+- `reg_sensor`: nazwa encji cap → `f"{name.title()}"` (było `f"{dev} {name.title()}"`);
+  last_seen → `"Last Seen"`; available → `"Available"`.
+- `reg_binary`: cap → `f"{name.replace('_',' ').title()}"`; battery → `"Battery"`;
+  available → `"Available"`.
+- `reg_switch_dev`: encja główna `"name": None` (było `f"LoRa {dev}"`) → `switch.lora_g2_test_1`;
+  available → `"Available"`; last_seen → `"Last Seen"`.
+- `reg_vswitch`/`reg_vbutton`: device name → `f"LoRa {gw} Virtual I/O"`, encja → `f"{name}"`.
 
-### T1 — F3: ParamSync per-gateway (manager.py + harness sup wiring)
-1. PARAM_DEFS += :
-   `"P4": {"default":15,"min":1,"max":1440,"step":1,"unit":"min","name":"Ping sup interwał","icon":"mdi:timer-sync"}`
-   `"T4": {"default":25,"min":5,"max":300,"step":1,"unit":"s","name":"Ping sup timeout","icon":"mdi:timer-alert"}`
-   `"PR": {"default":2,"min":0,"max":10,"step":1,"unit":"x","name":"Ping sup retry","icon":"mdi:repeat"}`
-   PARAM_ORDER += ["P4","T4","PR"]; CONFIG_KEYS+=["P4"]; TIMEOUT_KEYS+=["T4"]; THRESHOLD_KEYS+=["PR"].
-2. De-hardcode supervisor ids: `_eid` supervisor branch → `f"lora_sup{self.gw_id.lower()}_param_{key.lower()}"`
-   (for gw_id="G1" this equals today's `lora_supg1_param_*` → zero breakage);
-   `_btn_uid` supervisor branch → `f"lora_sup{self.gw_id.lower()}_param_{eid}"`.
-3. Per-gw topics on supervisor (gateway role topics UNCHANGED): add `self.tp = role` for gateway,
-   for supervisor `self.tp = f"supervisor/{gw_id.lower()}"`; replace every
-   `f"...{self.sp}/params/{self.role}/..."` with `{self.sp}/params/{self.tp}/...` in
-   register_entities/_publish_state(s)/subscribe/on_mqtt_set/on_cmd parsing. In `on_cmd`, the split
-   token becomes `f"/params/{self.tp}/cmd/"`.
-4. Harness supervisor side: replace the single supervisor ParamSync with a lazy registry:
-   `sup_params = {}` + `def get_sup_params(gw): ...` creating
-   `ParamSync('supervisor', gw, mqtt, send_fn=..., persist_path=f"/tmp/lora_params_sup_{gw.lower()}.json", ...)`
-   then `register_entities()+subscribe()` on first creation. Call `get_sup_params(gw)`
-   from `on_hb` (after `sup_hb.handle_hb`) so each gateway that heartbeats gets its instance.
-   Route inbound: dispatcher 'param_upd'/'params_req' handlers → `get_sup_params(d.get('g')).handle_remote(d)`.
-   MQTT on_mqtt routing for `lora/params/supervisor/<gl>/...` → matching instance.
-   Keep gateway-role ParamSync usage untouched.
+### T2 — inline rejestratory supervisora (test_step5_anomaly.py, sekcja run_supervisor)
+Bloki `device` tych funkcji mają `identifiers` bez `name` (dziedziczą nazwę z `reg_sensor`) —
+**nie dodawaj tam `name`**, zmień TYLKO nazwy encji:
+- `reg_linkquality`: `f"{dev} Link Quality"` → `"Link Quality"` (uid `lora_{safe}_{safe}_link_quality`
+  ZOSTAJE bez zmian — to unique_id).
+- `reg_stagnant`: → `"Stagnation"`; `reg_contact_fix`: → `"Contact"`;
+  `reg_binary_last_seen`: → `"Last Seen"`; `reg_refresh_button`: → `"Refresh"`.
 
-### T2 — F2: modules/protocol/supervisor_link.py (new) + gateway wiring
-New class `SupervisorLinkProbe(gw_id, lora, get_params, on_state, logger=None, tick=1.0)`:
-- `get_params()` → `(interval_min, timeout_s, retries)` read live (from param_sync P4/T4/PR).
-- Thread loop (daemon, `start()/stop()`): every `interval_min*60` s send
-  `{"t":"sup_ping","g":gw_id}` via `lora.send(json.dumps(...))`; await pong `timeout_s`;
-  retry up to `retries`; exhausted → offline (increment `lost_pongs`, once per episode).
-- `handle_sup_pong(data)` (dispatcher 'sup_pong') → online, clears probe.
-- `note_rx()` — ANY inbound from supervisor counts as alive (call from harness where
-  `gw_stats['last_sup_rx_ts']` is updated) → resets probe/online.
-- `on_state(online: bool, lost_pongs: int)` callback → harness updates
-  `gw_stats['sup_link']='ON'/'OFF'` + new key `sup_lost_pong=<int>` then `pub_gw_stats`.
-- `status()` → dict for diagnostics.
-Supervisor side (harness): `dispatcher.register('sup_ping', ...)` → immediately
-`send_to_all({"t":"sup_pong","g":data.get("g")})` (reactive, target gw id included).
-Gateway HA: extend the `reg_gw_local_stats` sensors list in modules/protocol/ha_entities.py with
-`("sup_lost_pong","Sup Lost Pong","{{ value_json.sup_lost_pong | default(0) }}","mdi:sync-alert",None,"sensor")`
-(pattern identical to neighbours). Export new class in `modules/protocol/__init__.py`.
+### T3 — encje poziomu bramki na supervisorze (device `LoRa G2`)
+Problem: `_gw_device` (identifiers `lora_gateway_{gl}`) jest współdzielony przez rolę gateway
+(`reg_gw_buttons_local`) — nie wolno go zmienić globalnie.
+- `HAEntities.__init__`: nowy kwarg `gw_name_fmt="LoRa Gateway {gw}"` (domyślnie = dziś).
+  `_gw_device` używa `self.gw_name_fmt.format(gw=gw)`.
+- Harness **supervisora**: konstruuj `HAEntities(..., gw_name_fmt="LoRa {gw}")`. Harness bramki
+  bez zmian (domyślny format).
+- `reg_gateway`: nazwy encji `f"GW {gw} {name}"` → `f"{name}"` (→ `sensor.lora_g2_uptime` itd.).
+- `reg_gw_controls`: `f"GW {gw} {name}"` → `f"{name}"` (→ `button.lora_g2_ping`).
+- `ParamSync._device()` (manager.py): rola supervisor → `"name": f"LoRa {self.gw_id}"`;
+  rola gateway → BEZ ZMIAN `f"LoRa Gateway {self.gw_id}"`. Nazwy encji number zostają
+  (`f"{key} · {d['name']}"`) → daje `number.lora_g2_p1_stagnation_bateryjne`.
+  Przyciski Send zostają nazwami — dają `button.lora_g2_lora_wyslij_config` (OK).
 
-### T3 — F7: quiet start (hash handshake, no eager re-push)
-1. discovery.py `send_discovery_with_delay`: add the same 180 s same-hash anti-spam (fields
-   `_meta_hash/_meta_ts`) for the disc_meta+disc_vio pair (devmap already guarded); a `disc`
-   REQUEST from supervisor (explicit ask) bypasses the guard via new kwarg `force=False` —
-   harness passes force=True only in the explicit `disc` request handler and the manual button.
-2. SupervisorDiscovery persistence: ctor kwarg `persist_path=None`; `_save()` (json dump of
-   `{gw: {devices, synced}}`) called at end of `handle_db`/`handle_devmap`; `_load()` in ctor
-   fills `gw_devices` + `gw_synced` (entity re-registration NOT needed — MQTT discovery configs
-   are retained). Harness: pass `persist_path='/tmp/lora_sup_devices.json'`.
-   Result: on sup restart hashes match → `note_hash` requests NOTHING → no devmap/db storm.
-3. Anomaly hash: gateway HB `diag_fn` already carries `hash`(disc)+`cal`+`ph`; add `anh` =
-   anomaly-store hash (find gateway-side `_offline_hash()` ~line 409 in harness and the an_d
-   snapshot hash in modules/anomaly/reconciler.py — expose `snapshot_hash()` if absent:
-   8-hex md5 of sorted active (dev,code) pairs). Supervisor `on_hb`: compare `anh` with its own
-   store hash (AnomalyStore — add matching `snapshot_hash(gw)`); mismatch → existing dump_anom
-   request path (respect its 90 s guard). Params: in `get_sup_params(gw)` creation DON'T call
-   `.request()` blindly — only when hb `ph` differs from instance `params_hash()`.
-   (modules/anomaly/reconciler.py and the AnomalyStore file may be edited ONLY to add the
-   read-only `snapshot_hash` helpers — nothing else.)
+### T4 — inline encje poziomu bramki (harness supervisora)
+- `reg_gw_hashes`: `f"GW {gw} {nm}"` → `f"{nm}"`.
+- `reg_gw_time_entities`: `f"GW {gw} {nm}"` → `f"{nm}"`.
+- `reg_anomaly_entities`: `f"GW {gw} {nm}"` → `f"{nm}"` (oba warianty: items i count `f"GW {gw} {nm} #"`
+  → `f"{nm} #"`).
 
-### T4 — F5: per-gw commands from the GATEWAY side
-Gateway-local HA buttons (same mechanism as `reg_gw_buttons_local` in ha_entities.py — add there):
-`("dump","Dump anomalii","mdi:database-export")` and `("sync_req","Sync czasu","mdi:clock-sync")`.
-Harness gateway MQTT cmd handler (~line 792 block) add branches:
-- `cmd/dump` → call `handle_dump_anom({'g': gw_id})` (existing function).
-- `cmd/sync_req` → lora send `{"t":"sync_req","g":gw_id}`.
-Supervisor: `dispatcher.register('sync_req', ...)` → reuse the existing per-gw time-sync send
-(search how button `sync` / `lora/supervisor/cmd/<gl>/sync` triggers it; call the same function).
-Anomaly clear from gateway already exists (`lora/gw/cmd/clear_anomaly`) — verify and leave.
-
-### T5 — Smoke tests (offline, no MQTT broker: use stub objects like existing smoke tests)
-- params/smoke_test.py: extend — (a) P4/T4/PR present+clamped+in groups; (b) two supervisor
-  instances (G1,G2) have distinct uids/topics/persist and route `param_upd` by g; (c) gateway
-  topics unchanged (`lora/params/gateway/set/P1`).
-- protocol/link_smoke_test.py (new): fake lora (records sends) + fake clock — ping emitted,
-  pong → online, timeout×(retries+1) → offline + lost_pongs=1, `note_rx` keeps online;
-  plus discovery anti-spam: second `send_discovery_with_delay` within 180 s same hash sends
-  NOTHING (fake lora), `force=True` bypasses.
-Run them: `cd skrypty && python -m modules.params.smoke_test` etc. — all must pass.
-
-### T6 — Wire protocol summary (keep ≤150 B)
-`{"t":"sup_ping","g":"G2"}` / `{"t":"sup_pong","g":"G2"}` /
-`{"t":"sync_req","g":"G2"}` / hb extra field `"anh":"xxxxxxxx"`.
+### T5 — smoke test konwencji (NOWY `skrypty/modules/protocol/naming_smoke_test.py`)
+Zaimplementuj `slugify()` odwzorowujący HA (lower, nie-alfanumeryczne→`_`, kolaps powtórzeń,
+strip `_`) i `expected_entity_id(device_name, entity_name)` = `slug(dev)+"_"+slug(ent)`
+(gdy entity_name None → sam `slug(dev)`). Fake mqtt zbiera publikacje configów.
+Asercje (gw="G2"):
+- `reg_sensor("G2","Temp 1","thb")` → `sensor.lora_g2_temp_1_temperature`,
+  `..._humidity`, `..._battery`, `..._last_seen`, `binary_sensor.lora_g2_temp_1_available`.
+- `reg_binary("G2","Door 1","cb")` → `binary_sensor.lora_g2_door_1_contact`,
+  `sensor.lora_g2_door_1_battery`, `binary_sensor.lora_g2_door_1_available`.
+- `reg_switch_dev("G2","Test 1")` → `switch.lora_g2_test_1` (+ `_available`, `_last_seen`).
+- Multi-gw: `reg_sensor("G1","Temp 1","t")` → `sensor.lora_g1_temp_1_temperature`
+  (BRAK kolizji z G2 — kluczowy test).
+- `HAEntities(gw_name_fmt="LoRa {gw}")` + `reg_gateway("G2")` → `sensor.lora_g2_uptime`,
+  `binary_sensor.lora_g2_status`.
+- Domyślny format (rola gateway) NIE zmienia się: `HAEntities()` → device name
+  `LoRa Gateway G2` (regresja).
+- ŻADEN publikowany config nie zmienił `unique_id` względem wartości sprzed zmian
+  (lista oczekiwanych uid — asercja twarda).
+- params/smoke_test.py: dopisz asercję że supervisor `_device()["name"]=="LoRa G2"` a
+  gateway `"LoRa Gateway G2"`, oraz że uid/topics per-gw są nietknięte (regresja F3).
+Uruchom: `cd skrypty && python -m modules.protocol.naming_smoke_test` oraz
+`python -m modules.params.smoke_test` — wszystkie muszą przejść.
 
 ## DELIVERABLE
-Edited files + new files, all ast-clean, smoke tests passing. Write a short BUILD_REPORT.md at
-repo root: what changed per file, smoke-test outputs, open questions. No commit.
+Zmienione pliki + nowy smoke test, wszystko ast-clean, testy zielone. Zapisz `BUILD_REPORT.md`
+w rootcie: co zmienione per plik (z liniami), pełne wyjścia testów, tabela
+`stare entity_id → nowe entity_id` dla wszystkich 7 urządzeń G2 (Door 1, Leak 1, Temp 1,
+Temp 2, Test 1, Test 2) + params + encje bramki, oraz otwarte pytania. Bez commita.

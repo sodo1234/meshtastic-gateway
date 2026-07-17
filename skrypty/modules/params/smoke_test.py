@@ -206,13 +206,28 @@ def test_f3_gateway_topics_unchanged():
     print("✅ F3: gateway topics niezmienione (lora/params/gateway/set/P1)")
 
 
+def test_device_names_by_role():
+    """Konwencja nazw urządzenia różni role, bez zmiany uid ani topiców F3."""
+    from modules.params import ParamSync
+    sup = ParamSync("supervisor", "G2", FakeMqtt(), lambda d: None, persist_path=None)
+    gw = ParamSync("gateway", "G2", FakeMqtt(), lambda d: None, persist_path=None)
+    assert sup._device()["name"] == "LoRa G2"
+    assert gw._device()["name"] == "LoRa Gateway G2"
+    assert sup._device()["identifiers"] == ["lora_gateway_g2"]
+    assert gw._device()["identifiers"] == ["lora_gateway_g2"]
+    assert sup._eid("P1") == "lora_supg2_param_p1"
+    assert gw._eid("P1") == "lora_g2_param_p1"
+    assert sup.tp == "supervisor/g2" and gw.tp == "gateway"
+    print("✅ device.name per rola; uid/topics F3 bez zmian")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_defaults_and_entities, test_gateway_local_set_no_send,
              test_send_buttons, test_gateway_clamp, test_supervisor_local_set_optimistic,
              test_gateway_applies_proposal_and_confirms, test_supervisor_mirrors_confirmation,
              test_request_and_push_all, test_params_hash, test_on_mqtt_set_parsing,
              test_f2_params_present_clamped_grouped, test_f3_two_supervisor_instances_distinct,
-             test_f3_gateway_topics_unchanged]
+             test_f3_gateway_topics_unchanged, test_device_names_by_role]
     failed = 0
     for t in tests:
         try:

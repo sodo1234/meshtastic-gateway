@@ -136,7 +136,8 @@ class ParamSync:
         w brokerze, zero encji w HA, panel PARAMETRY bramki „Nie znaleziono encji").
         Stare g1 działały, bo device istniał już w registry z wcześniejszej rejestracji."""
         return {"identifiers": [f"lora_gateway_{self.gw_id.lower()}"],
-                "name": f"LoRa Gateway {self.gw_id}",
+                "name": (f"LoRa {self.gw_id}" if self.role == "supervisor"
+                         else f"LoRa Gateway {self.gw_id}"),
                 "manufacturer": "LoRa SCADA", "model": "Gateway Params"}
 
     def register_entities(self):

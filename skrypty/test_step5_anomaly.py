@@ -1177,7 +1177,8 @@ def run_supervisor(log):
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
     #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
-    ha = HAEntities(mqtt, logger=log)
+    ha = HAEntities(mqtt, logger=log, gw_name_fmt="LoRa {gw}",
+                    vio_name_fmt="LoRa {gw} Virtual I/O", vio_entity_prefix="")
     known_gateways = CONFIG.get('gateways', ['G1'])
 
     def send_to_all(msg):
@@ -1414,14 +1415,14 @@ def run_supervisor(log):
             topic = f"{STATE_PREFIX}/gw/{gl}/an_{bucket}"
             iuid = f"lora_an_{gl}_{bucket}"               # items (źródło popupu)
             mqtt.publish(f"{HA_PREFIX}/sensor/{iuid}/config", json.dumps({
-                "name": f"GW {gw} {nm}", "object_id": iuid, "unique_id": iuid,
+                "name": f"{nm}", "object_id": iuid, "unique_id": iuid,
                 "state_topic": topic, "value_template": "{{ value_json.count | default(0) }}",
                 "json_attributes_topic": topic, "icon": icon, "device": di},
                 separators=(',', ':')), retain=True)
             if cnt_eid:                                   # count (przycisk) — battery/other
                 cuid = f"lora_gw_{gl}_{cnt_eid}"
                 mqtt.publish(f"{HA_PREFIX}/sensor/{cuid}/config", json.dumps({
-                    "name": f"GW {gw} {nm} #", "object_id": cuid, "unique_id": cuid,
+                    "name": f"{nm} #", "object_id": cuid, "unique_id": cuid,
                     "state_topic": topic, "value_template": "{{ value_json.count | default(0) }}",
                     "icon": icon, "device": di}, separators=(',', ':')), retain=True)
         an_regd.add(gw)
@@ -1658,7 +1659,7 @@ def run_supervisor(log):
         gl, safe = gw.lower(), _safe(dev)
         uid = f"lora_{gl}_{safe}_refresh"
         mqtt.publish(f"{HA_PREFIX}/button/{uid}/config", json.dumps({
-            "name": f"{dev} Refresh", "object_id": uid, "unique_id": uid,
+            "name": "Refresh", "object_id": uid, "unique_id": uid,
             "command_topic": f"{STATE_PREFIX}/supervisor/req/{gl}/{safe}",
             "device": {"identifiers": [f"lora_{gl}_{safe}"],
                        "via_device": f"lora_gateway_{gl}"},
@@ -1675,7 +1676,7 @@ def run_supervisor(log):
         gl, safe = gw.lower(), _safe(dev)
         uid = f"lora_{gl}_{safe}_last_seen"
         mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
-            "name": f"{dev} Last Seen", "object_id": uid, "unique_id": uid,
+            "name": "Last Seen", "object_id": uid, "unique_id": uid,
             "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
             "value_template": "{{ value_json.last_seen | default('--') }}",
             "icon": "mdi:clock-outline",
@@ -1698,7 +1699,7 @@ def run_supervisor(log):
         # (LQI bywa stałe np. 255 → bez tego last_reported zamarza jak w reg_gw_lqi).
         uid = f"lora_{safe}_{safe}_link_quality"
         mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
-            "name": f"{dev} Link Quality", "object_id": uid, "unique_id": uid,
+            "name": "Link Quality", "object_id": uid, "unique_id": uid,
             "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
             "value_template": "{{ value_json.linkquality | default('') }}",
             "icon": "mdi:signal", "state_class": "measurement", "force_update": True,
@@ -1720,7 +1721,7 @@ def run_supervisor(log):
         gl, safe = gw.lower(), _safe(dev)
         uid = f"lora_{gl}_{safe}_contact"
         mqtt.publish(f"{HA_PREFIX}/binary_sensor/{uid}/config", json.dumps({
-            "name": f"{dev} Contact", "object_id": uid, "unique_id": uid,
+            "name": "Contact", "object_id": uid, "unique_id": uid,
             "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
             "value_template": "{{ 'ON' if not value_json.contact else 'OFF' }}",
             "device_class": "opening",
@@ -1739,7 +1740,7 @@ def run_supervisor(log):
         gl, safe = gw.lower(), _safe(dev)
         uid = f"lora_{gl}_{safe}_stagnant"
         mqtt.publish(f"{HA_PREFIX}/binary_sensor/{uid}/config", json.dumps({
-            "name": f"{dev} Stagnation", "object_id": uid, "unique_id": uid,
+            "name": "Stagnation", "object_id": uid, "unique_id": uid,
             "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
             "value_template": "{{ 'ON' if value_json.stagnant == 'ON' else 'OFF' }}",
             "device_class": "problem", "icon": "mdi:timer-sand-paused",
@@ -1804,7 +1805,7 @@ def run_supervisor(log):
                 ('cal_hash_ok', 'Kalendarz — zgodność', 'mdi:calendar-check', 'cal_ok')]:  # F9
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
-                "name": f"GW {gw} {nm}", "object_id": uid, "unique_id": uid,
+                "name": f"{nm}", "object_id": uid, "unique_id": uid,
                 "state_topic": f"{STATE_PREFIX}/gw/{gl}/hashes",
                 "value_template": "{{ value_json.%s | default('--') }}" % key,
                 "icon": icon, "device": di}, separators=(',', ':')), retain=True)
@@ -1829,7 +1830,7 @@ def run_supervisor(log):
                 ('mode_active', 'Tryb — stan', 'mdi:power', 'active')]:
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
-                "name": f"GW {gw} {nm}", "object_id": uid, "unique_id": uid,
+                "name": f"{nm}", "object_id": uid, "unique_id": uid,
                 "state_topic": f"{STATE_PREFIX}/gw/{gl}/timestat",
                 "value_template": "{{ value_json.%s | default('--') }}" % key,
                 "icon": icon, "device": di}, separators=(',', ':')), retain=True)
