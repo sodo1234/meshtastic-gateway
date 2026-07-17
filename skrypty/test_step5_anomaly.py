@@ -986,18 +986,9 @@ def run_gateway(log):
     an_reconciler.start()                                # FAZA 1: pętla re-scan/re-arm + uplink ansnap
     sup_link_probe.start()                               # F2: aktywny ping/pong sup_ping/sup_pong (siatka na ciszę)
 
-    def sync_req_loop():
-        """#8 (2026-07-17): bramka SAMA prosi o czas. Dotąd `sync` leciał WYŁĄCZNIE z przycisku
-        supervisora → po restarcie bramki time_offset/last_sync/sup_time zostawały '--' w
-        nieskończoność (user: „brak czasu i offsetu dla czasu supervisora"). Teraz: sync_req na
-        starcie + gdy ostatni sync starszy niż 6h (koszt: 1 mały pakiet / 6h)."""
-        time.sleep(25)                                    # daj czas na link/antenę po starcie
-        while running.is_set():
-            if time.time() - gw_stats.get('_last_sync_ts', 0) > 6 * 3600:
-                lora_send({'t': 'sync_req', 'g': gw_id})
-                log.info('CMD', '🕐 sync_req → supervisor (brak świeżego sync)')
-            time.sleep(600)
-    threading.Thread(target=sync_req_loop, daemon=True, name='sync-req').start()
+    # #2 (2026-07-17): USUNIĘTO auto sync_req_loop bramki — sync czasu inicjuje SUPERVISOR na
+    # podstawie `tq` z pong (pierwszy kontakt / tq nieświeży), zgodnie z „supervisor inicjalizuje
+    # po wykryciu rozjazdu". Przycisk sync_req (F5) zostaje jako ręczny fallback.
     log.info('MAIN', f'  tryb bramki: {gw_mode.mode} (aktywna teraz: {gw_mode.is_active()})')
 
     # STEP 4: encje trybu/harmonogramu (pod urządzeniem LoRa Gateway Gx)
@@ -1867,6 +1858,9 @@ def run_supervisor(log):
     dispatcher = Dispatcher(logger=log)
 
     psync_guard = {'ph': None, 'ts': 0}                  # debounce żądań sync parametrów
+    synced_gw = set()                                    # #2: bramki którym wysłano sync w tej sesji
+    time_sync_guard = {}                                 # gw → ts ostatniego wysłanego sync (debounce)
+    gw_last_up = {}                                       # #2: gw → ostatni uptime (wykrycie restartu bramki)
 
     def on_hb(d):
         gw = d.get('g'); sup_hb.handle_hb(d)
@@ -1903,6 +1897,23 @@ def run_supervisor(log):
                 cal_sync_guard[gw] = now
                 log.info('CAL', f'🔄 {gw} cal drift ({cal}≠{expected_cal_hash.get(gw)}) → re-sync')
                 targeted_calendar_sync([gw])
+        # #2: SYNC CZASU sterowany hashem — TYLKO gdy rozjazd, nie na każdym starcie.
+        # Rozjazd = pierwszy kontakt w sesji (offset nieznany) LUB tq bramki nieświeży
+        # (unsynced/stale/holdover). synced/ntp po 1. sync = cisza. „supervisor inicjalizuje".
+        if gw:
+            tq = d.get('tq')
+            up = int(d.get('up', 0) or 0)
+            if up < gw_last_up.get(gw, 0):               # #2: uptime spadł = bramka zrestartowała
+                synced_gw.discard(gw)                    # → utraciła sync (offset '--'), wyślij ponownie
+                time_sync_guard.pop(gw, None)            # restart = zdarzenie pilne → omiń debounce 120s
+            gw_last_up[gw] = up
+            first = gw not in synced_gw
+            if first or tq in ('unsynced', 'stale', 'holdover'):
+                now = time.time()
+                if now - time_sync_guard.get(gw, 0) > 120:
+                    time_sync_guard[gw] = now; synced_gw.add(gw)
+                    log.info('SYNC', f'🕐 {gw} sync czasu ({"pierwszy kontakt" if first else tq}) → send sync')
+                    send_to_all({"t": "sync", "sec": int(time.time()), "g": gw})
         # offline-hash `oh` w HB: zostawiony jako sygnał diagnostyczny, ale NIE triggeruje reconcile —
         # availability jest napędzana CIĄGŁYM batch `a:` (przez _set_avail), więc lista zawsze == licznik.
         # (Wcześniej `oh` z GatewayOfflineAnomaly ≠ hash z batch-a: → ciągłe niepotrzebne dumpy.)
@@ -2247,25 +2258,27 @@ def run_supervisor(log):
     threading.Thread(target=sup_clock_loop, daemon=True, name='sup-clock').start()
     # STEP 17: bez pre-instancji — sync wyzwala porównanie `ph` w on_hb (HB/pong)
 
-    def initial_discovery():
+    def initial_handshake():
+        # #2 CICHY START: zamiast eager disc/calendar/sync → PING do wszystkich bramek. Pong niesie
+        # hashe (disc/cal/ph/ah) + tq → on_hb inicjuje resync TYLKO per-rozjazd. Zgodne hashe = 0
+        # transferu (tylko ping+pong). Fallback: bramki wciąż bez mapy po 22s (pong zgubiony) → disc.
         time.sleep(8)
-        # F7: cichy start — disc TYLKO dla bramek bez zsynchronizowanej mapy (persist przeżył
-        # restart → drift załatwia note_hash z HB; świeża instalacja = pełny disc jak dotąd).
+        log.info('CMD', '⚡ start: ping→pong (resync kalendarza/discovery/anomalii/czasu TYLKO przy rozjeździe)')
+        sup_hb.manual_ping_all(known_gateways, send_broadcast_fn=lambda: send_to_all({"t": "ping"}))
+        time.sleep(22)
         missing = [g for g in known_gateways if not sup_disc.gw_synced.get(g)]
         if missing:
-            log.info('CMD', f'⚡ startowe discovery (brak mapy: {missing})')
+            log.info('CMD', f'⚡ fallback disc (brak mapy po pingu: {missing})')
             for g in missing:
-                send_to_all({"t": "disc", "g": g})
-                time.sleep(2)
-        else:
-            log.info('CMD', '⚡ start: mapy urządzeń z persistu — bez disc (cichy start)')
+                send_to_all({"t": "disc", "g": g}); time.sleep(2)
         # F3/F7: pull parametrów robi get_sup_params przy tworzeniu mirrora (tylko świeży persist)
-    threading.Thread(target=initial_discovery, daemon=True).start()
+    threading.Thread(target=initial_handshake, daemon=True).start()
 
-    def initial_calendar():                              # STEP 4: odczyt HA + push (po starcie bramek)
+    def initial_calendar():                              # STEP 4: odczyt HA (bez eager push — #2)
         time.sleep(12)
-        log.info('CAL', f'📅 startowy odczyt HA: {read_ha_calendar()} slotów GLOBAL')
-        targeted_calendar_sync()
+        # #2: TYLKO odczyt HA → ustala expected_cal_hash. Push robi on_hb per-bramka WYŁĄCZNIE
+        # gdy cal-hash z pong ≠ expected (koniec bezwarunkowego push do wszystkich na starcie).
+        log.info('CAL', f'📅 startowy odczyt HA: {read_ha_calendar()} slotów (push tylko przy rozjeździe)')
         si = cal_cfg.get('sync_interval', 0)             # 0 = tylko start/przycisk; >0 = okresowo
         while running.is_set() and si > 0:
             time.sleep(si)
