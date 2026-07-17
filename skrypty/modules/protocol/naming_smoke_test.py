@@ -130,6 +130,11 @@ def test_supervisor_gateway_names_and_uids():
         "lora_gw_g2_ping",
         "lora_gw_g2_discovery",
         "lora_gw_g2_sync",
+        # #5 (2026-07-17): funkcje per-bramka (dotąd globalne supervisora) — NOWE unique_id
+        "lora_gw_g2_dump",
+        "lora_gw_g2_clear_offline",
+        "lora_gw_g2_clear_battery",
+        "lora_gw_g2_clear_other",
     ]
     assert _unique_ids(mqtt) == expected_uids
     print("✅ encje bramki supervisora pod LoRa G2; unique_id bez zmian")
