@@ -332,6 +332,8 @@ class HAEntities:
             ("gw_offline", "Offline", "{{ value_json.offline | default(0) }}", "mdi:lan-disconnect", None, "sensor"),
             ("sup_link", "Supervisor Link", "{{ value_json.sup_link | default('OFF') }}", None, None, "binary_sensor"),
             ("sup_last_rx", "Supervisor Last RX", "{{ value_json.sup_last_rx | default('--') }}", "mdi:download-network", None, "sensor"),
+            # #8: czas drugiej strony (supervisora) — z pakietu `sync`, obok własnego offsetu
+            ("sup_time", "Supervisor Time", "{{ value_json.sup_time | default('--') }}", "mdi:clock-star-four-points", None, "sensor"),
             ("sup_lost_pong", "Sup Lost Pong", "{{ value_json.sup_lost_pong | default(0) }}", "mdi:sync-alert", None, "sensor"),
             ("time_offset", "Time Offset", "{{ value_json.time_offset | default('--') }}", "mdi:clock-alert", None, "sensor"),
             ("last_sync", "Last Sync", "{{ value_json.last_sync | default('--') }}", "mdi:clock-sync", None, "sensor"),

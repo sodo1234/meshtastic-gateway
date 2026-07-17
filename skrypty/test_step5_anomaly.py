@@ -255,6 +255,7 @@ def run_gateway(log):
                   for v in vio_config if v['type'] == 'switch'}
     gw_stats = {'last_sup_rx_ts': 0.0, 'last_sup_rx': '--',
                 'last_sync': '--', 'time_offset': '--', '_last_sync_ts': 0.0,
+                'sup_time': '--',                       # #8: czas supervisora (z pakietu sync)
                 'sup_link': 'ON', 'sup_lost_pong': 0}   # F2: nadpisywane przez SupervisorLinkProbe.on_state
     SUP_LINK_TIMEOUT = CONFIG.get('sup_link_timeout', 3600)
 
@@ -345,6 +346,10 @@ def run_gateway(log):
     def _on_sup_link_state(online, lost_pongs):
         gw_stats['sup_link'] = 'ON' if online else 'OFF'
         gw_stats['sup_lost_pong'] = lost_pongs
+        try:                                             # #8: zmiana linku widoczna od razu
+            publish_gwstat()
+        except NameError:
+            pass                                         # jeszcze przed definicją (start) — pętla dociągnie
 
     sup_link_probe = SupervisorLinkProbe(
         gw_id, lora, get_params=_sup_link_params,
@@ -721,7 +726,14 @@ def run_gateway(log):
             gw_stats['time_offset'] = f'{offset:+d}s'
             gw_stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
             gw_stats['_last_sync_ts'] = time.time()      # STEP 5+: znacznik świeżości → time_quality
+            # F9/#8: czas SUPERVISORA (źródło sync) na dashboardzie bramki — dotąd bramka
+            # znała tylko własny offset, nie pokazywała czasu drugiej strony.
+            try:
+                gw_stats['sup_time'] = datetime.fromtimestamp(int(sec)).strftime('%H:%M:%S')
+            except (TypeError, ValueError, OSError):
+                pass
             log.info('CMD', f'🕐 sync: offset={offset:+d}s (time_quality→synced)')
+            publish_gwstat()                             # #8: natychmiast (nie czekaj 300s na pętlę)
     dispatcher.register('sync', handle_sync)
     dispatcher.register('req', lambda d: for_me(d) and data.handle_req(d))   # STEP 3: refresh on-demand (per-gw)
     dispatcher.register('sup_pong', lambda d: for_me(d) and sup_link_probe.handle_sup_pong(d))  # F2: odpowiedź na sup_ping
@@ -973,6 +985,19 @@ def run_gateway(log):
     temphum_mon.start()                                  # STEP 5: temp/hum high/low (th/tl/hh/hl) ALL devices
     an_reconciler.start()                                # FAZA 1: pętla re-scan/re-arm + uplink ansnap
     sup_link_probe.start()                               # F2: aktywny ping/pong sup_ping/sup_pong (siatka na ciszę)
+
+    def sync_req_loop():
+        """#8 (2026-07-17): bramka SAMA prosi o czas. Dotąd `sync` leciał WYŁĄCZNIE z przycisku
+        supervisora → po restarcie bramki time_offset/last_sync/sup_time zostawały '--' w
+        nieskończoność (user: „brak czasu i offsetu dla czasu supervisora"). Teraz: sync_req na
+        starcie + gdy ostatni sync starszy niż 6h (koszt: 1 mały pakiet / 6h)."""
+        time.sleep(25)                                    # daj czas na link/antenę po starcie
+        while running.is_set():
+            if time.time() - gw_stats.get('_last_sync_ts', 0) > 6 * 3600:
+                lora_send({'t': 'sync_req', 'g': gw_id})
+                log.info('CMD', '🕐 sync_req → supervisor (brak świeżego sync)')
+            time.sleep(600)
+    threading.Thread(target=sync_req_loop, daemon=True, name='sync-req').start()
     log.info('MAIN', f'  tryb bramki: {gw_mode.mode} (aktywna teraz: {gw_mode.is_active()})')
 
     # STEP 4: encje trybu/harmonogramu (pod urządzeniem LoRa Gateway Gx)
@@ -1114,14 +1139,18 @@ def run_gateway(log):
             'sup_lost_pong': gw_stats.get('sup_lost_pong', 0),   # F2: licznik epizodów braku pong
             'sup_last_rx': gw_stats['last_sup_rx'],
             'time_offset': gw_stats['time_offset'], 'last_sync': gw_stats['last_sync'],
+            'sup_time': gw_stats.get('sup_time', '--'),      # #8: czas supervisora (z sync)
             'disc_hash': discovery.disc_hash or '--',        # STEP 17: hash disc
             'param_hash': param_sync.params_hash()})         # STEP 17: hash parametrów
 
     publish_gwstat()
 
     def gwstat_loop():
+        # #8: 300s→60s. To publikacja na LOKALNY broker (zero LoRa), a przy 300s dashboard
+        # bramki pokazywał link/czas sprzed 5 minut (po restarcie: '--'/offline). Zmiany
+        # istotne (sync, zmiana linku) publikują się dodatkowo event-driven.
         while running.is_set():
-            time.sleep(300); publish_gwstat()
+            time.sleep(60); publish_gwstat()
     threading.Thread(target=gwstat_loop, daemon=True).start()
 
     signal.signal(signal.SIGINT, lambda *_: running.clear())
