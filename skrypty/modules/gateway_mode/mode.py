@@ -96,6 +96,19 @@ class GatewayMode:
         day = self._is_daytime(now)
         return day if self.mode == "day" else (not day)
 
+    def set_mode(self, mode):
+        """Zmiana trybu w RUNTIME (dashboard/LoRa). Zwraca True gdy prawidlowy i ustawiony.
+        Wplyw na is_active() -> gating raportowania stanow (GatewayData.active_fn) natychmiast."""
+        m = (mode or "").lower()
+        if m not in ("all-time", "day", "night"):
+            if self.log:
+                self.log.warn("MODE", "set_mode: nieznany tryb %r" % (mode,))
+            return False
+        self.mode = m
+        if self.log:
+            self.log.info("MODE", "operating_mode -> %s" % m)
+        return True
+
     def state(self, now=None):
         """Dla HB diag_fn: tryb + czy aktywna (supervisor czyta do supresji)."""
         return {"gm": self.mode, "ga": 1 if self.is_active(now) else 0}

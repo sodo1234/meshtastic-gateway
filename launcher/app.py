@@ -593,6 +593,62 @@ def api_status():
     return jsonify(status_remote(host, role, script))
 
 
+# ── Monitoring logu: gubienie pakietów + nieprawidłowości (item #3) ──
+# Skanuje okno logu z tmux pane obu harnessów pod kątem sygnałów utraty pakietów
+# (lost_pong, NACK/retransmisja, rx_timeout/watchdog/antena, offline) oraz
+# nieprawidłowości (błędy/wyjątki, ostrzeżenia, stagnacja). Zwraca zdrowie + liczniki.
+import re as _re
+
+_MONITOR_RULES = [
+    ("lost_pong", "loss",  r"lost_pong|sup_link OFFLINE|💀 sup_link",           "utrata pong / link supervisora"),
+    ("nack",      "loss",  r"NACK|retransmi|rt_.*(?:timeout|retry)|CRC.*(?:zły|mismatch|fail)", "NACK / retransmisja pliku"),
+    ("rx_to",     "loss",  r"rx[_ ]?timeout|watchdog|urb .*stopped|-32|Timed out|antena.*(?:zwis|reset)", "rx timeout / watchdog / antena"),
+    ("dev_off",   "loss",  r"💀.*OFFLINE|OFFLINE \(brak|cisza z2m",             "urządzenie OFFLINE"),
+    ("err",       "irreg", r"Traceback|Exception|\[ERROR\]|\bERROR\b|❌",        "błąd / wyjątek"),
+    ("warn",      "irreg", r"⚠️|\[WARN\]|\bWARN\b",                              "ostrzeżenie"),
+    ("stag",      "irreg", r"STAGNACJA|stagnat",                                "stagnacja"),
+]
+
+
+@app.route("/api/monitor")
+def api_monitor():
+    host = request.args.get("host")
+    role = request.args.get("role")
+    script = request.args.get("script", "")
+    try:
+        lines = max(200, min(6000, int(request.args.get("lines", 3000))))
+    except (TypeError, ValueError):
+        lines = 3000
+    if not host or role not in ROLE_META:
+        return jsonify({"error": "host & role required"}), 400
+    meta = resolve_meta(role, script)
+    rc, out, _ = ssh(host, f"tmux capture-pane -pt {meta['tmux']} -S -{lines} -p 2>/dev/null")
+    text = out or ""
+    rows = text.splitlines()
+    if not rows:
+        return jsonify({"host": host, "role": role, "lines": 0, "health": "—",
+                        "loss": 0, "irreg": 0, "tx": 0, "rx": 0, "rules": {},
+                        "note": "brak logu (harness stopped?)"})
+    rules = {}
+    for key, cat, rx, human in _MONITOR_RULES:
+        m = [l for l in rows if _re.search(rx, l)]
+        rules[key] = {"n": len(m), "cat": cat, "label": human,
+                      "last": (m[-1].strip()[-140:] if m else "")}
+    loss = sum(v["n"] for v in rules.values() if v["cat"] == "loss")
+    irreg = sum(v["n"] for v in rules.values() if v["cat"] == "irreg")
+    tx = len(_re.findall(r"\bTX:", text))
+    rx_n = len(_re.findall(r"\bRX:", text))
+    # gubienie pakietów = priorytet item #3 → każda strata podnosi status; kilka ostrzeżeń tolerowane
+    if loss >= 3 or irreg >= 8:
+        health = "PROBLEM"
+    elif loss >= 1 or irreg >= 3:
+        health = "UWAGA"
+    else:
+        health = "OK"
+    return jsonify({"host": host, "role": role, "lines": len(rows), "tx": tx, "rx": rx_n,
+                    "loss": loss, "irreg": irreg, "health": health, "rules": rules})
+
+
 # ── Async operacje (start/stop) — przycisk wraca NATYCHMIAST, robota leci w tle ──
 # Stary kod robił robust_kill+verify (do ~50s) SYNCHRONICZNIE → przeglądarka wisiała na
 # fetchu = „nieresponsywne". Teraz: POST kolejkuje robotę w wątku i wraca od razu; frontend

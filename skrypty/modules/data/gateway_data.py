@@ -38,6 +38,10 @@ class GatewayData:
         # binary_sensor ...available do lokalnego HA → dashboard czyta JEDNO źródło
         # (koniec rozjazdu LQI-heurystyka vs supervisor).
         self.on_avail = on_avail
+        # 2026-07-18: gating raportowania trybem bramki. active_fn()==False (np. Nocna w dzien)
+        # -> NIE wysylaj stanow urzadzen (`b`) do supervisora. HB leci dalej (ga=0 -> sup wstrzymuje
+        # offline). Ustawiane z harnessu po utworzeniu GatewayMode (data.active_fn = gw_mode.is_active).
+        self.active_fn = None
         self._avail_pub = {}           # {dev: bool} ostatnio opublikowana dostępność (dedup)
         self._z2m_avail = {}           # {dev: bool} z2m native availability (autorytet gdy włączone)
         self.thresholds = thresholds
@@ -243,6 +247,8 @@ class GatewayData:
         event-driven (door/switch) inaczej nigdy nie dostają update'u availability → supervisor
         utyka. Dla non-monitored wysyłamy TYLKO bit `a:` (puste caps, ~minimalny payload — szanuje
         LoRa), pełne wartości tylko dla monitored (heartbeat danych #8)."""
+        if self.active_fn is not None and not self.active_fn():
+            return                     # tryb bramki nieaktywny -> brak heartbeatu stanow do supervisora
         now = time.time()
         # (d) pełny sweep co report_full_every-ty raz; pomiędzy — tylko zmiany (delta).
         # KOLEJNOŚĆ: sprawdź PRZED inkrementem → PIERWSZY sweep po starcie jest FULL (blob dla
@@ -346,6 +352,8 @@ class GatewayData:
         """Batcher flush callback. Paced through a shared TX queue when
         send_spacing>0 so the two batchers never burst into each other and the
         LoRa cooldown is honored; synchronous (direct) otherwise (tests)."""
+        if self.active_fn is not None and not self.active_fn():
+            return                     # tryb bramki nieaktywny -> nie wysylaj stanow do supervisora
         if self.send_spacing > 0:
             self._out.append(packet)
         else:
