@@ -362,6 +362,8 @@ class LoraTransport:
                 job = self._pop_first_sendable()
                 if job is None:
                     time.sleep(0.15); continue          # tylko bulk w kolejce → milcz, słuchaj cacka
+            else:
+                job = self._pop_first_sendable()         # 2026-07-18: priorytet komend/odpowiedzi nad bulk (b/ab/hb/disc) TAKZE poza transferem -> niska latencja sterowania/trybu/kalendarza (fallback FIFO gdy sama kolejka bulk)
             # F3: wymuś min. odstęp od ostatniego TX (LoRa cooldown) — dławi bursty, chroni przed
             # przepełnieniem kolejki Meshtastic i gubieniem pakietów.
             if self.tx_cooldown > 0:

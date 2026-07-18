@@ -361,6 +361,16 @@ def run_gateway(log):
                           day_start=gm_cfg.get('day_start', '06:00'),
                           day_end=gm_cfg.get('day_end', '20:00'),
                           lat=gm_cfg.get('lat'), lon=gm_cfg.get('lon'), logger=log)
+    # 2026-07-18: gating raportowania trybem — nieaktywna bramka nie wysyla stanow do sup.
+    data.active_fn = gw_mode.is_active
+    try:
+        import os as _os
+        if _os.path.exists('/tmp/lora_mode_gw.json'):
+            _pm = json.load(open('/tmp/lora_mode_gw.json')).get('mode')
+            if _pm and gw_mode.set_mode(_pm):
+                log.info('MODE', 'tryb bramki z persist: %s' % _pm)
+    except Exception as _e:
+        log.warn('MODE', 'load persist mode: %s' % _e)
 
     # ── STEP 5: anomalie (offline+battery+stagnation, ALL devices) → AnomalyBatcher → `ab` P2 ──
     an_cfg = CONFIG.get('anomaly', {})
@@ -682,6 +692,8 @@ def run_gateway(log):
             return                                         # ten pakiet nie niesie sterowanego cap
         real = str(data[z2m_cap]).upper()
         was_pending = pending_st.pop(dev, None) is not None
+        if not was_pending and gw_mode is not None and not gw_mode.is_active():
+            return                                         # 2026-07-18: tryb nieaktywny -> nie raportuj zewnetrznej zmiany stanu (`st`) do sup; cmd-confirm zawsze leci
         if not was_pending and last_fwd_state.get(dev) == (cap, real):
             return                                         # zewn. powtórka bez zmiany → nie spamuj
         last_fwd_state[dev] = (cap, real)
@@ -718,25 +730,46 @@ def run_gateway(log):
         lora_send({'t': 'vbtn_ack', 'g': gw_id, 'id': vid})
     dispatcher.register('vbtn', handle_vbtn)
 
+    def _apply_time_sync(sec, src='sync'):
+        # F(2026-07-18): wspólna aktualizacja czasu supervisora — używane przez `sync` ORAZ
+        # `sup_pong` (pong niesie sec co P4). Dotąd tylko `sync`, który dla bramek z NTP nigdy
+        # nie lecił (time_quality='ntp' poza triggerem resync na sup) → sup_time/offset/last_sync
+        # ZAMARZAŁY. Pong odświeża je co ping (bez nowego ruchu LoRa).
+        try:
+            offset = int(time.time()) - int(sec)
+        except (TypeError, ValueError):
+            return
+        gw_stats['time_offset'] = f'{offset:+d}s'
+        gw_stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
+        gw_stats['_last_sync_ts'] = time.time()      # znacznik świeżości → time_quality='synced'
+        try:
+            gw_stats['sup_time'] = datetime.fromtimestamp(int(sec)).strftime('%H:%M:%S')
+        except (TypeError, ValueError, OSError):
+            pass
+        log.info('CMD', f'🕐 {src}: offset={offset:+d}s (time_quality→synced)')
+        publish_gwstat()                             # natychmiast (nie czekaj na pętlę)
+
     def handle_sync(d):
         if not for_me(d): return
         sec = d.get('sec')
         if sec:
-            offset = int(time.time()) - int(sec)
-            gw_stats['time_offset'] = f'{offset:+d}s'
-            gw_stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
-            gw_stats['_last_sync_ts'] = time.time()      # STEP 5+: znacznik świeżości → time_quality
-            # F9/#8: czas SUPERVISORA (źródło sync) na dashboardzie bramki — dotąd bramka
-            # znała tylko własny offset, nie pokazywała czasu drugiej strony.
-            try:
-                gw_stats['sup_time'] = datetime.fromtimestamp(int(sec)).strftime('%H:%M:%S')
-            except (TypeError, ValueError, OSError):
-                pass
-            log.info('CMD', f'🕐 sync: offset={offset:+d}s (time_quality→synced)')
-            publish_gwstat()                             # #8: natychmiast (nie czekaj 300s na pętlę)
+            _apply_time_sync(sec, 'sync')
     dispatcher.register('sync', handle_sync)
     dispatcher.register('req', lambda d: for_me(d) and data.handle_req(d))   # STEP 3: refresh on-demand (per-gw)
-    dispatcher.register('sup_pong', lambda d: for_me(d) and sup_link_probe.handle_sup_pong(d))  # F2: odpowiedź na sup_ping
+    def handle_set_mode(d):                              # 2026-07-18: supervisor->bramka zmiana trybu (LoRa)
+        if not for_me(d): return
+        if gw_mode.set_mode(d.get('m')):
+            _persist_mode_gw(gw_mode.mode)
+            log.info('MODE', '🕹️ tryb bramki (LoRa sup) -> %s, aktywna=%s' % (gw_mode.mode, gw_mode.is_active()))
+            publish_gmstat(); heartbeat.send_heartbeat()   # 2026-07-18: od razu rozglos tryb do sup
+    dispatcher.register('set_mode', handle_set_mode)
+    def handle_sup_pong(d):
+        if not for_me(d): return
+        sup_link_probe.handle_sup_pong(d)            # F2: link alive
+        sec = d.get('sec')
+        if sec:                                       # F(2026-07-18): pong niesie czas supervisora → odśwież
+            _apply_time_sync(sec, 'pong')
+    dispatcher.register('sup_pong', handle_sup_pong)  # F2 + czas z pongu
 
     def handle_ac_b(d):                                  # CLEAR supervisor→bramka: usuń z lokalnego store + ACK
         if d.get('g') not in (gw_id, None):
@@ -841,6 +874,16 @@ def run_gateway(log):
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/sync_schedule':
             log.info('BTN', '🔘 Sync Schedule (pobierz) pressed')   # STEP 4: pull down — poproś supervisora
             lora_send({'t': 'cal_req', 'g': gw_id})
+        elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/set_mode':
+            _lbl = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload or '')
+            _lbl = _lbl.strip()
+            _m = {'Całodobowa': 'all-time', 'Dzienna': 'day', 'Nocna': 'night'}.get(_lbl)
+            if _m and gw_mode.set_mode(_m):
+                _persist_mode_gw(_m)
+                log.info('MODE', '🕹️ tryb bramki -> %s (%s), aktywna=%s' % (_lbl, _m, gw_mode.is_active()))
+                publish_gmstat(); heartbeat.send_heartbeat()   # 2026-07-18: od razu rozglos tryb do sup (HB niesie gm/ga)
+            else:
+                log.warn('MODE', 'set_mode: zignorowano %r' % _lbl)
         elif topic.startswith(f'{STATE_PREFIX}/anomaly/') and topic.endswith('/clear'):
             # CLEAR per-wpis z HA BRAMKI (button.lora_an_<safe>_clear v10) → usuń z lokalnego store + ACK.
             # Bramka=source: przestaje raportować → supervisor prune'uje na dump_anom (spójność w górę).
@@ -1033,6 +1076,20 @@ def run_gateway(log):
             "active": "aktywna" if st.get("ga") else "wstrzymana (supresja offline)"},
             separators=(',', ':')), retain=True)
     publish_gmstat()
+    # 2026-07-18: SELECT trybu bramki (dropdown) -> operating_mode w runtime + gating raportu.
+    _gm_sel_uid = f"lora_{gw_lower}_tryb_bramki"
+    mqtt.publish(f"{HA_PREFIX}/select/{_gm_sel_uid}/config", json.dumps({
+        "name": f"GW {gw_id} Tryb bramki", "object_id": _gm_sel_uid, "unique_id": _gm_sel_uid,
+        "command_topic": f"{STATE_PREFIX}/gw/{gw_lower}/cmd/set_mode",
+        "options": ["Całodobowa", "Dzienna", "Nocna"],
+        "state_topic": f"{STATE_PREFIX}/{gw_lower}/gmstat",
+        "value_template": "{{ value_json.label | default('Całodobowa') }}",
+        "icon": "mdi:theme-light-dark", "device": _cal_di}, separators=(',', ':')), retain=True)
+    def _persist_mode_gw(m):
+        try:
+            open('/tmp/lora_mode_gw.json', 'w').write(json.dumps({'mode': m}))
+        except Exception as _e:
+            log.warn('MODE', 'persist mode: %s' % _e)
     publish_calstat()                                    # bieżący tryb (z persist /tmp/lora_schedule_gw.json)
 
     # ── STEP 5+: wizualizacja CZASU + PORY DNIA na dashboardzie bramki (MQTT discovery) ──
@@ -1978,7 +2035,7 @@ def run_supervisor(log):
     dispatcher.register('ab', handle_ab)                 # STEP 15: anomalie (stagnacja sg/sc)
     dispatcher.register('an_d', handle_an_d)             # DELTA anomalii: 1 pakiet, hash-chain verify
     # F2: bramka pinguje supervisora → natychmiastowy pong (reactive, z id bramki)
-    dispatcher.register('sup_ping', lambda d: send_to_all({"t": "sup_pong", "g": d.get('g')}))
+    dispatcher.register('sup_ping', lambda d: send_to_all({"t": "sup_pong", "g": d.get('g'), "sec": int(time.time())}))  # F(2026-07-18): pong niesie czas -> bramka odswieza sup_time co P4
     # F5: bramka prosi o sync czasu → targeted sync (to samo co przycisk per-gw)
     dispatcher.register('sync_req', lambda d: send_to_all({"t": "sync", "sec": int(time.time()), "g": d.get('g')}))
 
@@ -2057,6 +2114,15 @@ def run_supervisor(log):
                     log.info('BTN', '🔘 Discovery All'); send_to_all({"t": "disc"})
                 elif a == 'sync_all':
                     log.info('BTN', '🔘 Sync All'); send_to_all({"t": "sync", "sec": int(time.time())})
+                elif a == 'set_mode_g2':                   # 2026-07-18: dropdown trybu bramki (sup->LoRa)
+                    _lbl = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload or '')
+                    _lbl = _lbl.strip()
+                    _m = {'Całodobowa': 'all-time', 'Dzienna': 'day', 'Nocna': 'night'}.get(_lbl)
+                    if _m:
+                        log.info('MODE', '🕹️ set_mode G2 -> %s (%s) [sup->LoRa]' % (_lbl, _m))
+                        send_to_all({'t': 'set_mode', 'g': 'G2', 'm': _m})
+                    else:
+                        log.warn('MODE', 'set_mode_g2: zignorowano %r' % _lbl)
                 elif a == 'calendar_all':                 # STEP 4: re-read HA + push do wszystkich
                     log.info('BTN', '🔘 Sync Calendar All')
                     log.info('CAL', f'📅 HA → {read_ha_calendar()} slotów GLOBAL')
@@ -2244,6 +2310,17 @@ def run_supervisor(log):
         get_sup_params(_gw)
     # UNIFIKACJA: offline_mon usunięty — availability liczona z offline-set bramki (reconcile)
     reg_cal_button_global()                              # STEP 4: przycisk Sync Calendar All
+    # 2026-07-18: SELECT trybu bramki G2 na supervisorze — sup steruje bramka przez LoRa set_mode;
+    # stan odbijany z gw timestat (HB gm). Round-trip: wybor -> LoRa -> bramka -> HB gm -> select.
+    _gm_sel_uid = 'lora_g2_tryb_bramki'
+    mqtt.publish(f"{HA_PREFIX}/select/{_gm_sel_uid}/config", json.dumps({
+        "name": "GW G2 Tryb bramki", "object_id": _gm_sel_uid, "unique_id": _gm_sel_uid,
+        "command_topic": f"{STATE_PREFIX}/supervisor/cmd/set_mode_g2",
+        "options": ["Całodobowa", "Dzienna", "Nocna"],
+        "state_topic": f"{STATE_PREFIX}/gw/g2/timestat",
+        "value_template": "{{ value_json.mode | default('Całodobowa') }}",
+        "icon": "mdi:theme-light-dark",
+        "device": {"identifiers": ["lora_gateway_g2"]}}, separators=(',', ':')), retain=True)
     _da_uid = 'lora_sup_dump_anom_all'                   # STEP 5: przycisk Dump Anomalies All
     mqtt.publish(f"{HA_PREFIX}/button/{_da_uid}/config", json.dumps({
         "name": "Dump Anomalies All", "object_id": _da_uid, "unique_id": _da_uid,

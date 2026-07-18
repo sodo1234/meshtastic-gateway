@@ -208,6 +208,7 @@ function panelHTML(role){
         <button class="clear" onclick="openConfig('${r}')">⚙ Config</button>
       </div>
     </div>
+    <div class="mon" id="mon-${r}" style="font-size:11px;padding:5px 4px;border-top:1px solid var(--line,#222);margin-top:4px;line-height:1.35;">🩺 monitor…</div>
     <pre class="log" id="log-${r}">[idle]</pre>
   `;
 }
@@ -487,7 +488,26 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') closeConfig(); 
   const j = await fetch('/api/hosts').then(x=>x.json()); hosts = j;
   ROLES.forEach(role => renderHosts(role.key));
   setInterval(()=> ROLES.forEach(role => refreshStatus(role.key)), 5000);
+  setTimeout(()=> ROLES.forEach(role => refreshMonitor(role.key)), 2500);
+  setInterval(()=> ROLES.forEach(role => refreshMonitor(role.key)), 15000);
 })();
+
+async function refreshMonitor(r){
+  const host = state[r].host; if(!host) return;
+  const script = getScript(r);
+  const el = document.getElementById(`mon-${r}`); if(!el) return;
+  try{
+    const j = await fetch(`/api/monitor?host=${host}&role=${r}&script=${encodeURIComponent(script)}`).then(x=>x.json());
+    if(j.error || j.health==='—'){ el.innerHTML = '🩺 <span style="color:var(--mut)">monitor: '+(j.note||'—')+'</span>'; return; }
+    const col = j.health==='OK' ? '#4ade80' : (j.health==='UWAGA' ? '#fbbf24' : '#f87171');
+    const active = Object.values(j.rules).filter(x=>x.n>0);
+    const det = active.length ? active.map(x=>`${x.label}: ${x.n}`).join(' · ') : 'brak zdarzeń w oknie';
+    el.innerHTML = `🩺 <b style="color:${col}">${j.health}</b> `
+      + `<span style="color:var(--mut)">· straty ${j.loss} · nieprawidł. ${j.irreg} · TX/RX ${j.tx}/${j.rx} · ${j.lines} lin</span>`
+      + `<div style="font-size:10px;color:var(--mut);margin-top:2px;">${det}</div>`;
+    el.title = active.length ? active.map(x=>`${x.label} (${x.n}): ${x.last}`).join('\n') : 'brak zdarzeń w oknie logu';
+  }catch(e){ el.innerHTML = '🩺 <span style="color:var(--mut)">monitor: błąd zapytania</span>'; }
+}
 </script>
 </body>
 </html>
