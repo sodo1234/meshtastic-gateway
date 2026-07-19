@@ -436,7 +436,7 @@ def run_gateway(log):
         get_timeout=_offline_min_for, logger=log,
         check_interval=an_cfg.get('offline_check', 30),
         grace=an_cfg.get('offline_grace', 120),
-        is_active=gw_mode.is_active)                      # supresja: nieaktywna bramka → brak offline
+        is_active=gw_mode.offline_active)                 # #9: offline_active — calendar off-hours dalej wykrywa offline (BMS)
 
     def _offline_hash():
         """Hash zbioru offline (md5[:8] z posortowanych nazw, '0'=pusty). MUSI być identyczny
@@ -496,6 +496,10 @@ def run_gateway(log):
     def publish_calstat():
         mode, nxt, src = scheduler.compute_now_and_next(gw_id)
         cal_state.update(mode=mode, next=nxt, src=src)
+        if gw_mode.mode == 'calendar':                       # #9: aktywnosc raportowania wg biezacego trybu kalendarza
+            _cn = mode_names.get(mode, mode) if isinstance(mode, int) else mode
+            _inact = [str(x).upper() for x in gm_cfg.get('calendar_inactive_modes', ['BRAK PRODUKCJI', 'PRZERWA'])]
+            gw_mode.cal_active = str(_cn).upper() not in _inact
         nxt_str = datetime.fromtimestamp(nxt).strftime('%Y-%m-%d %H:%M') if nxt else '--'
         mqtt.publish(f"{STATE_PREFIX}/{gw_lower}/calstat", json.dumps({
             'mode': mode, 'mode_name': mode_names.get(mode, f'MODE_{mode}'),
@@ -877,7 +881,7 @@ def run_gateway(log):
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/set_mode':
             _lbl = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload or '')
             _lbl = _lbl.strip()
-            _m = {'Całodobowa': 'all-time', 'Dzienna': 'day', 'Nocna': 'night'}.get(_lbl)
+            _m = {'Całodobowa': 'all-time', 'Dzienna': 'day', 'Nocna': 'night', 'Kalendarz': 'calendar'}.get(_lbl)
             if _m and gw_mode.set_mode(_m):
                 _persist_mode_gw(_m)
                 log.info('MODE', '🕹️ tryb bramki -> %s (%s), aktywna=%s' % (_lbl, _m, gw_mode.is_active()))
@@ -1059,7 +1063,7 @@ def run_gateway(log):
         "device": _cal_di, "icon": "mdi:calendar-sync"}, separators=(',', ':')), retain=True)
     # STEP 5: encja trybu PRACY bramki (day/night/all-time) — widoczność supresji offline.
     # state = czytelna etykieta, attr.ga = czy aktywna (0 → offline anomalie wstrzymane).
-    _GM_LABELS = {"all-time": "Całodobowa", "day": "Dzienna", "night": "Nocna"}
+    _GM_LABELS = {"all-time": "Całodobowa", "day": "Dzienna", "night": "Nocna", "calendar": "Kalendarz"}
     _gm_uid = f"lora_{gw_lower}_gateway_mode"
     mqtt.publish(f"{HA_PREFIX}/sensor/{_gm_uid}/config", json.dumps({
         "name": f"GW {gw_id} Tryb pracy bramki", "object_id": _gm_uid, "unique_id": _gm_uid,
@@ -1081,7 +1085,7 @@ def run_gateway(log):
     mqtt.publish(f"{HA_PREFIX}/select/{_gm_sel_uid}/config", json.dumps({
         "name": f"GW {gw_id} Tryb bramki", "object_id": _gm_sel_uid, "unique_id": _gm_sel_uid,
         "command_topic": f"{STATE_PREFIX}/gw/{gw_lower}/cmd/set_mode",
-        "options": ["Całodobowa", "Dzienna", "Nocna"],
+        "options": ["Całodobowa", "Dzienna", "Nocna", "Kalendarz"],
         "state_topic": f"{STATE_PREFIX}/{gw_lower}/gmstat",
         "value_template": "{{ value_json.label | default('Całodobowa') }}",
         "icon": "mdi:theme-light-dark", "device": _cal_di}, separators=(',', ':')), retain=True)
@@ -1875,7 +1879,7 @@ def run_supervisor(log):
     _TQ_L = {'synced': 'Zsynchronizowany ✅', 'ntp': 'Zsynchronizowany (NTP) 🛰️',
              'holdover': 'Holdover 🕓',
              'unsynced': 'Niezsynchronizowany ⚠️', 'stale': 'Przeterminowany ❌'}
-    _GM_L = {'all-time': 'Całodobowa', 'day': 'Dzienna', 'night': 'Nocna'}
+    _GM_L = {'all-time': 'Całodobowa', 'day': 'Dzienna', 'night': 'Nocna', 'calendar': 'Kalendarz'}
 
     def reg_gw_time_entities(gw):
         if gw in gwtime_regd:
@@ -2117,7 +2121,7 @@ def run_supervisor(log):
                 elif a == 'set_mode_g2':                   # 2026-07-18: dropdown trybu bramki (sup->LoRa)
                     _lbl = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload or '')
                     _lbl = _lbl.strip()
-                    _m = {'Całodobowa': 'all-time', 'Dzienna': 'day', 'Nocna': 'night'}.get(_lbl)
+                    _m = {'Całodobowa': 'all-time', 'Dzienna': 'day', 'Nocna': 'night', 'Kalendarz': 'calendar'}.get(_lbl)
                     if _m:
                         log.info('MODE', '🕹️ set_mode G2 -> %s (%s) [sup->LoRa]' % (_lbl, _m))
                         send_to_all({'t': 'set_mode', 'g': 'G2', 'm': _m})
@@ -2316,7 +2320,7 @@ def run_supervisor(log):
     mqtt.publish(f"{HA_PREFIX}/select/{_gm_sel_uid}/config", json.dumps({
         "name": "GW G2 Tryb bramki", "object_id": _gm_sel_uid, "unique_id": _gm_sel_uid,
         "command_topic": f"{STATE_PREFIX}/supervisor/cmd/set_mode_g2",
-        "options": ["Całodobowa", "Dzienna", "Nocna"],
+        "options": ["Całodobowa", "Dzienna", "Nocna", "Kalendarz"],
         "state_topic": f"{STATE_PREFIX}/gw/g2/timestat",
         "value_template": "{{ value_json.mode | default('Całodobowa') }}",
         "icon": "mdi:theme-light-dark",

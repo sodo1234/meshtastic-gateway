@@ -23,6 +23,7 @@ class GatewayMode:
     def __init__(self, operating_mode="all-time", day_start="06:00", day_end="20:00",
                  lat=None, lon=None, clock=time.time, logger=None):
         self.mode = (operating_mode or "all-time").lower()
+        self.cal_active = None    # 2026-07-19 (#9): tryb "calendar" — active wg harmonogramu (ustawia harness calendar_loop)
         self.day_start = self._parse_hm(day_start, 6 * 60)
         self.day_end = self._parse_hm(day_end, 20 * 60)
         self.lat = lat
@@ -93,14 +94,23 @@ class GatewayMode:
         now = self.clock() if now is None else now
         if self.mode == "all-time":
             return True
+        if self.mode == "calendar":
+            return True if self.cal_active is None else bool(self.cal_active)
         day = self._is_daytime(now)
         return day if self.mode == "day" else (not day)
+
+    def offline_active(self, now=None):
+        # #9: calendar off-hours = urzadzenia ZASILONE -> offline ZOSTAJE (BMS). day/night = bez
+        # zasilania -> offline wstrzymany. Leak/temp nie sa bramkowane trybem (zawsze leca).
+        if self.mode == "calendar":
+            return True
+        return self.is_active(now)
 
     def set_mode(self, mode):
         """Zmiana trybu w RUNTIME (dashboard/LoRa). Zwraca True gdy prawidlowy i ustawiony.
         Wplyw na is_active() -> gating raportowania stanow (GatewayData.active_fn) natychmiast."""
         m = (mode or "").lower()
-        if m not in ("all-time", "day", "night"):
+        if m not in ("all-time", "day", "night", "calendar"):
             if self.log:
                 self.log.warn("MODE", "set_mode: nieznany tryb %r" % (mode,))
             return False
@@ -110,8 +120,8 @@ class GatewayMode:
         return True
 
     def state(self, now=None):
-        """Dla HB diag_fn: tryb + czy aktywna (supervisor czyta do supresji)."""
-        return {"gm": self.mode, "ga": 1 if self.is_active(now) else 0}
+        """Dla HB diag_fn: tryb + flaga OFFLINE-active (#9: ga = offline_active)."""
+        return {"gm": self.mode, "ga": 1 if self.offline_active(now) else 0}
 
     def day_info(self, now=None):
         """Pora dnia + okno świt/zmierzch (minuty od północy, czas LOKALNY) — do wizualizacji
