@@ -28,7 +28,7 @@ class GatewayData:
                  mon_interval=30, pri_interval=10, max_payload=150,
                  thresholds=None, send_spacing=0,
                  report_interval=0, offline_after=None, offline_after_fn=None,
-                 on_avail=None, report_full_every=1, avail_blob_fn=None):
+                 on_avail=None, report_full_every=1, avail_blob_fn=None, pri_repeat=2):
         self.gw_id = gw_id
         self.disc = discovery          # GatewayDiscovery — short_ids, is_monitored, devices
         self.lora = lora
@@ -89,7 +89,7 @@ class GatewayData:
         self.mon_batch = Batcher(gw_id, self._send, interval=mon_interval,
                                  max_payload=max_payload, tag="MON", logger=logger)
         self.pri_batch = Batcher(gw_id, self._send, interval=pri_interval,
-                                 max_payload=max_payload, tag="PRI", logger=logger)
+                                 max_payload=max_payload, tag="PRI", logger=logger, repeat=pri_repeat)  # 2026-07-19: retry P1
 
     # ── lifecycle ───────────────────────────────────────
     def start(self):
