@@ -355,36 +355,6 @@
                }
               ]
              }
-            },
-            {
-             "type": "custom:button-card",
-             "template": "lora_btn",
-             "name": "CZAS",
-             "icon": "mdi:clock-sync",
-             "tap_action": {
-              "action": "call-service",
-              "service": "button.press",
-              "service_data": {
-               "entity_id": "button.lora_g2_sync_time"
-              }
-             },
-             "styles": {
-              "card": [
-               {
-                "border": "1px solid #164e63"
-               }
-              ],
-              "icon": [
-               {
-                "color": "#22d3ee"
-               }
-              ],
-              "name": [
-               {
-                "color": "#22d3ee"
-               }
-              ]
-             }
             }
            ]
           },
@@ -455,39 +425,6 @@
                }
               ]
              }
-            },
-            {
-             "type": "custom:button-card",
-             "template": "lora_btn",
-             "name": "T-OUT",
-             "icon": "mdi:timer-cog",
-             "tap_action": {
-              "action": "call-service",
-              "service": "button.press",
-              "service_data": {
-               "entity_id": "button.lora_g2_lora_wy_lij_timeout"
-              },
-              "confirmation": {
-               "text": "Wysłać TIMEOUT?"
-              }
-             },
-             "styles": {
-              "card": [
-               {
-                "border": "1px solid #14532d"
-               }
-              ],
-              "icon": [
-               {
-                "color": "#4ade80"
-               }
-              ],
-              "name": [
-               {
-                "color": "#4ade80"
-               }
-              ]
-             }
             }
            ]
           },
@@ -531,63 +468,29 @@
             {
              "type": "custom:button-card",
              "template": "lora_btn",
-             "name": "CFG",
-             "icon": "mdi:cog-sync",
-             "tap_action": {
-              "action": "call-service",
-              "service": "mqtt.publish",
-              "service_data": {
-               "topic": "lora/params/supervisor/cmd/g2/send_config",
-               "payload": ""
-              }
-             },
-             "styles": {
-              "card": [
-               {
-                "border": "1px solid #14532d"
-               }
-              ],
-              "icon": [
-               {
-                "color": "#4ade80"
-               }
-              ],
-              "name": [
-               {
-                "color": "#4ade80"
-               }
-              ]
-             }
-            },
-            {
-             "type": "custom:button-card",
-             "template": "lora_btn",
-             "name": "PROGI",
-             "icon": "mdi:tune-vertical",
+             "name": "CZAS",
+             "icon": "mdi:clock-sync",
              "tap_action": {
               "action": "call-service",
               "service": "button.press",
               "service_data": {
-               "entity_id": "button.lora_g2_lora_wy_lij_progi"
-              },
-              "confirmation": {
-               "text": "Wysłać PROGI?"
+               "entity_id": "button.lora_g2_sync_time"
               }
              },
              "styles": {
               "card": [
                {
-                "border": "1px solid #14532d"
+                "border": "1px solid #164e63"
                }
               ],
               "icon": [
                {
-                "color": "#4ade80"
+                "color": "#22d3ee"
                }
               ],
               "name": [
                {
-                "color": "#4ade80"
+                "color": "#22d3ee"
                }
               ]
              }
@@ -9227,7 +9130,9 @@
          "icon": "mdi:timer",
          "tap_action": {
           "action": "more-info"
-         }
+         },
+         "state_display": "[[[ var up=parseInt(entity.state); if(isNaN(up))return entity.state; up+=Math.floor((Date.now()-new Date(entity.last_updated).getTime())/1000); var h=Math.floor(up/3600),m=Math.floor(up%3600/60); return h+'h '+m+'m'; ]]]",
+         "triggers_update": "all"
         }
        ]
       }
