@@ -355,6 +355,36 @@
                }
               ]
              }
+            },
+            {
+             "type": "custom:button-card",
+             "template": "lora_btn",
+             "name": "CZAS",
+             "icon": "mdi:clock-sync",
+             "tap_action": {
+              "action": "call-service",
+              "service": "button.press",
+              "service_data": {
+               "entity_id": "button.lora_g2_sync_time"
+              }
+             },
+             "styles": {
+              "card": [
+               {
+                "border": "1px solid #164e63"
+               }
+              ],
+              "icon": [
+               {
+                "color": "#22d3ee"
+               }
+              ],
+              "name": [
+               {
+                "color": "#22d3ee"
+               }
+              ]
+             }
             }
            ]
           },
@@ -425,6 +455,39 @@
                }
               ]
              }
+            },
+            {
+             "type": "custom:button-card",
+             "template": "lora_btn",
+             "name": "T-OUT",
+             "icon": "mdi:timer-cog",
+             "tap_action": {
+              "action": "call-service",
+              "service": "button.press",
+              "service_data": {
+               "entity_id": "button.lora_g2_lora_wy_lij_timeout"
+              },
+              "confirmation": {
+               "text": "Wysłać TIMEOUT?"
+              }
+             },
+             "styles": {
+              "card": [
+               {
+                "border": "1px solid #14532d"
+               }
+              ],
+              "icon": [
+               {
+                "color": "#4ade80"
+               }
+              ],
+              "name": [
+               {
+                "color": "#4ade80"
+               }
+              ]
+             }
             }
            ]
           },
@@ -476,6 +539,39 @@
               "service_data": {
                "topic": "lora/params/supervisor/cmd/g2/send_config",
                "payload": ""
+              }
+             },
+             "styles": {
+              "card": [
+               {
+                "border": "1px solid #14532d"
+               }
+              ],
+              "icon": [
+               {
+                "color": "#4ade80"
+               }
+              ],
+              "name": [
+               {
+                "color": "#4ade80"
+               }
+              ]
+             }
+            },
+            {
+             "type": "custom:button-card",
+             "template": "lora_btn",
+             "name": "PROGI",
+             "icon": "mdi:tune-vertical",
+             "tap_action": {
+              "action": "call-service",
+              "service": "button.press",
+              "service_data": {
+               "entity_id": "button.lora_g2_lora_wy_lij_progi"
+              },
+              "confirmation": {
+               "text": "Wysłać PROGI?"
               }
              },
              "styles": {
@@ -9154,7 +9250,8 @@
          "entity": "sensor.supervisor_czas_zrodlo_sync",
          "name": "SUP",
          "icon": "mdi:clock-star-four-points",
-         "state_display": "[[[ var p=String(entity.state||'').split(':'); return p.length>=3 ? p[0]+':'+p[1] : entity.state; ]]]"
+         "state_display": "[[[ var s=String(entity.state||''); var p=s.split(':'); if(p.length<2)return s; var lu=new Date(entity.last_updated).getTime(); var d=new Date(); d.setHours(+p[0],+p[1],+(p[2]||0),0); var t=new Date(d.getTime()+(Date.now()-lu)); return ('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2); ]]]",
+         "triggers_update": "all"
         },
         {
          "type": "custom:button-card",
@@ -9162,7 +9259,8 @@
          "entity": "sensor.lora_g2_czas_bramki",
          "name": "G2",
          "icon": "mdi:clock-outline",
-         "state_display": "[[[ var p=String(entity.state||'').split(':'); return p.length>=3 ? p[0]+':'+p[1] : entity.state; ]]]"
+         "state_display": "[[[ var s=String(entity.state||''); var p=s.split(':'); if(p.length<2)return s; var lu=new Date(entity.last_updated).getTime(); var d=new Date(); d.setHours(+p[0],+p[1],+(p[2]||0),0); var t=new Date(d.getTime()+(Date.now()-lu)); return ('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2); ]]]",
+         "triggers_update": "all"
         },
         {
          "type": "custom:button-card",
