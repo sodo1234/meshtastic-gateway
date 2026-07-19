@@ -1,0 +1,21 @@
+# Antenna USB stall watchdog (#1) — instalacja:
+#   sudo cp ~/meshtastic/antenna_watchdog.py /home/td/meshtastic/   # (już tam jest)
+#   sudo cp ~/meshtastic/antenna-watchdog.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now antenna-watchdog
+#   journalctl -u antenna-watchdog -f            # podgląd
+#
+# Wymaga root (unbind/bind USB + journalctl -k). Reset dotyka TYLKO CP2102 (idVendor 10c4).
+[Unit]
+Description=Meshtastic antenna USB stall watchdog (CP210x urb -32 auto-reset)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/td/meshtastic/antenna_watchdog.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
