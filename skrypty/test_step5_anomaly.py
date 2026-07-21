@@ -145,7 +145,10 @@ def run_gateway(log):
         monitored_names=CONFIG.get('monitored', []),
         priority_names=CONFIG.get('priority_devices', []),
         vio_config=vio_config, lora=lora, logger=log,
-        max_payload=CONFIG.get('discovery', {}).get('max_payload', 150))
+        max_payload=CONFIG.get('discovery', {}).get('max_payload', 150),
+        # STABLE SID: trwała mapa nazwa→sid per-bramka (koniec dryfu sidów przy zmianie składu).
+        sid_persist_path=CONFIG.get('state', {}).get(
+            'sid_map_path', f'/tmp/lora_sid_map_{gw_id.lower()}.json'))
 
     # HB: monitored WYŁĄCZNY (bez priority). is_monitored() liczy priority jako monitored
     # (→ mon=6); tu liczymy mon=monitored\priority (=4), pri=priority (=2), dev=total (=7).
@@ -334,6 +337,9 @@ def run_gateway(log):
         v = param_sync.get(key)
         return v * 60 if v else None                 # None → fallback skalar offline_after
     data.offline_after_fn = _offline_after_for
+    # 2026-07-21: P3 „Raportowanie temp" [min] → interwał `b`-heartbeatu NA ŻYWO (dotąd martwe
+    # pokrętło — report_interval był sztywny 900s). Strojenie kadencji z dashboardu bez restartu.
+    data.report_interval_fn = lambda: (param_sync.get('P3') or 15) * 60
 
     # ── F2: SupervisorLinkProbe — aktywny ping/pong sup_ping/sup_pong (siatka bezpieczeństwa
     # na ciszę modelu pasywnego z CLAUDE.md). P4/T4/PR czytane NA ŻYWO z param_sync (strojenie
@@ -1782,6 +1788,10 @@ def run_supervisor(log):
             "state_topic": f"{STATE_PREFIX}/{gl}/{safe}/state",
             "value_template": "{{ 'ON' if not value_json.contact else 'OFF' }}",
             "device_class": "opening",
+            # force_update: contact STAŁY (drzwi zamknięte) → bez tego kafel door zamarza mimo
+            # świeżego `b` (last_reported stoi). reg_contact_fix NADPISUJE reg_binary (ostatni
+            # wygrywa) więc force_update z ha_entities tu nie dociera — dodane wprost. 2026-07-21.
+            "force_update": True,
             "device": {"identifiers": [f"lora_{gl}_{safe}"],
                        "via_device": f"lora_gateway_{gl}"}}, separators=(',', ':')),
             retain=True)
@@ -1926,7 +1936,7 @@ def run_supervisor(log):
     # ── Dispatcher (LoRa RX from gateways) ──
     dispatcher = Dispatcher(logger=log)
 
-    psync_guard = {'ph': None, 'ts': 0}                  # debounce żądań sync parametrów
+    psync_guard = {}                                     # gw → {'ph','ts'} — debounce auto-heal parametrów (per-bramka)
     synced_gw = set()                                    # #2: bramki którym wysłano sync w tej sesji
     time_sync_guard = {}                                 # gw → ts ostatniego wysłanego sync (debounce)
     gw_last_up = {}                                       # #2: gw → ostatni uptime (wykrycie restartu bramki)
@@ -1983,11 +1993,22 @@ def run_supervisor(log):
         ph = d.get('ph')                                 # STEP 17: hash parametrów (wskaźnik driftu)
         if ph and psync is not None and ph != psync.params_hash():
             now = time.time()
-            if psync_guard['ph'] != ph or now - psync_guard['ts'] > 120:
-                psync_guard['ph'] = ph; psync_guard['ts'] = now
-                # model v38: pull dzieje się na starcie i przyciskiem Send — NIE auto,
-                # bo auto-pull klobbersował lokalne edycje przed naciśnięciem Send.
-                log.debug('PARAM', f'⚙️ drift hash bramki={ph} ≠ mirror (Send aby zsync.)')
+            g = psync_guard.setdefault(gw, {'ph': None, 'ts': 0.0})
+            if g['ph'] != ph or now - g['ts'] > 300:      # debounce per-gw (5 min)
+                g['ph'] = ph; g['ts'] = now
+                # AUTO-HEAL (2026-07-21): dryf mirror≠master zwykle = zgubiony `param_upd` na
+                # stratnym LoRa (obserwacja 19.07: 4.5h rozjazdu timeoutów). Mirror ciągnie
+                # autorytatywny zestaw od mastera przez params_req→push_all (idempotentne, 1 pakiet).
+                # NIE robimy tego gdy user ma NIEWYSŁANĄ lokalną edycję na supervisorze — inaczej
+                # pull zclobbersowałby ją przed Send (pierwotny powód wyłączenia auto-pull). Ten
+                # przypadek dalej wymaga ręcznego Send (flaga has_pending_local_edit).
+                if psync.has_pending_local_edit():
+                    log.debug('PARAM', f'⚙️ [{gw}] drift {ph}≠mirror, ale lokalna edycja '
+                              f'niewysłana → czekam na Send (bez auto-heal)')
+                else:
+                    log.info('PARAM', f'⚙️ [{gw}] drift {ph}≠mirror → auto-heal params_req '
+                             f'(pull od mastera)')
+                    psync.request()
         # #9: KOMPLET hashy + zgodności w JEDNYM topicu (na końcu — wszystkie flagi policzone).
         # disc: gw_synced (mapa zarejestrowana), param: mirror, cal: expected, anomaly: gw_ah_sync.
         if gw:

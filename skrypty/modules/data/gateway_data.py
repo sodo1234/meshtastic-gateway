@@ -42,6 +42,11 @@ class GatewayData:
         # -> NIE wysylaj stanow urzadzen (`b`) do supervisora. HB leci dalej (ga=0 -> sup wstrzymuje
         # offline). Ustawiane z harnessu po utworzeniu GatewayMode (data.active_fn = gw_mode.is_active).
         self.active_fn = None
+        # 2026-07-21: interwał raportowania czytany NA ŻYWO (P3 „Raportowanie temp" z param_sync).
+        # callable()->minuty|sekundy? -> zwraca SEKUNDY. None => skalar report_interval (bez zmian).
+        # Late-bind z harnessu po utworzeniu ParamSync (wzorzec jak offline_after_fn). Strojenie
+        # kadencji `b`-heartbeatu z dashboardu bez restartu (dotąd P3 było martwe — sztywne 900s).
+        self.report_interval_fn = None
         self._avail_pub = {}           # {dev: bool} ostatnio opublikowana dostępność (dedup)
         self._z2m_avail = {}           # {dev: bool} z2m native availability (autorytet gdy włączone)
         self.thresholds = thresholds
@@ -150,6 +155,11 @@ class GatewayData:
         # urządzeń w 1 pakiet). Poprzednio force=True + brak strażnika zmiany → z2m publikujący
         # availability 199 urządzeń (retained/re-eval) = 199 osobnych pakietów `b` [[sid,{a:0}]].
         if self._alive.get(dev) != online:
+            # patch #4: gdy bramka nieaktywna, NIE zgłaszaj availability non-monitored (lighting
+            # powered-down → bez fałszywego offline). Monitored (temp/hum/leak/door) zawsze.
+            if (self.active_fn is not None and not self.active_fn()) and not self.disc.is_monitored(dev):
+                self._alive[dev] = online          # śledź stan lokalnie, ale nie wysyłaj do supervisora
+                return
             self._enqueue(dev, full, force=False, available=online)
             if self.log:
                 self.log.info('DATA', f"{'🟢' if online else '💀'} {dev} z2m availability={p}")
@@ -209,18 +219,33 @@ class GatewayData:
             self.mon_batch.add(sid, short, force_flush=force)
 
     # ── periodic report + gw-side liveness (#7/#8) ──────
+    def _report_iv(self):
+        """Interwał raportowania [s] — z report_interval_fn (P3 z dashboardu, NA ŻYWO) jeśli
+        podano, inaczej skalar self.report_interval. Podłoga 60s (P3 min=1min) — chroni LoRa
+        przed za częstym `b`-heartbeatem 199 urządzeń."""
+        if self.report_interval_fn:
+            try:
+                v = self.report_interval_fn()
+                if v:
+                    return max(60.0, float(v))
+            except Exception:
+                pass
+        return self.report_interval
+
     def _report_loop(self):
-        """Co report_interval wyślij `b` dla każdego monitored urządzenia:
+        """Co _report_iv() wyślij `b` dla każdego monitored urządzenia:
         available=1 + ostatnie wartości (heartbeat danych, #8) gdy z2m świeży,
         available=0 (#7 martwy/zacichły) gdy cisza > offline_after po grace."""
         # Pierwszy tick PO grace (60s) — szybko ustala availability po starcie/restarcie
-        # (inaczej 15-min okno bez heartbeatu dostępności). Potem co report_interval.
-        first_grace = min(60.0, self.report_interval)
-        waited = self.report_interval - first_grace
+        # (inaczej pełne okno bez heartbeatu dostępności). Potem co _report_iv() (P3 na żywo).
+        iv = self._report_iv()
+        first_grace = min(60.0, iv)
+        waited = iv - first_grace
         while self._report_running:
             time.sleep(1.0)
             waited += 1.0
-            if waited < self.report_interval:
+            iv = self._report_iv()                       # live: zmiana P3 skraca/wydłuża następny tick
+            if waited < iv:
                 continue
             waited = 0.0
             try:
@@ -247,9 +272,13 @@ class GatewayData:
         event-driven (door/switch) inaczej nigdy nie dostają update'u availability → supervisor
         utyka. Dla non-monitored wysyłamy TYLKO bit `a:` (puste caps, ~minimalny payload — szanuje
         LoRa), pełne wartości tylko dla monitored (heartbeat danych #8)."""
-        if self.active_fn is not None and not self.active_fn():
-            return                     # tryb bramki nieaktywny -> brak heartbeatu stanow do supervisora
         now = time.time()
+        # 2026-07-21 (patch #4): gating trybem PER-DEVICE zamiast blanket-return. Bramka nieaktywna
+        # (np. night w dzień): NON-MONITORED (lighting powered-down) pomijamy — bez fałszywego offline
+        # (intencja gate'u 2026-07-18). MONITORED — w tym priority (is_monitored łapie leak/door) —
+        # raportują ZAWSZE. Temp/hum/leak/door to BMS: monitoring nie może zamarzać (mode.py:104
+        # „Leak/temp nie sa bramkowane trybem"). Naprawia leak/door + temp/hum nie-aktualizujące się.
+        inactive = (self.active_fn is not None and not self.active_fn())
         # (d) pełny sweep co report_full_every-ty raz; pomiędzy — tylko zmiany (delta).
         # KOLEJNOŚĆ: sprawdź PRZED inkrementem → PIERWSZY sweep po starcie jest FULL (blob dla
         # wszystkich zamiast 199×`b`, bo przy starcie _alive puste = changed dla wszystkich).
@@ -262,6 +291,8 @@ class GatewayData:
         blob = {}
         for dev, info in list(self.disc.devices.items()):
             monitored = self.disc.is_monitored(dev)
+            if inactive and not monitored:
+                continue               # patch #4: nieaktywna + non-monitored → pomiń (bez fałszywego offline)
             oa = self._oa_for(info.get('type', 'sensor'))   # per-typ T1/T2/T3 (lub skalar)
             ts = self.last_msg_ts.get(dev)
             seen = ts is not None
@@ -352,8 +383,9 @@ class GatewayData:
         """Batcher flush callback. Paced through a shared TX queue when
         send_spacing>0 so the two batchers never burst into each other and the
         LoRa cooldown is honored; synchronous (direct) otherwise (tests)."""
-        if self.active_fn is not None and not self.active_fn():
-            return                     # tryb bramki nieaktywny -> nie wysylaj stanow do supervisora
+        # 2026-07-21 (patch #4): usunięto blanket-gate trybem — gating jest PER-DEVICE w
+        # report_liveness (non-monitored pominięte gdy nieaktywna). on_z2m enqueue'uje tylko
+        # is_monitored (monitored+priority), więc do _send trafiają wyłącznie te, co mają lecieć zawsze.
         if self.send_spacing > 0:
             self._out.append(packet)
         else:

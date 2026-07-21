@@ -206,6 +206,24 @@ def test_f3_gateway_topics_unchanged():
     print("✅ F3: gateway topics niezmienione (lora/params/gateway/set/P1)")
 
 
+def test_auto_heal_dirty_guard():
+    """AUTO-HEAL (2026-07-21): flaga has_pending_local_edit bramkuje auto-heal pull.
+    supervisor: local set → dirty; param_upd (confirm) → czyste. gateway: zawsze czyste."""
+    # gateway (master) — nigdy nie ma „niewysłanej edycji" (jego edycja JEST prawdą)
+    gw, _, _, _ = _sync("gateway")
+    gw.handle_local_set("T2", 45)
+    assert gw.has_pending_local_edit() is False, "gateway nie ma pending-edit (jest masterem)"
+    # supervisor (mirror) — edycja lokalna ustawia dirty (blokuje auto-heal do Send/confirm)
+    sup, _, _, _ = _sync("supervisor")
+    assert sup.has_pending_local_edit() is False, "świeży mirror — brak dirty"
+    sup.handle_local_set("T2", 45)
+    assert sup.has_pending_local_edit() is True, "lokalna edycja mirrora → dirty (blokuj auto-heal)"
+    # master potwierdza (param_upd) → dirty wyczyszczone → auto-heal znów dozwolony
+    sup.handle_remote({"t": "param_upd", "g": "G1", "d": {"T2": 45}})
+    assert sup.has_pending_local_edit() is False, "confirm mastera czyści dirty"
+    print("✅ auto-heal: dirty-guard set on mirror edit, cleared on confirm, off for master")
+
+
 def test_device_names_by_role():
     """Konwencja nazw urządzenia różni role, bez zmiany uid ani topiców F3."""
     from modules.params import ParamSync
@@ -227,7 +245,8 @@ if __name__ == "__main__":
              test_gateway_applies_proposal_and_confirms, test_supervisor_mirrors_confirmation,
              test_request_and_push_all, test_params_hash, test_on_mqtt_set_parsing,
              test_f2_params_present_clamped_grouped, test_f3_two_supervisor_instances_distinct,
-             test_f3_gateway_topics_unchanged, test_device_names_by_role]
+             test_f3_gateway_topics_unchanged, test_auto_heal_dirty_guard,
+             test_device_names_by_role]
     failed = 0
     for t in tests:
         try:
