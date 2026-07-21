@@ -250,6 +250,12 @@ class HAEntities:
                     "name": f"{name.title()}", "object_id": uid, "unique_id": uid,
                     "state_topic": st,
                     "value_template": f"{{{{ value_json.{name} | default('') }}}}",
+                    # force_update: temp/humi/bateria bywają STAŁE między raportami (np. 26.8°C,
+                    # 100%). Bez tego MQTT sensor nie bumpuje last_changed/last_reported przy tej
+                    # samej wartości → kafel „zamarza" (last_seen/„X temu" stoi mimo świeżego
+                    # `b`-heartbeatu co P3). force_update=True → każdy raport odświeża kafel.
+                    # Ten sam fix co encja LQI (reg_gw_lqi w harnessie). 2026-07-21.
+                    "force_update": True,
                     "unit_of_measurement": unit, "device": di})
         uid_ls = f"lora_{gl}_{safe}_last_seen"
         self._pub("sensor", uid_ls, {
@@ -281,12 +287,17 @@ class HAEntities:
                     "name": f"{name.replace('_',' ').title()}", "object_id": uid,
                     "unique_id": uid, "state_topic": st,
                     "value_template": f"{{{{ 'ON' if value_json.{name} else 'OFF' }}}}",
+                    # force_update: contact/water_leak/occupancy/smoke bywają STAŁE (drzwi zamknięte,
+                    # brak wycieku) → bez tego kafel leak/door zamarza (last_reported stoi mimo
+                    # świeżego `b`). Ten sam fix co temp/humi (reg_sensor). 2026-07-21.
+                    "force_update": True,
                     "device_class": dc, "device": di})
         if 'b' in caps:
             uid = f"lora_{gl}_{safe}_batt"
             self._pub("sensor", uid, {
                 "name": "Battery", "object_id": uid, "unique_id": uid,
                 "state_topic": st, "value_template": "{{ value_json.battery | default('') }}",
+                "force_update": True,        # bateria stała (np. 100%) → bez tego kafel zamarza (patrz reg_sensor)
                 "unit_of_measurement": "%", "device_class": "battery", "device": di})
         uid_av = f"lora_{gl}_{safe}_available"
         self._pub("binary_sensor", uid_av, {

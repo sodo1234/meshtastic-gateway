@@ -15,6 +15,7 @@ Functional owners: gateway applies P1/P2/P3 (stagnation); supervisor applies T1/
 import hashlib
 import json
 import os
+import time
 
 
 # key → entity/clamp/display spec
@@ -85,6 +86,10 @@ class ParamSync:
         self.ha = ha_prefix
         self.sp = state_prefix
         self.on_change = on_change       # callable(key, value) — apply to mechanism
+        # supervisor: >0 = user zmienił parametr lokalnie i master jeszcze nie potwierdził
+        # (param_upd). Blokuje auto-heal pull (harness), by nie zclobberować niewysłanej edycji
+        # przed naciśnięciem Send — pierwotny powód, dla którego auto-pull był wyłączony.
+        self._dirty_ts = 0.0
         self.values = {k: PARAM_DEFS[k]["default"] for k in PARAM_ORDER}
         # seed: wartości startowe z config (np. progi anomalii) — nadpisują DEFAULT, ale
         # persisted (edycje usera z dashboardu) wygrywają (kolejność: default→seed→_load).
@@ -206,6 +211,8 @@ class ParamSync:
         changed = self.values.get(key) != val
         self.values[key] = val
         self._save(); self._publish_state(key)
+        if changed and self.role == "supervisor":
+            self._dirty_ts = time.time()   # niewysłana edycja mirrora → blokuj auto-heal do Send/confirm
         if changed and self.on_change:
             self.on_change(key, val)
         if self.log:
@@ -273,6 +280,7 @@ class ParamSync:
                     self.values[key] = self._clamp(key, val)
                     if self.on_change:
                         self.on_change(key, self.values[key])
+            self._dirty_ts = 0.0           # master się odezwał → edycja rozstrzygnięta, auto-heal znów OK
             self._save(); self._publish_states()
             if self.log:
                 self.log.info('PARAM', f"⚙️ param_upd {d} → mirror zaktualizowany")
@@ -302,6 +310,12 @@ class ParamSync:
 
     def get(self, key):
         return self.values.get(key)
+
+    def has_pending_local_edit(self):
+        """Supervisor: user zmienił parametr lokalnie i master jeszcze nie potwierdził
+        (param_upd). True → harness NIE robi auto-heal pull (żeby nie zclobberować edycji
+        przed Send). Czyszczone przez Send→param_upd (handle_remote) lub przy tworzeniu mirrora."""
+        return self.role == "supervisor" and self._dirty_ts > 0.0
 
     def params_hash(self):
         """Krótki hash wszystkich wartości — do porównania w HB (sync gdy ≠)."""

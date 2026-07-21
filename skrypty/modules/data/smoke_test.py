@@ -203,6 +203,49 @@ def test_gateway_periodic_liveness():
     print("✅ GatewayData periodic report + gw-side liveness (available 1→0)")
 
 
+def test_report_interval_live_p3():
+    """2026-07-21: report_interval_fn (P3 z dashboardu) nadpisuje interwał NA ŻYWO, podłoga 60s."""
+    from modules.data import GatewayData
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, report_interval=900)
+    assert gd._report_iv() == 900                    # brak fn → skalar (bez zmian)
+    p3 = {"min": 5}                                   # udawany param P3 [min]
+    gd.report_interval_fn = lambda: p3["min"] * 60
+    assert gd._report_iv() == 300.0                   # P3=5min → 300s (na żywo)
+    p3["min"] = 1
+    assert gd._report_iv() == 60.0                    # P3=1min → 60s
+    p3["min"] = 0                                      # zły/0 → podłoga (chroni LoRa)
+    assert gd._report_iv() == 900                     # fn zwraca 0 → fallback skalar
+    gd.report_interval_fn = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    assert gd._report_iv() == 900                     # wyjątek fn → fallback, nie crash
+    print("✅ report_interval_fn (P3) live override + podłoga 60s + fallback na błąd")
+
+
+def test_patch4_inactive_gating_per_device():
+    """patch #4: bramka NIEAKTYWNA → monitored (temp/hum) + priority (leak/door) raportują ZAWSZE,
+    non-monitored (lighting switch) pominięte (bez fałszywego offline). Blanket-gate usunięty."""
+    from modules.data import GatewayData
+    import json as _j
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    disc.is_monitored = lambda dev: dev != "Test 1"      # Test 1 = lighting, non-monitored
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, report_interval=1)
+    gd.active_fn = lambda: False                          # bramka NIEAKTYWNA (np. night w dzień)
+    gd._start_ts = time.time() - 1000
+    for d in disc.devices:                                # wszystkie żywe wg z2m native
+        gd._z2m_avail[d] = True
+        gd.states[d] = {"temperature": 22.0, "humidity": 40, "battery": 100,
+                        "water_leak": False, "state": "ON"}
+    gd.report_liveness()
+    sids = set()
+    for fr in lora.sent:
+        for e in _j.loads(fr).get("d", []):
+            sids.add(e[0])
+    assert 0 in sids and 1 in sids, "monitored temp muszą lecieć gdy nieaktywna (%s)" % sids
+    assert 2 in sids, "priority leak musi lecieć gdy nieaktywna (%s)" % sids
+    assert 3 not in sids, "non-monitored lighting NIE może lecieć gdy nieaktywna (%s)" % sids
+    print("✅ patch #4: nieaktywna → monitored+priority lecą, non-monitored (lighting) pominięty")
+
+
 def test_gateway_per_type_offline():
     """FIX 2026-06-15: offline_after_fn → timeout per typ (T1/T2/T3). Przy tej samej ciszy
     sensor (krótki timeout) idzie offline, a binary (długi) zostaje online. fn→None = fallback skalar."""
@@ -324,7 +367,8 @@ if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
-             test_gateway_periodic_liveness, test_gateway_per_type_offline,
+             test_gateway_periodic_liveness, test_report_interval_live_p3,
+             test_patch4_inactive_gating_per_device, test_gateway_per_type_offline,
              test_supervisor_handle_b_merge, test_supervisor_apply_st, test_end_to_end,
              test_avail_preserves_last_seen]
     failed = 0

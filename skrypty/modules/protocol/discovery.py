@@ -65,7 +65,7 @@ class GatewayDiscovery:
     """Gateway side: parses Z2M, builds compact db, sends over LoRa."""
 
     def __init__(self, gw_id, monitored_names, priority_names, vio_config,
-                 lora, logger=None, max_payload=150):
+                 lora, logger=None, max_payload=150, sid_persist_path=None):
         self.gw_id = gw_id
         self.monitored_names = monitored_names
         self.priority_names = priority_names
@@ -77,6 +77,13 @@ class GatewayDiscovery:
         self.short_ids = {}
         self.short_rev = {}
         self.disc_hash = ""
+        # STABLE SID (2026-07-21): trwała mapa nazwa→sid (persist). sid NIE jest już pozycją w
+        # sorted() — dodanie/usunięcie urządzenia nie przesuwa sidów pozostałych (dryf łamał mapę
+        # supervisora po restarcie bramki, aż dojdzie wolny `db`). 1. uruchomienie = identyczne sidy
+        # co sorted (lock-in, zero zerwania), potem stabilne. Nowe → najniższy wolny sid.
+        self.sid_persist_path = sid_persist_path
+        self._sid_persist = {}       # {name: sid} — trwałe
+        self._load_sid_map()
         # (a) gdy ustawione: send_discovery wysyła MAPĘ jako skompresowany blob (ReliableTransfer
         # kind='devmap') zamiast pętli `db` 2-dev/pakiet (199 dev: 94 pkt → ~10 chunków). Wpięcie:
         # discovery.map_send_fn = lambda payload: rt.start_send(gw_id,'devmap',payload). None = stary db.
@@ -120,9 +127,47 @@ class GatewayDiscovery:
         # Override 2026-06-25: sid dla WSZYSTKICH urządzeń bramki (anomalie muszą działać dla
         # każdego, też nie-monitored / nie-autodiscover). Identyfikacja po nazwie u supervisora
         # przez db (sid→nazwa). Dane (batch t/h) nadal tylko monitored — gate w GatewayData.
-        all_devs = sorted(self.devices.keys())
-        self.short_ids = {name: idx for idx, name in enumerate(all_devs)}
-        self.short_rev = {idx: name for name, idx in self.short_ids.items()}
+        # STABLE SID (2026-07-21): sid trwały per-nazwa (persist), NIE pozycja w sorted(). Istniejące
+        # urządzenia ZACHOWUJĄ sid; nowe dostają najniższy wolny (sorted tylko dla determinizmu
+        # przydziału NOWYCH). Reserved sidy usuniętych zostają (nie reuse), by powracające nie kradły
+        # cudzego sida. Koniec dryfu sidów przy zmianie składu (łamał mapę supervisora).
+        used = set(self._sid_persist.values())
+        changed = False
+        for name in sorted(self.devices.keys()):
+            if name not in self._sid_persist:
+                sid = 0
+                while sid in used:
+                    sid += 1
+                self._sid_persist[name] = sid
+                used.add(sid)
+                changed = True
+        self.short_ids = {name: self._sid_persist[name] for name in self.devices}
+        self.short_rev = {sid: name for name, sid in self.short_ids.items()}
+        if changed:
+            self._save_sid_map()
+
+    def _load_sid_map(self):
+        if not self.sid_persist_path or not os.path.exists(self.sid_persist_path):
+            return
+        try:
+            raw = json.load(open(self.sid_persist_path, encoding="utf-8"))
+            self._sid_persist = {k: int(v) for k, v in raw.items()}
+            if self.log:
+                self.log.info('DISC', f'💾 sid map: {len(self._sid_persist)} nazw→sid (stabilne)')
+        except Exception as e:
+            if self.log:
+                self.log.warn('DISC', f'sid map load: {e}')
+            self._sid_persist = {}
+
+    def _save_sid_map(self):
+        if not self.sid_persist_path:
+            return
+        try:
+            json.dump(self._sid_persist, open(self.sid_persist_path, "w", encoding="utf-8"),
+                      separators=(',', ':'))
+        except Exception as e:
+            if self.log:
+                self.log.warn('DISC', f'sid map save: {e}')
 
     def _compute_hash(self):
         all_devs_h = {}
