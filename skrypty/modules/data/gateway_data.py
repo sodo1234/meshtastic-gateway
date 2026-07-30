@@ -103,7 +103,8 @@ class GatewayData:
         self.pri_batch = Batcher(gw_id, self._send, interval=pri_interval,
                                  max_payload=max_payload, tag="PRI", logger=logger,
                                  repeat=(1 if pri_ack_wait > 0 else pri_repeat),  # ACK zastępuje ślepy dubel
-                                 ack_wait=pri_ack_wait, ack_retries=pri_ack_retries)
+                                 ack_wait=pri_ack_wait, ack_retries=pri_ack_retries,
+                                 bypass_arbiter=True)   # alarm nie czeka na koniec transferu-pliku
 
     # ── lifecycle ───────────────────────────────────────
     def start(self):
@@ -424,8 +425,12 @@ class GatewayData:
     def _sender_loop(self):
         while self._sender_running:
             if self.arbiter is not None and self.arbiter.busy():
-                time.sleep(0.2)                  # transfer-plik trwa → wstrzymaj drenaż `b` (kanał zajęty)
-                continue
+                # Transfer-plik trwa → wstrzymaj drenaż wolumenu. WYJĄTEK: alarm (`p`) stoi na
+                # przodzie kolejki i przechodzi od razu — inaczej wyciek/dym czekałby do końca
+                # transferu (zmierzone live: devmap ~2 min). Transport ma bliźniaczy wyjątek.
+                if not (self._out and 'p' in self._out[0]):
+                    time.sleep(0.2)
+                    continue
             if not self._out:
                 time.sleep(0.05)
                 continue

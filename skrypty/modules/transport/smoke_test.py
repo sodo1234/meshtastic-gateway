@@ -106,6 +106,19 @@ def test_end_to_end_dispatcher_via_lora_callback():
     print("✅ end-to-end: LoRa frame → dispatch_raw → handler")
 
 
+def test_lora_defer_during_xfer_alarm_exception():
+    """W trakcie transferu-pliku transport przepuszcza transfery/odpowiedzi i — od 2026-07-30 —
+    ALARM (`b` z `p`), a odkłada wolumen (`b` bez `p`, `ab`, `hb`, `disc_*`)."""
+    from modules.transport import LoraTransport
+    lt = LoraTransport(ports_cfg=[], logger=None)
+    ok = lt._sendable_during_xfer
+    assert ok('{"t":"cal_cack","tid":"x","s":0}') is True, "potwierdzenia zawsze"
+    assert ok('{"t":"b","g":"G1","ts":1,"p":3,"d":[]}') is True, "alarm P1 przechodzi"
+    assert ok('{"t":"b","g":"G1","ts":1,"d":[]}') is False, "wolumen czeka"
+    assert ok('{"t":"ab","g":"G1"}') is False and ok('{"t":"hb","g":"G1"}') is False
+    print("✅ transport: w transferze przechodzi alarm `b`+`p`, wolumen/ab/hb dalej odkładane")
+
+
 def test_txqueue_priority_batch_vs_volume():
     """`b` niesie dwa strumienie pod jednym typem: alarm P1 (ma `p`) i wolumen monitored P3.
     Bez rozróżnienia alarm czekał w kolejce za wolumenem i bulkiem (zmierzone: 20s przewagi
@@ -132,7 +145,7 @@ if __name__ == "__main__":
              test_dispatcher_unknown_and_fallback, test_dispatcher_malformed,
              test_dispatcher_handler_exception_isolated,
              test_mqtt_constructible, test_lora_constructible,
-             test_end_to_end_dispatcher_via_lora_callback,
+             test_end_to_end_dispatcher_via_lora_callback, test_lora_defer_during_xfer_alarm_exception,
              test_txqueue_priority_batch_vs_volume]
     failed = 0
     for t in tests:

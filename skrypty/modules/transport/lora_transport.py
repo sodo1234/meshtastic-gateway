@@ -339,12 +339,25 @@ class LoraTransport:
         except Exception:
             return ''
 
+    def _sendable_during_xfer(self, text):
+        """Czy ten job może iść W TRAKCIE transferu-pliku."""
+        t = self._job_type(text)
+        if t not in self._DEFER_DURING_XFER:
+            return True
+        # WYJĄTEK P1 (2026-07-30, decyzja usera): `b` z polem `p` to ALARM (leak/smoke/door,
+        # batcher priority), nie wolumen — nie może czekać na koniec transferu. Zmierzone live:
+        # devmap trzymał kanał ~2 min, a przez ten czas zdarzenie alarmowe stało w kolejce.
+        # KOSZT (świadomy): ~120B w środku transferu może zderzyć się z chunkiem → jedna
+        # retransmisja chunka (transfer ma własny CRC+ACK+retry, więc się nie wywróci).
+        # Alarmy są rzadkie i event-driven, wolumen `b`/`ab`/`hb` dalej czeka jak dotąd.
+        return t == 'b' and '"p":' in text
+
     def _pop_first_sendable(self):
-        """Podczas transferu: wybierz pierwszy job NIE-odkładany (transfer/odpowiedź/komenda),
+        """Podczas transferu: wybierz pierwszy job NIE-odkładany (transfer/odpowiedź/komenda/alarm),
         zostaw ruch bulk w kolejce (bramka milczy → słyszy cack). None = tylko bulk → milcz."""
         with self.lock:
             for i, job in enumerate(self._tx_queue):
-                if self._job_type(job['text']) not in self._DEFER_DURING_XFER:
+                if self._sendable_during_xfer(job['text']):
                     self._tx_queue.rotate(-i)
                     j = self._tx_queue.popleft()
                     self._tx_queue.rotate(i)
