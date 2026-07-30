@@ -51,7 +51,7 @@ from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
                                GatewayDiscovery, SupervisorDiscovery, SupervisorLinkProbe)
 from modules.data import GatewayData, SupervisorData
 from modules.params import ParamSync
-from modules.anomaly import (StagnationEngine, OfflineMonitor, GatewayOfflineAnomaly,
+from modules.anomaly import (StagnationEngine, OfflineMonitor, GatewayOfflineAnomaly, AlarmMonitor,
                              BatteryMonitor, TempHumMonitor, AnomalyBatcher, AnomalyStore)
 from modules.anomaly.ha_v10 import AnomalyHAv10Bridge   # most: store → encje HA per-anomalia (v10)
 from modules.anomaly.ha_publish import AnomalyBucketPublisher  # bramka publikuje kubełki anomalii na SWOJE HA
@@ -473,6 +473,16 @@ def run_gateway(log):
             'hum_low': param_sync.get('HL'), 'hum_high': param_sync.get('HH')},
         logger=log, check_interval=an_cfg.get('temphum_check', 60))
 
+    # ZALANIE/DYM (2026-07-30): silnika NIE BYŁO — kody `wl`/`sk` istniały tylko w mapach etykiet,
+    # więc zalanie jechało wyłącznie jako stan urządzenia i nie trafiało do liczników/list/popupu.
+    # Check co 10 s (nie 60 jak temp/hum): przy wycieku i dymie liczy się czas reakcji, a sprawdzenie
+    # jest lokalne — LoRa rusza dopiero przy ZMIANIE stanu.
+    alarm_mon = AlarmMonitor(
+        gw_id, discovery,
+        get_state=lambda dev: data.states.get(dev, {}),
+        emit=anomaly_batcher.add,
+        logger=log, check_interval=an_cfg.get('alarm_check', 10))
+
     # STEP 5: stagnacja ALL devices, emit przez batcher (zamiast bezpośredniego `ab`)
     stagnation = StagnationEngine(
         gw_id, discovery, data, get_thresholds=lambda: (param_sync.get('P1'), param_sync.get('P2')),
@@ -486,7 +496,7 @@ def run_gateway(log):
         # na własnym interwale (battery 300s / temphum 60s / offline 30s) — sam reconciler.snapshot()
         # zwróciłby STARY latch. Więc najpierw wymuś check() (świeży odczyt + emit przejść), dopiero
         # potem reconciler re-scan (snapshot już aktualny) + ansnap. „Dump" = prawdziwe wymuś-re-scan.
-        for _eng in (offline_anom, battery_mon, temphum_mon, stagnation):
+        for _eng in (offline_anom, battery_mon, temphum_mon, alarm_mon, stagnation):
             try:
                 if hasattr(_eng, 'check'):
                     _eng.check()
@@ -588,7 +598,7 @@ def run_gateway(log):
     an_reconciler = AnomalyReconciler(
         gw_id, gw_anom_store,
         probes=[offline_anom.snapshot, battery_mon.snapshot,
-                temphum_mon.snapshot, stagnation.snapshot],
+                temphum_mon.snapshot, alarm_mon.snapshot, stagnation.snapshot],
         resolve_dev=lambda sid: discovery.short_rev.get(sid),
         dev_to_sid=lambda dev: discovery.short_ids.get(dev),
         readd_fn=lambda sid, code, val=None: gw_anom_store.handle_ab(
@@ -1072,6 +1082,7 @@ def run_gateway(log):
     offline_anom.start()                                 # STEP 5: gateway-side offline (do/dn)
     battery_mon.start()                                  # STEP 5: low/critical battery (lb/cb/bo)
     temphum_mon.start()                                  # STEP 5: temp/hum high/low (th/tl/hh/hl) ALL devices
+    alarm_mon.start()                                    # 2026-07-30: zalanie/dym (wl/sk + wo/ko) ALL devices
     an_reconciler.start()                                # FAZA 1: pętla re-scan/re-arm + uplink ansnap
     sup_link_probe.start()                               # F2: aktywny ping/pong sup_ping/sup_pong (siatka na ciszę)
 
@@ -2443,8 +2454,7 @@ def run_supervisor(log):
                                    'devices_priority': 0, 'hash': ''}
             sup_hb.ha.reg_gateway(gw)
         else:
-            g['_ts'] = now
-            g['last_seen'] = datetime.now().strftime('%H:%M:%S')
+            sup_hb.note_seen(gw)          # _ts + last_seen + ANULUJ sondę ping (fałszywy offline)
             if not g.get('online'):
                 g['online'] = True
                 sup_hb._cascade_devices(gw, online=True)

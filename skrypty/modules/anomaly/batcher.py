@@ -20,7 +20,9 @@ CODE_CAT = {
     "sg": "stagnation", "sc": "stagnation",
     "th": "temp", "tl": "temp", "to": "temp",
     "hh": "hum", "hl": "hum", "ho": "hum",
-    "sk": "smoke", "wl": "water",
+    # `wo`/`ko` = powrót do normy (2026-07-30, razem z AlarmMonitor — wcześniej wl/sk nie miały
+    # jak zostać skasowane, bo nikt ich nie generował ani nie odwoływał).
+    "sk": "smoke", "ko": "smoke", "wl": "water", "wo": "water",
 }
 
 
