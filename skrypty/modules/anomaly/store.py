@@ -12,7 +12,7 @@ import time
 
 from .batcher import CODE_CAT
 
-CLEAR_CODES = {"dn", "bo", "sc", "to", "ho"}     # recovery → kasuje anomalię kategorii
+CLEAR_CODES = {"dn", "bo", "sc", "to", "ho", "wo", "ko"}   # recovery → kasuje anomalię kategorii
 CRITICAL_CODES = {"cb", "sk", "wl"}              # → popup (krytyczne)
 BUCKET = {"offline": "offline", "battery": "battery"}   # reszta kategorii → 'other'
 CODE_LABEL = {

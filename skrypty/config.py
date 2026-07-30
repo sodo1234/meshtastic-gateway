@@ -156,6 +156,18 @@ SUPERVISOR_CONFIG = {
         "prune_after": 90,        # s po dump — kasuj anomalie niepotwierdzone przez bramkę
         "popup": True,            # browser_mod popup przy nowej anomalii critical
     },
+
+    # — Sterowanie: retry komendy gdy nie wróci `st` (czyta run_supervisor) —
+    # BUG NAPRAWIONY 2026-07-30: te klucze leżały w GATEWAY_CONFIG, więc supervisor ich NIE WIDZIAŁ
+    # i leciał na defaulcie 15 s — KRÓTSZYM niż realny RTT łącza, przez co KAŻDA komenda szła dwa
+    # razy. Zmierzone: cmd 19:45:29 → bramka wykonała 19:45:41 (12 s transitu) → sup „brak st, retry"
+    # 19:45:46 → `st` przyszło 19:45:47, sekundę PO retry. 45 s = zapas ponad RTT (17 s na czystym
+    # łączu, 30-70 s pod obciążeniem transferem), a przy REALNEJ stracie komendy retry i tak wejdzie.
+    # Ta sama rodzina strojenia co data.pri_ack_wait=35 s i param T4=60 s.
+    "control": {
+        "timeout": 45,
+        "retries": 2,             # łącznie do 3 wysyłek, potem urządzenie → OFFLINE
+    },
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -316,6 +328,10 @@ GATEWAY_CONFIG = {
         # False = czekaj na potwierdzenie Z2M zanim odeślesz `st` (dokładniej, wolniej). Domyślnie False.
         # Uwaga: dashboard supervisora i tak pokazuje klik optymistycznie; to dotyczy źródła `st` z bramki.
         "optimistic_status": False,
+        # UWAGA: `timeout`/`retries` (retry komendy po braku `st`) czyta ROLA SUPERVISORA
+        # (run_supervisor), więc mieszkają w SUPERVISOR_CONFIG["control"] — nie tutaj. Tu zostaje
+        # tylko to, co czyta bramka. Trzymanie ich w tym bloku było przyczyną buga z 2026-07-30:
+        # supervisor ich nie widział i leciał na defaulcie 15 s.
     },
 }
 

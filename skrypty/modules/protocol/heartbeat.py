@@ -217,6 +217,23 @@ class SupervisorHeartbeat:
             if self.log:
                 self.log.info('HB', f'📡 ping(all)→ {gw} (próba 1/{self.max_retries + 1})')
 
+    def note_seen(self, gw):
+        """DOWOLNA ramka od bramki (b / rt_* / an_d / st / …) = dowód życia: odśwież `_ts` i ANULUJ
+        trwającą sondę ping.
+
+        BUG NAPRAWIONY 2026-07-30: sonda ping żyła własnym życiem — nie patrzyła na to, czy bramkę
+        słychać. Efekt zmierzony live: `RX b [G1]` o 20:05:29 → `💀 G1 OFFLINE — brak pong po 3
+        próbach` o 20:05:38 → **194 urządzenia kaskadą na offline**, mimo że bramka właśnie nadawała.
+        Powód: sup→gw to słabszy kierunek tego łącza (RTT 16-72 s pod obciążeniem), więc to PONG
+        ginie, a nie bramka pada. Anulowanie sondy przy dowolnym ruchu kasuje fałszywy alarm
+        i oszczędza airtime na zbędnych retry-pingach."""
+        if not gw:
+            return
+        g = self.gateways.setdefault(gw, {})
+        g['_ts'] = time.time()
+        g['last_seen'] = datetime.now().strftime('%H:%M:%S')
+        self._probe.pop(gw, None)
+
     def _mark_offline(self, gw, reason):
         g = self.gateways.setdefault(gw, {})
         if g.get('online') is False:
@@ -249,7 +266,16 @@ class SupervisorHeartbeat:
                     self._send_ping(gw, self.max_retries + 1 - p['retries_left'])
                 else:
                     self._probe.pop(gw, None)
-                    self._mark_offline(gw, f'brak pong po {self.max_retries + 1} próbach (ping)')
+                    # DRUGA LINIA OBRONY (2026-07-30): brak pong ≠ martwa bramka. Jeśli słyszeliśmy
+                    # od niej COKOLWIEK w oknie pasywnym, to zginął pong (kierunek sup→gw), a nie
+                    # bramka. Ogłoszenie offline kaskadowałoby setki urządzeń na oczach klienta.
+                    heard = time.time() - self.gateways.get(gw, {}).get('_ts', 0)
+                    if heard < self.passive_timeout:
+                        if self.log:
+                            self.log.warn('HB', f'⚠️ {gw}: brak pong (ping), ale słyszana '
+                                                f'{heard:.0f}s temu → NIE oznaczam offline')
+                    else:
+                        self._mark_offline(gw, f'brak pong po {self.max_retries + 1} próbach (ping)')
 
     # legacy alias (older callers)
     def check_timeouts(self):
