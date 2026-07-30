@@ -363,8 +363,61 @@ def test_avail_preserves_last_seen():
     print("✅ pub_device_avail merguje (nie kasuje) last_seen/capy + seed z hydratacji")
 
 
+def test_batcher_ack_retransmit_and_drop():
+    """P1 z ACK: pakiet dostaje id `p`, brak `back` → retransmisja, ACK → cisza,
+    a po wyczerpaniu prób pakiet jest PORZUCANY z licznikiem `lost` (widoczna utrata danych)."""
+    from modules.data.batcher import Batcher
+    sent = []
+    b = Batcher("G1", sent.append, interval=999, tag="PRI", ack_wait=0.01, ack_retries=2)
+    b.add("2", {"w": 1}); b.flush()
+    assert len(sent) == 1 and "p" in sent[0], "pakiet P1 musi nieść id do ACK"
+    pid = sent[0]["p"]
+    # REGRESJA (live 2026-07-30): zegar ACK NIE może tykać, dopóki ramka czeka na kanał (arbiter
+    # transferu / kolejka `_out`) — inaczej wypalamy próby i meldujemy utratę czegoś, co nigdy
+    # nie poszło w eter. Dopiero mark_sent() z transportu uruchamia odliczanie.
+    time.sleep(0.02); b.retry_unacked()
+    assert len(sent) == 1, "bez mark_sent (pakiet nie nadany) NIE MA retransmisji"
+    b.mark_sent(pid)
+    time.sleep(0.02); b.retry_unacked()
+    assert len(sent) == 2, "brak ACK → retransmisja"
+    assert b.ack(pid) is True
+    time.sleep(0.02); b.retry_unacked()
+    assert len(sent) == 2, "po ACK żadnych dalszych wysyłek"
+    assert b.ack(pid) is False, "spóźniony dubel ACK nieszkodliwy"
+    # bez ACK: 1 wysyłka + ack_retries retransmisji, potem porzucenie (mark_sent = transport nadał)
+    b.add("2", {"w": 0}); b.flush()
+    pid2 = sent[-1]["p"]
+    for _ in range(4):
+        b.mark_sent(pid2)
+        time.sleep(0.02); b.retry_unacked()
+    assert b.stats["lost"] == 1 and b.pending_acks() == 0, b.stats
+    assert b.stats["resent"] == 3, b.stats          # 1× dla pierwszego + 2× dla porzuconego
+    print("✅ Batcher P1: ACK kasuje retransmisję, brak ACK → retry ×N → porzucenie z alarmem")
+
+
+def test_pri_bypasses_slot_and_jumps_queue():
+    """Alarm (`p`) omija slot (idzie `pri_lora`) i wchodzi na PRZÓD kolejki `_out`,
+    monitored zostaje na slotowanym transporcie i na końcu kolejki."""
+    from modules.data import GatewayData
+    disc, slotted, raw = FakeGwDiscovery(), FakeLora(), FakeLora()
+    gd = GatewayData("G1", disc, slotted, pri_lora=raw, mon_interval=999, pri_interval=999,
+                     send_spacing=0, pri_ack_wait=5.0)
+    gd._send({"t": "b", "g": "G1", "d": [], "p": 7})      # alarm
+    gd._send({"t": "b", "g": "G1", "d": []})              # wolumen
+    assert len(raw.sent) == 1 and len(slotted.sent) == 1, (raw.sent, slotted.sent)
+    assert '"p":7' in raw.sent[0], "alarm musi iść transportem BEZ gate'u slotu"
+    # kolejkowanie (send_spacing>0): alarm przed wolumenem, nawet gdy trafił później
+    gd2 = GatewayData("G1", disc, slotted, pri_lora=raw, mon_interval=999, pri_interval=999,
+                      send_spacing=1.0, pri_ack_wait=5.0)
+    gd2._send({"t": "b", "g": "G1", "d": [], "ts": 1})
+    gd2._send({"t": "b", "g": "G1", "d": [], "p": 9})
+    assert list(gd2._out)[0].get("p") == 9, "alarm ma wyprzedzić zakolejkowany wolumen"
+    print("✅ P1 omija slot + wchodzi na przód kolejki `_out` (wolumen zostaje w slocie)")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
+             test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
              test_gateway_periodic_liveness, test_report_interval_live_p3,

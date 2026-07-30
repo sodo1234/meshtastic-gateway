@@ -23,7 +23,7 @@ import time
 # Priorytet wg typu pakietu (niżej = pilniejsze). Dobór z audytu spamu:
 _PRIO = {
     # P0 — reaktywne + POTWIERDZENIA: zawsze pierwsze (odblokowują transfery bulk, sterowanie)
-    'rt_cack': 0, 'cal_cack': 0, 'rt_ack': 0, 'cal_ack': 0,
+    'rt_cack': 0, 'cal_cack': 0, 'rt_ack': 0, 'cal_ack': 0, 'back': 0,   # `back` = ACK batcha P1
     'pong': 0, 'st': 0, 'ack': 0, 'sync': 0, 'hb': 0, 'vsw_st': 0,
     'disc_meta': 0, 'disc_vio': 0, 'param_upd': 0,
     # P1 — sterowanie / żądania + BULK chunki. Bulk to stop-and-wait (1 chunk naraz w kolejce),
@@ -72,7 +72,15 @@ class PriorityTxQueue:
         self._t.start()
 
     def priority_of(self, text):
-        return self._prio.get(_type_of(text), _DEFAULT_PRIO)
+        t = _type_of(text)
+        # `b` niesie DWA strumienie o różnej pilności pod jednym typem: wolumen monitored (P3)
+        # i batch priority (P1 — leak/smoke/door/kontakt). Bez tego rozróżnienia alarm stał w
+        # kolejce za wolumenem i za bulkiem, więc zmierzone 20s przewagi batchowania topniało do
+        # ~5s. Batcher z ACK stempluje pakiety P1 polem `p` (id do potwierdzenia) — używamy go
+        # jako znacznika pilności; tani test podciągu, bez parsowania JSON w gorącej ścieżce.
+        if t == 'b' and '"p":' in text:
+            return 1
+        return self._prio.get(t, _DEFAULT_PRIO)
 
     # drop-in za lora.send(text)
     def send(self, text):

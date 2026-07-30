@@ -205,6 +205,10 @@ def reload_local_calendar(url, token, timeout=10, logger=None):
         req = urllib.request.Request(f"{base}/api/config/config_entries/entry", headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             entries = json.loads(resp.read())
+        # WSZYSTKIE wpisy, nie pierwszy-i-wyjdź: sup ma 3 kalendarze local_calendar
+        # (Global/G1/G2) — reload tylko pierwszego zostawiał encję per-bramka nieodświeżoną
+        # po zapisie ICS (przycisk 'bez skutku' mimo poprawnego pliku).
+        n = 0
         for entry in entries:
             if entry.get('domain') == 'local_calendar':
                 eid = entry['entry_id']
@@ -212,8 +216,10 @@ def reload_local_calendar(url, token, timeout=10, logger=None):
                     f"{base}/api/config/config_entries/entry/{eid}/reload",
                     data=b'', headers=headers, method='POST')
                 urllib.request.urlopen(rr, timeout=timeout)
-                _log('info', f"✅ HA reload local_calendar {eid[:8]}")
-                return True
+                n += 1
+        if n:
+            _log('info', f"✅ HA reload local_calendar ×{n}")
+        return bool(n)
     except Exception as e:
         _log('warn', f"⚠️ HA reload nieudany: {e} — restart HA ręcznie / poczekaj")
     return False
