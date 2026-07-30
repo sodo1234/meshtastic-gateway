@@ -28,7 +28,8 @@ class GatewayData:
                  mon_interval=30, pri_interval=10, max_payload=150,
                  thresholds=None, send_spacing=0,
                  report_interval=0, offline_after=None, offline_after_fn=None,
-                 on_avail=None, report_full_every=1, avail_blob_fn=None, pri_repeat=2):
+                 on_avail=None, report_full_every=1, avail_blob_fn=None, pri_repeat=2,
+                 pri_ack_wait=0.0, pri_ack_retries=2, pri_lora=None):
         self.gw_id = gw_id
         self.disc = discovery          # GatewayDiscovery — short_ids, is_monitored, devices
         self.lora = lora
@@ -91,10 +92,18 @@ class GatewayData:
         self.arbiter = None
         self._sender_running = False
         self._report_running = False
+        # 2026-07-30: alarmy (P1) omijają slot bramki — `pri_lora` to transport BEZ gate'u slotu
+        # (harness podaje surowe `lora`, monitored dalej idzie slotowanym `lora`). Zmierzone:
+        # slot to była podłoga ~20-40s dla leak/smoke/door, a to dane, po których ktoś ma zareagować.
+        # Bezpieczne dopiero teraz, bo strata z kolizji jest naprawiana przez ACK+retransmisję,
+        # a alarmy są rzadkie (event-driven), więc ryzyko kolizji między bramkami jest znikome.
+        self.pri_lora = pri_lora
         self.mon_batch = Batcher(gw_id, self._send, interval=mon_interval,
                                  max_payload=max_payload, tag="MON", logger=logger)
         self.pri_batch = Batcher(gw_id, self._send, interval=pri_interval,
-                                 max_payload=max_payload, tag="PRI", logger=logger, repeat=pri_repeat)  # 2026-07-19: retry P1
+                                 max_payload=max_payload, tag="PRI", logger=logger,
+                                 repeat=(1 if pri_ack_wait > 0 else pri_repeat),  # ACK zastępuje ślepy dubel
+                                 ack_wait=pri_ack_wait, ack_retries=pri_ack_retries)
 
     # ── lifecycle ───────────────────────────────────────
     def start(self):
@@ -387,9 +396,30 @@ class GatewayData:
         # report_liveness (non-monitored pominięte gdy nieaktywna). on_z2m enqueue'uje tylko
         # is_monitored (monitored+priority), więc do _send trafiają wyłącznie te, co mają lecieć zawsze.
         if self.send_spacing > 0:
-            self._out.append(packet)
+            # `_out` był czystym FIFO — alarm P1 stał za każdym batchem monitored (3s każdy).
+            # Pakiety z `p` (priority + ACK) idą na PRZÓD kolejki. To 3. z trzech miejsc, gdzie
+            # priorytet ginął (pozostałe: kolejka TX po typie `b`, i slot bramki).
+            if 'p' in packet:
+                self._out.appendleft(packet)
+            else:
+                self._out.append(packet)
         else:
-            self.lora.send(json.dumps(packet, separators=(',', ':')))
+            self._tx(packet)
+
+    def _tx(self, packet):
+        """Wyślij pakiet właściwym transportem: alarmy (`p`) omijają slot, monitored idzie w slocie."""
+        pid = packet.get('p')
+        lora = self.pri_lora if (pid is not None and self.pri_lora is not None) else self.lora
+        lora.send(json.dumps(packet, separators=(',', ':')))
+        if pid is not None:
+            # Dopiero TERAZ ramka jest w eterze — start zegara ACK. Liczenie od flush() kazało
+            # retransmitować pakiet, który stał w `_out` za arbitrem transferu (i „gubić" dane,
+            # których nikt nie nadał).
+            self.pri_batch.mark_sent(pid)
+
+    def ack_pri(self, pid):
+        """`{t:back,g,p}` z supervisora → potwierdź pakiet priorytetowy (koniec retransmisji)."""
+        return self.pri_batch.ack(pid)
 
     def _sender_loop(self):
         while self._sender_running:
@@ -400,7 +430,7 @@ class GatewayData:
                 time.sleep(0.05)
                 continue
             pkt = self._out.popleft()
-            self.lora.send(json.dumps(pkt, separators=(',', ':')))
+            self._tx(pkt)
             time.sleep(self.send_spacing)
 
     @property

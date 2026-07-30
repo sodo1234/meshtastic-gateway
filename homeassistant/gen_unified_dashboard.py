@@ -2,6 +2,13 @@
 # -*- coding: utf-8 -*-
 """ZUNIFIKOWANY dashboard LoRa SCADA (2026-07-11) — JEDEN generator, OBIE maszyny, 7 zakładek.
 
+⚠️ LEGACY — NIE URUCHAMIAJ NA PRODUKCJI BEZ DIFFA (decyzja usera 2026-07-30).
+Źródłem prawdy dashboardów jest teraz **stan LIVE**, zrzucany do `dashboards_baseline/live_*.json`
+przez `dash_sync.py pull`. Ten generator opisuje układ 7-zakładkowy, a na maszynach żyje układ
+5-zakładkowy z ręcznymi poprawkami (kafle Door/Leak w „Sterowanie", popupy anomalii, bloki
+zgodności) — uruchomienie go SKASOWAŁOBY te poprawki. Trzymamy plik jako dokumentację decyzji
+i kanon nazw/ikon; zmiany w dashboardach robimy na żywym HA i zapisujemy `dash_sync.py pull`.
+
 Wzór = pierwotny design v10 usera. Zakładki per FUNKCJA (identyczne bramka/supervisor):
   1. Bramka       — nagłówek wzoru (badge/status/TOTAL/MON/PRI) + akcje 3×2 + kafle anomalii z POPUPAMI
   2. Sterowanie   — przekaźniki Test 1/2 + Virtual IO + akcje
@@ -94,13 +101,24 @@ if ROLE == "supervisor":
          ("mqtt", f"lora/supervisor/cmd/{GL}/dump_anom", ""), None),
         ("CLEAR", "mdi:bell-off", "#f87171", "#7f1d1d",
          ("mqtt", "lora/supervisor/cmd/clear_offline", ""), f"Wyczyścić anomalie {GW}?"),
-        ("CFG",   "mdi:cog-sync", "#4ade80", "#14532d",
-         ("mqtt", f"lora/params/supervisor/cmd/{GL}/send_config", ""), None),
+        # 6. przycisk = CZAS na WSZYSTKICH dashboardach (decyzja usera 2026-07-30). CFG zostaje
+        # w zakładce Parametry (WYŚLIJ CONFIG). MQTT wprost na topic, NIE button.press:
+        # entity_id tej samej encji różni się per bramka (rejestr HA zachowuje historyczne id —
+        # G1: button.lora_gw_g1_sync, G2: button.lora_g2_sync_time), a topic jest stały.
+        ("CZAS",  "mdi:clock-sync", "#22d3ee", "#164e63",
+         ("mqtt", f"lora/supervisor/cmd/{GL}/sync", ""), None),
     ]
-    CAL_ACTS = [("SYNC → BRAMKA", "mdi:calendar-arrow-right", "#22d3ee",
-                 ("mqtt", f"lora/supervisor/cmd/{GL}/calendar", ""), "Wysłać kalendarz do bramki?")]
+    CAL_ACTS = [("PUSH → BRAMKA", "mdi:calendar-arrow-right", "#22d3ee",
+                 ("mqtt", f"lora/supervisor/cmd/{GL}/calendar", ""), "Wysłać kalendarz do bramki?"),
+                # Symetria per-bramka (decyzja usera 2026-07-30): pull nadpisuje calendar.lora_<gl>
+                # na supie stanem bramki (handler cmd/<gl>/pull_calendar → cal_pull → gw push-up).
+                ("PULL ← BRAMKA", "mdi:calendar-arrow-left", "#22d3ee",
+                 ("mqtt", f"lora/supervisor/cmd/{GL}/pull_calendar", ""),
+                 f"Pobrać harmonogram z bramki {GW} (nadpisze calendar.lora_{GL})?"),
+                ("PUSH ALL", "mdi:calendar-multiple", "#fbbf24",
+                 ("btn", "button.sync_calendar_all"), "Wypchnąć kalendarz do WSZYSTKICH bramek?")]
     DIAG_EXTRA = [("SYNC CZASU", "mdi:clock-check",
-                   ("btn", f"button.lora_gateway_{GL}_gw_{GL}_sync_time"))]
+                   ("mqtt", f"lora/supervisor/cmd/{GL}/sync", ""))]
     CLEAR_TOPIC = "lora/supervisor/cmd/clear_anomaly"          # {gw,dev,bucket}
     CLEAR_ALL = {"offline": ("mqtt", "lora/supervisor/cmd/clear_offline", ""),
                  "battery": ("mqtt", "lora/supervisor/cmd/clear_battery", ""),
@@ -160,8 +178,10 @@ else:                                     # ROLE == gateway (na HA bramki)
         ("CLEAR", "mdi:bell-off", "#f87171", "#7f1d1d",
          ("mqtt", "lora/gw/cmd/clear_anomaly", '{"bucket":"offline","all":1}'),
          f"Wyczyścić anomalie {GW}?"),
-        ("CFG",   "mdi:cog-sync", "#4ade80", "#14532d",
-         ("btn", f"button.lora_gateway_{GL}_lora_wyslij_config"), None),
+        # 6. przycisk = CZAS (decyzja usera 2026-07-30, jednolicie na wszystkich dashboardach);
+        # CFG zostaje w zakładce Parametry (WYŚLIJ CONFIG).
+        ("CZAS",  "mdi:clock-sync", "#22d3ee", "#164e63",
+         ("btn", f"button.lora_gateway_{GL}_gw_{GL}_sync_czasu"), None),
     ]
     CAL_ACTS = [("PULL ← SUPERVISOR", "mdi:calendar-arrow-left", "#22d3ee",
                  ("btn", f"button.lora_gateway_{GL}_gw_{GL}_sync_schedule"),

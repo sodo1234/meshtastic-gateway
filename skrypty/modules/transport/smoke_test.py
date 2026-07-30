@@ -106,12 +106,34 @@ def test_end_to_end_dispatcher_via_lora_callback():
     print("✅ end-to-end: LoRa frame → dispatch_raw → handler")
 
 
+def test_txqueue_priority_batch_vs_volume():
+    """`b` niesie dwa strumienie pod jednym typem: alarm P1 (ma `p`) i wolumen monitored P3.
+    Bez rozróżnienia alarm czekał w kolejce za wolumenem i bulkiem (zmierzone: 20s przewagi
+    batchowania topniało do ~5s). `back` = ACK, więc P0 razem z resztą potwierdzeń."""
+    from modules.transport.tx_queue import PriorityTxQueue
+
+    class _Inner:
+        def __init__(self): self.sent = []
+        def send(self, text): self.sent.append(text)
+
+    q = PriorityTxQueue(_Inner(), cooldown=0.01)
+    try:
+        assert q.priority_of('{"t":"b","g":"G1","ts":1,"p":7,"d":[]}') == 1, "alarm P1"
+        assert q.priority_of('{"t":"b","g":"G1","ts":1,"d":[]}') == 3, "wolumen monitored P3"
+        assert q.priority_of('{"t":"back","g":"G1","p":7}') == 0, "ACK batcha = P0"
+        assert q.priority_of('{"t":"ab","g":"G1"}') == 2, "anomalie bez zmian"
+    finally:
+        q.stop()
+    print("✅ kolejka TX: `b` z `p` = P1 (alarm) vs `b` bez = P3 (wolumen), `back` = P0")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_dispatcher_routing, test_dispatcher_raw_json,
              test_dispatcher_unknown_and_fallback, test_dispatcher_malformed,
              test_dispatcher_handler_exception_isolated,
              test_mqtt_constructible, test_lora_constructible,
-             test_end_to_end_dispatcher_via_lora_callback]
+             test_end_to_end_dispatcher_via_lora_callback,
+             test_txqueue_priority_batch_vs_volume]
     failed = 0
     for t in tests:
         try:

@@ -179,8 +179,17 @@ class ScheduleManager:
         bramka ma być LUSTREM, nie akumulatorem. `merge_schedule` nigdy nie usuwał starych
         slotów → bramka narastała (47 vs 15 na supervisorze) i budowała ICS ze STARYMI
         eventami (SERWIS ginął w stercie/nieaktualne). Zwraca liczbę slotów po podmianie."""
+        # Sloty z HA (parse_ha_events) nie mają 'mode' — bez tej normalizacji prepare_compact
+        # bierze default 1 (PRODUKCJA) i SERWIS/PRZERWA/BRAK PRODUKCJI z kalendarza per-bramka
+        # jedzie do bramki jako PRODUKCJA. add_slot robi to samo przez _detect_mode(note).
+        norm = []
+        for s in slots:
+            s = dict(s)
+            if s.get('mode') is None:
+                s['mode'] = self._detect_mode(s.get('note', ''))
+            norm.append(s)
         with self.lock:
-            self.data[gw] = sorted(list(slots), key=lambda s: s.get('start', ''))
+            self.data[gw] = sorted(norm, key=lambda s: s.get('start', ''))
             self._save()
         if self.log:
             self.log.info('CAL', f"♻️ Replace [{gw}]: {len(self.data.get(gw, []))} slotów (down-sync, było lustro)")

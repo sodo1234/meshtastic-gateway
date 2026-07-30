@@ -350,6 +350,48 @@ def test_calendar_e2e_reverse():
     print("✅ e2e reverse: gw_push→expand→HA event→parse round-trip zachowuje tryb (SERWIS)")
 
 
+def test_replace_schedule_mode_from_note():
+    """Sloty z HA (parse_ha_events) nie mają 'mode' — replace_schedule MUSI go dorobić z note,
+    inaczej prepare_compact bierze default 1 i SERWIS/PRZERWA z kalendarza per-bramka jedzie
+    do bramki jako PRODUKCJA (bug live: /tmp/lora_schedule_sup.json G1 85 slotów bez 'mode')."""
+    f = '%Y-%m-%d %H:%M:%S'
+    b = (datetime.now() + timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
+    m = _mgr()
+    m.replace_schedule("G1", [{"id": "ha1", "start": b.strftime(f),
+                               "end": (b + timedelta(hours=1)).strftime(f),
+                               "note": "SERWIS", "origin": "ha_api"},
+                              {"id": "ha2", "start": (b + timedelta(hours=2)).strftime(f),
+                               "end": (b + timedelta(hours=3)).strftime(f),
+                               "note": "BRAK PRODUKCJI", "origin": "ha_api"}])
+    assert [s["mode"] for s in m.list_slots("G1")] == [3, 0], m.list_slots("G1")
+    modes = sorted(x[2] for x in m.prepare_compact("G1", window_days=14)[0])
+    assert modes == [0, 3], f"prepare_compact zgubił tryb: {modes}"
+    print("✅ replace_schedule: mode dorobiony z note (SERWIS=3, BRAK PRODUKCJI=0)")
+
+
+def test_reverse_mirror_hash_converges():
+    """gw_push: po replace_schedule hash supa MUSI = hash bramki (inaczej najbliższy HB widzi
+    'cal drift' i sup odpycha swoją starą wersję w dół → efekt przycisku PUSH → SUP znika).
+    Drugi przypadek dokumentuje świadomy wyjątek: slot dodany do GLOBAL na supie NIE ginie —
+    dokłada się do unii i zostanie dopchnięty w dół (GLOBAL nadal wspólną bazą)."""
+    f = '%Y-%m-%d %H:%M:%S'
+    b = (datetime.now() + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+    gw = _mgr()
+    gw.add_slot("G1", b.strftime(f), (b + timedelta(hours=8)).strftime(f), note="PRODUKCJA")
+    compact, h_gw = gw.prepare_compact("G1", window_days=14)
+
+    sup = _mgr()
+    sup.add_slot("G1", b.strftime(f), (b + timedelta(hours=2)).strftime(f), note="SERWIS")  # stary stan
+    assert sup.schedule_hash("G1", 14) != h_gw, "setup: sup ma inny harmonogram niż bramka"
+    sup.replace_schedule("G1", sup.expand_compact(compact))
+    assert sup.schedule_hash("G1", 14) == h_gw, "po gw_push hash sup≠bramka → drift → re-push w dół"
+
+    sup.add_slot("GLOBAL", (b + timedelta(days=3)).strftime(f),
+                 (b + timedelta(days=3, hours=1)).strftime(f), note="SERWIS")
+    assert sup.schedule_hash("G1", 14) != h_gw, "GLOBAL dokłada się do unii (świadome, push w dół)"
+    print("✅ reverse-mirror: replace_schedule zbiega hash sup==bramka (GLOBAL nadal dokłada)")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_detect_mode_length_sorted, test_add_dedup_and_mode,
              test_compact_roundtrip, test_effective_and_override,
@@ -359,7 +401,8 @@ if __name__ == "__main__":
              test_transfer_lost_begin_recovers, test_transfer_lost_begin_and_chunk_nack,
              test_transfer_crc_mismatch,
              test_build_ics, test_parse_ha_events, test_calendar_e2e_push,
-             test_calendar_e2e_reverse]
+             test_calendar_e2e_reverse, test_replace_schedule_mode_from_note,
+             test_reverse_mirror_hash_converges]
     failed = 0
     for t in tests:
         try:

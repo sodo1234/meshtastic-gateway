@@ -15,7 +15,8 @@ import time
 
 class Batcher:
     def __init__(self, gw_id, flush_callback, interval=30, max_payload=150,
-                 max_items=6, tag="BATCH", logger=None, arbiter=None, repeat=1):
+                 max_items=6, tag="BATCH", logger=None, arbiter=None, repeat=1,
+                 ack_wait=0.0, ack_retries=2):
         self.gw_id = gw_id
         self.flush_callback = flush_callback      # callable(packet_dict) → send over LoRa
         self.interval = interval
@@ -29,11 +30,21 @@ class Batcher:
         # 2026-07-19: retry P1 — priority batcher wysyla kazdy pakiet `repeat`x
         # (2 rozstrzelone proby przez kolejke TX) zeby door/leak nie ginely w krotkich stratach LoRa.
         self.repeat = max(1, int(repeat))
+        # 2026-07-30: PRAWDZIWY ACK zamiast slepego dublowania. ack_wait>0 ⇒ kazdy pakiet dostaje
+        # krotkie id `p`, supervisor odbija `{t:back,g,p}`, a brak `back` w ack_wait s = retransmisja
+        # (do ack_retries prob). Zysk podwojny: (1) strata dluzsza niz jedna ramka jest NAPRAWIANA,
+        # czego `repeat=2` nie umialo; (2) w normalnym przypadku leci JEDNA ramka + ~30B ack zamiast
+        # dwoch pelnych batchy, czyli MNIEJ airtime niz dotad. Ustaw repeat=1 gdy ACK wlaczony.
+        self.ack_wait = float(ack_wait)
+        self.ack_retries = max(0, int(ack_retries))
+        self._pid = 0                    # licznik id pakietow (1..999, cyklicznie)
+        self._pending = {}               # p → [pkt, tries, last_ts]
         self.buffer = {}            # {sid: fields_dict} — merged per device
         self.lock = threading.Lock()
         self.last_flush = time.time()
         self.running = True
-        self._stats = {"batched": 0, "flushed": 0, "merged": 0}
+        self._stats = {"batched": 0, "flushed": 0, "merged": 0,
+                       "acked": 0, "resent": 0, "lost": 0}
 
     def add(self, sid, fields, force_flush=False):
         """Buffer a delta for `sid`. Fields merge into any pending entry.
@@ -61,8 +72,58 @@ class Batcher:
     def _flush_loop(self):
         while self.running:
             time.sleep(1)
+            if self.ack_wait > 0:
+                self.retry_unacked()             # ten sam tick 1s — bez osobnego wątku
             if time.time() - self.last_flush >= self.interval:
                 self.flush()
+
+    # ── ACK / retransmisja (ack_wait > 0) ───────────────
+    def ack(self, pid):
+        """`back` z supervisora: pakiet dotarł → koniec retransmisji. Zwraca True gdy nasz."""
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False
+        entry = self._pending.pop(pid, None)
+        if entry is None:
+            return False                         # nieznane/już potwierdzone (np. spóźniony dubel ACK)
+        self._stats["acked"] += 1
+        if self.log:
+            self.log.info('BATCH', f"✅ [{self.tag}] ack p={pid} (próby: {entry[1]})")
+        return True
+
+    def retry_unacked(self):
+        """Retransmituj pakiety bez `back` po ack_wait s; po ack_retries próbach porzuć z alarmem.
+        Porzucenie MA być widoczne w logu — to utrata danych priorytetowych, nie drobiazg."""
+        now = time.time()
+        for pid, entry in list(self._pending.items()):
+            pkt, tries, last = entry
+            if last is None or now - last < self.ack_wait:
+                continue                     # None = czeka na kanał (arbiter/kolejka) — nie liczy się
+            if tries > self.ack_retries:
+                self._pending.pop(pid, None)
+                self._stats["lost"] += 1
+                if self.log:
+                    self.log.error('BATCH', f"❌ [{self.tag}] p={pid} BEZ ACK po {tries} próbach "
+                                            f"({len(pkt.get('d', []))} dev) — utrata danych P1")
+                continue
+            entry[1] = tries + 1
+            entry[2] = None                  # znów „czeka na kanał" — zegar ruszy przy realnym TX
+            self._stats["resent"] += 1
+            if self.log:
+                self.log.warn('BATCH', f"🔁 [{self.tag}] retransmisja p={pid} (próba {tries + 1}"
+                                       f"/{self.ack_retries + 1})")
+            self.flush_callback(pkt)
+
+    def mark_sent(self, pid):
+        """Ramka REALNIE poszła w eter → od teraz liczymy ack_wait. Woła transport (GatewayData._tx),
+        bo tylko on wie, kiedy arbiter/kolejka faktycznie puściły pakiet."""
+        entry = self._pending.get(pid)
+        if entry is not None:
+            entry[2] = time.time()
+
+    def pending_acks(self):
+        return len(self._pending)
 
     def flush(self):
         """Ship buffered deltas. Returns list of packet dicts sent (for tests)."""
@@ -76,6 +137,14 @@ class Batcher:
             return []
         packets = self._split_into_packets(items)
         for pkt in packets:
+            if self.ack_wait > 0:
+                self._pid = self._pid % 999 + 1
+                pkt["p"] = self._pid                     # id do ACK + znacznik P1 dla kolejki TX
+                # last_ts=None ⇒ „jeszcze NIE nadany". Zegar ACK startuje dopiero w mark_sent(),
+                # bo między flush() a eterem stoi arbiter kanału (transfer-plik) i kolejka `_out`
+                # z odstępem cooldownu. Licząc od flush() wypalaliśmy wszystkie próby i ogłaszali
+                # utratę danych zanim ramka w ogóle poszła (zmierzone live 2026-07-30).
+                self._pending[self._pid] = [pkt, 1, None]
             for _ in range(self.repeat):
                 self.flush_callback(pkt)
             self._stats["flushed"] += 1
@@ -101,8 +170,10 @@ class Batcher:
                 "d": [[sid, fields] for sid, fields in items]}
 
     def _serialize(self, items):
-        return json.dumps({"t": "b", "g": self.gw_id, "ts": 0,
-                           "d": [[s, f] for s, f in items]}, separators=(',', ':'))
+        probe = {"t": "b", "g": self.gw_id, "ts": 0, "d": [[s, f] for s, f in items]}
+        if self.ack_wait > 0:
+            probe["p"] = 999          # licz `p` w rozmiarze, inaczej split zaniża o ~8B (limit 150B)
+        return json.dumps(probe, separators=(',', ':'))
 
     def pending_count(self):
         with self.lock:

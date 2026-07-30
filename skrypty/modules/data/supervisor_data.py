@@ -17,18 +17,39 @@ def _now_str():
 
 
 class SupervisorData:
-    def __init__(self, ha_entities, discovery, logger=None, on_avail=None):
+    def __init__(self, ha_entities, discovery, logger=None, on_avail=None,
+                 unknown_window=300, time_fn=None):
         self.ha = ha_entities          # HAEntities — pub_device_state
         self.disc = discovery          # SupervisorDiscovery — gw_devices (sid map)
         self.log = logger
         self.on_avail = on_avail       # callback(gw, dev, available:bool) — do licznika offline
+        # ACK batcha priorytetowego (2026-07-30): late-bind z harnessu, callable(gw, pid) → wyślij
+        # `{t:back,g,p}`. Bez tego bramka retransmituje P1 aż do wyczerpania prób.
+        self.ack_fn = None
         self.state = {}                # {gw: {dev: {ha_json fields}}} — merged
         self.last_msg_ts = {}          # {(gw,dev): epoch} — ostatnia wiadomość (dla offline)
+        # RATE-LIMIT meldunku o nieznanych sidach (2026-07-25): przy niepełnej mapie KAŻDY
+        # wpis `b` logował osobny WARN (carport: 5456 linii) i topił resztę logu. Teraz:
+        # 1. wystąpienie melduje się od razu, potem jedno zbiorcze podsumowanie na okno.
+        self.unknown_window = unknown_window
+        self._now = time_fn or time.time
+        self._unknown = {}             # {gw: set(sid)} — unikaty w bieżącym oknie
+        self._unknown_ts = {}          # {gw: epoch ostatniego meldunku}
 
     def handle_b(self, data):
         """{t:b,g:G1,ts:T,d:[[sid,{a:1,t:22.5,h:45,b:95}],...]}"""
         gw = data.get('g', '?')
         items = data.get('d', [])
+        # ACK NAJPIERW: `back` potwierdza ODBIÓR ramki, nie rozpoznanie sidów. Gdyby czekał na
+        # `applied>0`, niepełna mapa (unknown sid) kazałaby bramce retransmitować w kółko coś,
+        # czego retransmisja nie naprawi — dziury w mapie łata devmap/disc, nie powtórka batcha.
+        pid = data.get('p')
+        if pid is not None and self.ack_fn:
+            try:
+                self.ack_fn(gw, pid)
+            except Exception as e:                       # ACK nigdy nie wywraca ścieżki danych
+                if self.log:
+                    self.log.warn('DATA', f'back {gw} p={pid} nieudany: {e}')
         applied = 0
         for entry in items:
             if not isinstance(entry, list) or len(entry) < 2:
@@ -36,8 +57,7 @@ class SupervisorData:
             sid, short = entry[0], entry[1]
             dev = self._dev_from_sid(gw, sid)
             if not dev:
-                if self.log:
-                    self.log.warn('DATA', f'b {gw}: nieznany sid={sid} (czekam na db)')
+                self._note_unknown(gw, sid)
                 continue
             fields = decode_short(short if isinstance(short, dict) else {})
             fields.setdefault('available', 'ON')      # online cascade
@@ -50,6 +70,28 @@ class SupervisorData:
             applied += 1
         if self.log and applied:
             self.log.info('DATA', f'📊 b {gw}: {applied}/{len(items)} urządzeń zaktualizowanych')
+
+    def _note_unknown(self, gw, sid):
+        """Zbierz nierozpoznany sid; melduj zbiorczo raz na `unknown_window`.
+        Nieprawidłowość MA być widoczna (mapa niekompletna → dane lecą do kosza), ale jedna
+        linia na okno zamiast jednej na każdy wpis batcha."""
+        pend = self._unknown.setdefault(gw, set())
+        pend.add(sid)
+        now = self._now()
+        if now - self._unknown_ts.get(gw, 0) < self.unknown_window:
+            return
+        self._unknown_ts[gw] = now
+        sample = ','.join(str(s) for s in sorted(pend, key=str)[:8])
+        if self.log:
+            self.log.warn('DATA', f'b {gw}: {len(pend)} nieznanych sid (np. {sample}) — '
+                          f'mapa urządzeń niekompletna, dane pomijane; czekam na devmapę')
+        pend.clear()
+
+    def unknown_sids(self, gw=None):
+        """Bieżące nierozpoznane sidy — do encji/diagnostyki (bez zaglądania w log)."""
+        if gw is not None:
+            return set(self._unknown.get(gw, set()))
+        return {g: set(s) for g, s in self._unknown.items()}
 
     def apply_st(self, gw, dev, fields):
         """`st` (sterowanie cmd / zmiana zewn.) → MERGE w stan urządzenia + last_seen + publish

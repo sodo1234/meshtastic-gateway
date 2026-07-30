@@ -379,7 +379,32 @@ class SupervisorDiscovery:
             self.log.info('DISC', f'📋 disc_meta {gw}: hash={data.get("hash")} '
                           f'dev_n={data.get("dev_n")} → czekam na db')
 
-    def check_complete(self, retry_after=18, max_try=2):
+    # ── RE-SYNC GUARD (2026-07-25): kompletność mirrora, nie sam hash ──────
+    def note_devn(self, gw, n):
+        """Zapamiętaj PRAWDZIWĄ liczbę urządzeń bramki. HB/pong niesie ją co heartbeat —
+        to jedyne źródło przychodzące regularnie bez pytania. Bez tego gw_devn wypełniało
+        WYŁĄCZNIE disc_meta (czyli praktycznie tylko po restarcie bramki), więc
+        check_complete był martwy i mirror 78/194 nigdy się nie naprawiał."""
+        try:
+            n = int(n or 0)
+        except (TypeError, ValueError):
+            return
+        if n > 0:
+            self.gw_devn[gw] = n
+
+    def is_complete(self, gw):
+        """Czy mirror ma komplet wg ostatnio ogłoszonej liczby urządzeń. Brak licznika
+        (stara bramka / przed 1. HB) → True: bez podstaw nie wszczynamy ruchu LoRa."""
+        expected = self.gw_devn.get(gw, 0)
+        return not expected or len(self.gw_devices.get(gw, {})) >= expected
+
+    def synced_hash_for_request(self, gw):
+        """Hash do dołączenia w żądaniu `disc`. Przy NIEPEŁNYM mirrorze pusty — inaczej
+        bramka porówna hashe, uzna supervisora za aktualnego i odeśle meta_only bez
+        devmapy (samo-blokada: fałszywy stempel synced unieważniał własną naprawę)."""
+        return self.gw_synced.get(gw, '') if self.is_complete(gw) else ''
+
+    def check_complete(self, retry_after=18, max_try=2, idle_retry=900):
         """Re-request disc if the device list is incomplete (lost db packet).
         Event-driven, capped — runs only after an incomplete discovery."""
         now = time.time()
@@ -390,15 +415,20 @@ class SupervisorDiscovery:
             if have >= expected:
                 self.gw_disc_try[gw] = 0
                 continue
-            if now - self.gw_disc_ts.get(gw, 0) < retry_after:
+            # BACKOFF (2026-07-25): krótka seria szybkich prób (zgubiony pakiet), potem rzadki
+            # retry — zamiast twardego capa, po którym system milczał do restartu, zostawiając
+            # dziurawą mapę i strumień „nieznany sid". Ma działać samo, nie spamować i nie
+            # udawać, że jest OK. Ręczne wymuszenie (przycisk Discovery) działa niezależnie.
+            tries = self.gw_disc_try.get(gw, 0)
+            wait = retry_after if tries < max_try else idle_retry
+            if now - self.gw_disc_ts.get(gw, 0) < wait:
                 continue
-            if self.gw_disc_try.get(gw, 0) >= max_try:
-                continue
-            self.gw_disc_try[gw] = self.gw_disc_try.get(gw, 0) + 1
+            self.gw_disc_try[gw] = tries + 1
             self.gw_disc_ts[gw] = now
             if self.log:
+                phase = f'{self.gw_disc_try[gw]}/{max_try}' if tries < max_try else f'backoff {idle_retry}s'
                 self.log.warn('DISC', f'🔁 {gw} lista niepełna ({have}/{expected}) — '
-                              f're-request disc ({self.gw_disc_try[gw]}/{max_try})')
+                              f're-request disc ({phase})')
             if self.request_disc_fn:
                 self.request_disc_fn(gw)
 

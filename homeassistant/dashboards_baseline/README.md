@@ -1,4 +1,26 @@
-# Baseline dashboardów bramki G1 (HA na 100.98.155.78)
+# Baseline dashboardów — LIVE JEST ŹRÓDŁEM PRAWDY (od 2026-07-30)
+
+**Decyzja usera 2026-07-30: generatory bazują na tym, co jest teraz live — nie odwrotnie.**
+Dashboardy były strojone ręcznie na żywym HA, a generatory (`../gen_unified_dashboard.py`,
+`../gen_g1_dashboard.py`, `../gen_gateway_dashboard.py`) zostały w tyle: odtwarzają układ
+7-zakładkowy, gdy na maszynach żyje 5-zakładkowy z ręcznymi poprawkami. Uruchomienie generatora
+na produkcji skasowałoby te poprawki — dlatego są oznaczone LEGACY.
+
+## Pętla robocza (narzędzie: `../dash_sync.py`)
+```bash
+python ../dash_sync.py pull           # LIVE → repo (po każdej zmianie w HA; to jest commit-owalny kanon)
+python ../dash_sync.py diff           # czy live rozjechał się z baseline
+python ../dash_sync.py push sup-g1    # repo → LIVE (rollback / klonowanie bramki)
+```
+Cele: `sup-g2` (100.79.111.24 `lora-scada`), `sup-g1` (100.79.111.24 `lora-scada-g1`),
+`gw-g2` (100.98.155.78 `lora-scada`). Bramka G1 (100.104.38.14) pominięta — host bez sieci.
+
+Aktualne zrzuty: `live_sup_lora-scada_G2.json`, `live_sup_lora-scada-g1.json`,
+`live_gw_g2_lora-scada.json` (2026-07-30). Starsze `lora-scada-{sup,gw}.json` = zrzuty z 2026-07-19.
+
+---
+
+## (historyczne) Baseline dashboardów bramki G1 (HA na 100.98.155.78)
 
 Zrzut LIVE z HA bramki (2026-06-29) — punkt odniesienia PRZED rozbudową funkcjonalności
 dashboardu bramki ("carport gateway dashboard"). Źródło prawdy generujące ten dashboard:

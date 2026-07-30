@@ -183,8 +183,8 @@ GATEWAY_CONFIG = {
     #   "mesh_port":   <by-id Helteca G2>   (ls -l /dev/serial/by-id/ na G2)
     #   "monitored":   [...]                 (urządzenia Zigbee G2)
     #   "priority_devices": [...]            (security G2)
-    #   ha_api."ics_path": ".../local_calendar.g2.ics"
-    #   "calendar"."gw_calendar_id": "calendar.lora_g2"   (jeśli reverse-mirror na G2)
+    # Kalendarz NIE wymaga już ręcznej zmiany: cal_entity / ics_path / gw_calendar_id wyliczają się
+    # z "id" (G2 → calendar.lora_g2). Encja o tej nazwie musi istnieć w HA bramki (local_calendar).
     # Sekrety NA G2: HA_TOKEN_GW = token HA boxa G2, MQTT_PASS = brokera G2 (ustaw przez Launcher,
     # NIE kopiuj configu G1 ze scp — sekrety i tak są per-maszyna). slotting.gateways już ["G1","G2","G3"]
     # → G2 weźmie indeks 1 = okno 20-39s automatycznie.
@@ -236,20 +236,39 @@ GATEWAY_CONFIG = {
             "humidity": 2.0,                  # %
         },
         "report_interval": 900,               # co tyle s `b` dla KAŻDEGO monitored (heartbeat danych)
+        # PRAWDZIWY ACK dla batcha P1 (2026-07-30, zamiast ślepego pri_repeat=2). Pakiet dostaje id
+        # `p`, sup odbija `{t:back,g,p}`, brak ACK w pri_ack_wait s ⇒ retransmisja (max retries).
+        # STROJENIE: pri_ack_wait MUSI pokryć realny round-trip tego łącza, liczony od REALNEJ
+        # wysyłki (mark_sent), nie od flush. ZMIERZONE live 2026-07-30 na spokojnym łączu G2:
+        # TX 16:19:38 → back u bramki 16:20:04 = 26 s (sam transit sup→gw ~16 s). Przy 20 s każdy
+        # alarm generował jedną ZBĘDNĄ retransmisję, więc próg = 35 s (margines na jitter).
+        # Pod obciążeniem (bulk/kalendarz) round-trip rośnie do 30-60 s — jeśli w logu widać 🔁
+        # przy zdrowym łączu, podnieś dalej. 0 = wyłącz ACK i wróć do ślepego pri_repeat.
+        "pri_ack_wait": 35.0,
+        "pri_ack_retries": 2,                 # łącznie do 3 wysyłek, potem ❌ w logu (utrata P1)
     },
 
     # — STEP 4: Kalendarz (krok 16) + Slotowanie / anti-collision (krok 7) —
     "ha_api": {
         "url": HA_URL,
         "token": HA_TOKEN,
-        # zapis ICS bezpośrednio do storage HA = bulletproof (reszta przez reload)
-        "ics_path": "/var/lib/homeassistant/homeassistant/.storage/local_calendar.g1.ics",
+        # JAWNIE (2026-07-30, polecenie usera): bramka ma kalendarz `calendar.lora_<gw>` — dla G2
+        # `calendar.lora_g2`. To encja, do której down-sync pisze przez HA WS (delete +
+        # create_event) i z której `push_schedule_up` czyta (gw_calendar_id niżej). Wyliczana z
+        # _GW_ID, żeby każdy box był samo-spójny (wcześniej na G2 wisiał wpis z „g1").
+        "cal_entity": f"calendar.lora_{_GW_ID.lower()}",
+        # MARTWY KLUCZ: bramka NIE pisze już ICS do pliku — `.storage/*.ics` jest root:root i zapis
+        # zawodził po cichu (stąd przejście na WS). Zostawiony dla zgodności, ale z nazwą TEJ bramki.
+        "ics_path": f"/var/lib/homeassistant/homeassistant/.storage/local_calendar.lora_{_GW_ID.lower()}.ics",
     },
     "calendar": {
         "chunk_size": 60,         # ≤90B = niezawodny próg tego łącza LoRa (lekcja RF); transfer chunkuje b64
         "chunk_delay": 6.0,       # s między chunkami (honor cooldown LoRa)
         "window_days": 14,        # okno harmonogramu kompaktowanego do LoRa
-        "gw_calendar_id": "",     # REVERSE: encja kalendarza lokalnego bramki ('' = pchaj effective)
+        # REVERSE (2026-07-30): ŹRÓDŁO push-up = lokalny kalendarz bramki, ta SAMA encja, do której
+        # down-sync pisze przez WS (`cal_entity` / `calendar.lora_<gw>`) → edycja na HA bramki
+        # jedzie w górę i nadpisuje `calendar.lora_<gw>` na supie. '' = pchaj wewnętrzny effective.
+        "gw_calendar_id": f"calendar.lora_{_GW_ID.lower()}",
         # ANTY-SPAM (2026-06-16): timeout ACK MUSI pokryć realny round-trip LoRa (patrz supervisor).
         "chunk_ack_timeout": 30.0,  # s czekania na cal_cack przed retransmisją chunku
         "chunk_retries": 5,         # maks. retransmisji chunku (max 3 wysyłki/chunk)

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generuje i wdraża (WS API) dashboard gateway 1:1 ze stylem supervisora,
+"""⚠️ LEGACY — NIE URUCHAMIAJ NA PRODUKCJI BEZ DIFFA (decyzja usera 2026-07-30).
+Kanon = stan LIVE w `dashboards_baseline/live_gw_g2_lora-scada.json` (`dash_sync.py pull|push`).
+
+Generuje i wdraża (WS API) dashboard gateway 1:1 ze stylem supervisora,
 ale na encjach zigbee2mqtt. Dark theme, button-card + apexcharts.
 
 Encje z2m na gateway:

@@ -39,3 +39,6 @@ skrypty/secrets.env
 # backupy in-place (sekrety/stany)
 *.bak
 *.bak-*
+.playwright-mcp/
+.serena/
+*.bak_*
