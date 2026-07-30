@@ -16,7 +16,7 @@ import time
 class Batcher:
     def __init__(self, gw_id, flush_callback, interval=30, max_payload=150,
                  max_items=6, tag="BATCH", logger=None, arbiter=None, repeat=1,
-                 ack_wait=0.0, ack_retries=2):
+                 ack_wait=0.0, ack_retries=2, bypass_arbiter=False):
         self.gw_id = gw_id
         self.flush_callback = flush_callback      # callable(packet_dict) → send over LoRa
         self.interval = interval
@@ -27,6 +27,10 @@ class Batcher:
         # ChannelArbiter (opcjonalny): gdy trwa transfer-plik (kalendarz/devmap/ansnap) kanał
         # należy do niego — wolumen `b` CZEKA (bufor zostaje na następny tick, zero utraty).
         self.arbiter = arbiter
+        # bypass_arbiter (2026-07-30, decyzja usera): batcher ALARMOWY (P1) nie czeka na koniec
+        # transferu. Zmierzone live: devmap trzymał kanał ~2 min — tyle NIE może czekać wyciek
+        # ani dym. Wolumen monitored zostaje pod arbitrem bez zmian.
+        self.bypass_arbiter = bypass_arbiter
         # 2026-07-19: retry P1 — priority batcher wysyla kazdy pakiet `repeat`x
         # (2 rozstrzelone proby przez kolejke TX) zeby door/leak nie ginely w krotkich stratach LoRa.
         self.repeat = max(1, int(repeat))
@@ -127,7 +131,7 @@ class Batcher:
 
     def flush(self):
         """Ship buffered deltas. Returns list of packet dicts sent (for tests)."""
-        if self.arbiter is not None and self.arbiter.busy():
+        if self.arbiter is not None and self.arbiter.busy() and not self.bypass_arbiter:
             return []                    # transfer-plik trwa → nie zapychaj kanału (bufor zostaje)
         with self.lock:
             items = list(self.buffer.items())

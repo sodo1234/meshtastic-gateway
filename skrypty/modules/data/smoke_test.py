@@ -415,8 +415,44 @@ def test_pri_bypasses_slot_and_jumps_queue():
     print("✅ P1 omija slot + wchodzi na przód kolejki `_out` (wolumen zostaje w slocie)")
 
 
+def test_alarm_bypasses_channel_arbiter():
+    """Transfer-plik (devmap/kalendarz/ansnap) trzyma kanał nawet ~2 min. Wolumen ma czekać,
+    ALARM nie — inaczej wyciek/dym stoi w kolejce. Wyjątek musi działać w OBU miejscach:
+    w batcherze (flush) i w drenażu `_out` (sender loop)."""
+    from modules.data import GatewayData
+    from modules.data.batcher import Batcher
+
+    class BusyArbiter:
+        def busy(self): return True
+
+    sent_mon, sent_pri = [], []
+    mon = Batcher("G1", sent_mon.append, interval=999, tag="MON", arbiter=BusyArbiter())
+    pri = Batcher("G1", sent_pri.append, interval=999, tag="PRI", arbiter=BusyArbiter(),
+                  ack_wait=5.0, bypass_arbiter=True)
+    mon.add("0", {"t": 21.5}); mon.flush()
+    pri.add("2", {"w": 1}); pri.flush()
+    assert sent_mon == [], "wolumen MUSI czekać na koniec transferu"
+    assert len(sent_pri) == 1 and "p" in sent_pri[0], "alarm przechodzi w trakcie transferu"
+
+    # drenaż `_out`: alarm na przodzie przechodzi mimo busy, sam wolumen — nie
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, send_spacing=0.01,
+                     pri_ack_wait=5.0)
+    gd.arbiter = BusyArbiter()
+    gd._send({"t": "b", "g": "G1", "d": []})                  # wolumen
+    gd._sender_running = True
+    th = threading.Thread(target=gd._sender_loop, daemon=True); th.start()
+    time.sleep(0.2)
+    assert lora.sent == [], "przy zajętym kanale wolumen nie schodzi z kolejki"
+    gd._send({"t": "b", "g": "G1", "d": [], "p": 5})           # alarm → na przód
+    time.sleep(0.3); gd._sender_running = False
+    assert any('"p":5' in s for s in lora.sent), "alarm musi przejść mimo transferu"
+    print("✅ alarm P1 omija arbitra kanału (batcher + drenaż `_out`), wolumen dalej czeka")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
+             test_alarm_bypasses_channel_arbiter,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
