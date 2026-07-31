@@ -271,6 +271,9 @@ def test_gateway_per_type_offline():
     assert avail(0) == 0, "Temp 1 (sensor, 5s) → offline"
     assert avail(2) == 1, "Leak 1 (binary, 100s) → wciąż online"
     gd.offline_after_fn = lambda t: None         # fallback → skalar offline_after=5
+    # B3+B4 (2026-07-31): sweep nie powtarza już niezmienionego stanu, więc żeby sprawdzić samą
+    # ścieżkę fallbacku, kasujemy latch dostępności — wtedy offline jest ZMIANĄ i leci jak zawsze.
+    gd._alive.clear()
     lora.sent.clear(); gd.report_liveness()
     assert avail(0) == 0, "fallback skalar: sensor offline"
     print("✅ GatewayData per-typ offline (T1/T2/T3) + fallback skalar")
@@ -415,6 +418,35 @@ def test_pri_bypasses_slot_and_jumps_queue():
     print("✅ P1 omija slot + wchodzi na przód kolejki `_out` (wolumen zostaje w slocie)")
 
 
+def test_no_value_heartbeat_only_changes():
+    """B3+B4 (2026-07-31): sweep NIE wysyła już `b` dla urządzeń bez zmiany — wskazania lecą
+    wyłącznie przy zmianie stanu. Zostaje: bootstrap (1. sweep po starcie) + blob availability
+    jako nośnik liveness. Przed zmianą periodyczny sweep był 93% pasma LoRa."""
+    from modules.data import GatewayData
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    blobs = []
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, send_spacing=0,
+                     report_interval=1, offline_after=3600)
+    gd.avail_blob_fn = blobs.append
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 22.0, "battery": 95}))
+    gd.mon_batch.flush(); lora.sent.clear()
+
+    gd.report_liveness()                      # 1. sweep = bootstrap (dashboard nie może być pusty)
+    gd.mon_batch.flush()
+    assert lora.sent, "pierwszy sweep po starcie MUSI wysłać stan (bootstrap)"
+    assert blobs, "blob availability musi lecieć (to on niesie teraz liveness)"
+    lora.sent.clear()
+
+    gd.report_liveness(); gd.report_liveness()   # kolejne sweepy BEZ zmiany stanu
+    gd.mon_batch.flush()
+    assert lora.sent == [], f"sweep bez zmiany NIE MOŻE nadawać: {lora.sent}"
+
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 26.0, "battery": 95}))
+    gd.mon_batch.flush()
+    assert any('"t":22' not in s for s in lora.sent) and lora.sent, "zmiana stanu MUSI polecieć"
+    print("✅ zero heartbeatów wartości: nadaje tylko zmiana (+ bootstrap i blob availability)")
+
+
 def test_alarm_bypasses_channel_arbiter():
     """Transfer-plik (devmap/kalendarz/ansnap) trzyma kanał nawet ~2 min. Wolumen ma czekać,
     ALARM nie — inaczej wyciek/dym stoi w kolejce. Wyjątek musi działać w OBU miejscach:
@@ -452,7 +484,7 @@ def test_alarm_bypasses_channel_arbiter():
 
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
-             test_alarm_bypasses_channel_arbiter,
+             test_alarm_bypasses_channel_arbiter, test_no_value_heartbeat_only_changes,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,

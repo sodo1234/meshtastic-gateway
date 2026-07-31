@@ -1394,7 +1394,15 @@ def run_supervisor(log):
                 dev = rev.get(sid_i)
                 if dev:
                     _set_avail(gw, dev, bool(bit)); n += 1
-            log.info('XFER', f'📥 avail blob [{gw}] {n}/{len(bits)} sid → availability zaktualizowana')
+                    if bit:
+                        # B3+B4 (2026-07-31): od kiedy bramka NIE wysyła heartbeatów wartości,
+                        # zegar offline supervisora nie może wisieć na ramkach `b` — inaczej każde
+                        # urządzenie, które po prostu nie zmieniło stanu, poszłoby w fałszywy
+                        # offline po T1/T2/T3. Blob availability jest teraz nośnikiem liveness:
+                        # bramka mówi wprost, kto żyje. Gdy padnie CAŁA bramka, blob przestaje
+                        # przychodzić i timeouty odpalają jak dotąd (właściwa semantyka).
+                        sup_data.last_msg_ts[(gw, dev)] = time.time()
+            log.info('XFER', f'📥 avail blob [{gw}] {n}/{len(bits)} sid → availability + zegar offline')
         elif kind == 'ansnap' and isinstance(payload, dict):
             # FAZA 1: autorytatywny blob aktywnych anomalii z bramki → reconcile store sup (add+remove)
             _reconcile_ansnap(gw, payload)

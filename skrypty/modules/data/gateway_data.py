@@ -323,7 +323,15 @@ class GatewayData:
             # non-monitored I przez `b` I do blobu (redundancja = zalew ~33 pakietów `b`). Monitored:
             # `b` (wartości) na zmianę/sweep. Non-monitored bez blobu (między sweepami): `b` na deltę.
             if monitored:
-                send_b = changed or full_sweep
+                # B3+B4 (decyzja usera 2026-07-31): ZERO heartbeatów wartości. Wskazania idą
+                # WYŁĄCZNIE w momencie zmiany — periodyczny sweep `report_interval` był mierzalnie
+                # CAŁYM ruchem G1 (194 dev × co 15 min ≈ 3,3 ramki/min non stop, 93% pasma, 36%
+                # wpisów bit-w-bit identycznych z poprzednim raportem).
+                # Liveness NIE ginie: niesie ją blob `avail` (jeden skompresowany transfer na sweep
+                # zamiast ~65 ramek `b`), a supervisor odświeża z niego zegar offline.
+                # Wyjątek: PIERWSZY sweep po starcie — bez niego dashboard po restarcie bramki stoi
+                # pusty aż do pierwszej zmiany stanu.
+                send_b = changed or self._sweep_n <= 1
             elif use_blob:
                 send_b = False                            # pełny sweep → availability przez blob (1 transfer)
             else:
