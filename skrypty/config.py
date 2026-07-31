@@ -247,7 +247,12 @@ GATEWAY_CONFIG = {
             "temperature": 0.5,               # °C
             "humidity": 2.0,                  # %
         },
-        "report_interval": 900,               # co tyle s `b` dla KAŻDEGO monitored (heartbeat danych)
+        # ZMIANA POLITYKI 2026-07-31 (decyzja usera): to NIE JEST już heartbeat wartości. Ramki `b`
+        # lecą WYŁĄCZNIE przy zmianie stanu; ten interwał paca teraz tylko blob `avail` (jeden
+        # skompresowany transfer, który niesie liveness wszystkich urządzeń) + pierwszy sweep po
+        # starcie jako bootstrap dashboardu. Pomiar sprzed zmiany: sweep 194 dev co 15 min = 93%
+        # całego pasma LoRa, przy 36% wpisów identycznych z poprzednim raportem.
+        "report_interval": 900,
         # PRAWDZIWY ACK dla batcha P1 (2026-07-30, zamiast ślepego pri_repeat=2). Pakiet dostaje id
         # `p`, sup odbija `{t:back,g,p}`, brak ACK w pri_ack_wait s ⇒ retransmisja (max retries).
         # STROJENIE: pri_ack_wait MUSI pokryć realny round-trip tego łącza, liczony od REALNEJ
