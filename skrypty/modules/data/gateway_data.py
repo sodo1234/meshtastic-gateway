@@ -323,15 +323,19 @@ class GatewayData:
             # non-monitored I przez `b` I do blobu (redundancja = zalew ~33 pakietów `b`). Monitored:
             # `b` (wartości) na zmianę/sweep. Non-monitored bez blobu (między sweepami): `b` na deltę.
             if monitored:
-                # B3+B4 (decyzja usera 2026-07-31): ZERO heartbeatów wartości. Wskazania idą
-                # WYŁĄCZNIE w momencie zmiany — periodyczny sweep `report_interval` był mierzalnie
-                # CAŁYM ruchem G1 (194 dev × co 15 min ≈ 3,3 ramki/min non stop, 93% pasma, 36%
-                # wpisów bit-w-bit identycznych z poprzednim raportem).
-                # Liveness NIE ginie: niesie ją blob `avail` (jeden skompresowany transfer na sweep
-                # zamiast ~65 ramek `b`), a supervisor odświeża z niego zegar offline.
-                # Wyjątek: PIERWSZY sweep po starcie — bez niego dashboard po restarcie bramki stoi
-                # pusty aż do pierwszej zmiany stanu.
-                send_b = changed or self._sweep_n <= 1
+                # POLITYKA RAPORTOWANIA (decyzja usera 2026-07-31, doprecyzowana 2026-08-01):
+                #  • BINARNE (switch/light/binary_sensor: przekaźniki, door, leak, ruch) →
+                #    WYŁĄCZNIE zdarzeniowo. Stan binarny się nie „starzeje": dopóki się nie zmienił,
+                #    powtarzanie go to czysta strata pasma. Periodyczny sweep był mierzalnie CAŁYM
+                #    ruchem G1 (194 dev co 15 min ≈ 3,3 ramki/min non stop = 93% pasma, przy 36%
+                #    wpisów bit-w-bit identycznych z poprzednim raportem).
+                #  • POMIAROWE (`sensor`: temperatura/wilgotność/bateria) → CYKLICZNIE, interwałem
+                #    z parametru P3. Odczyt analogowy STARZEJE SIĘ: przy delcie poniżej progu
+                #    dashboard klienta pokazywałby wartość sprzed godzin bez sygnału, że jest stara.
+                # Liveness binarnych niesie blob `avail` (jeden transfer zamiast ~65 ramek `b`),
+                # z którego supervisor odświeża zegar offline.
+                measurement = info.get('type') == 'sensor'
+                send_b = changed or (full_sweep if measurement else self._sweep_n <= 1)
             elif use_blob:
                 send_b = False                            # pełny sweep → availability przez blob (1 transfer)
             else:

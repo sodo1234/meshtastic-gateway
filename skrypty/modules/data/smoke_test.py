@@ -418,33 +418,43 @@ def test_pri_bypasses_slot_and_jumps_queue():
     print("✅ P1 omija slot + wchodzi na przód kolejki `_out` (wolumen zostaje w slocie)")
 
 
-def test_no_value_heartbeat_only_changes():
-    """B3+B4 (2026-07-31): sweep NIE wysyła już `b` dla urządzeń bez zmiany — wskazania lecą
-    wyłącznie przy zmianie stanu. Zostaje: bootstrap (1. sweep po starcie) + blob availability
-    jako nośnik liveness. Przed zmianą periodyczny sweep był 93% pasma LoRa."""
+def test_reporting_policy_binary_event_sensor_cyclic():
+    """POLITYKA (user 2026-07-31 / doprecyzowanie 2026-08-01): binarne (przekaźniki, door/leak/ruch)
+    WYŁĄCZNIE zdarzeniowo — stan binarny się nie starzeje; pomiarowe (`sensor`) CYKLICZNIE co P3 —
+    odczyt analogowy się starzeje i klient musi widzieć świeżą wartość."""
     from modules.data import GatewayData
     disc, lora = FakeGwDiscovery(), FakeLora()
     blobs = []
     gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, send_spacing=0,
                      report_interval=1, offline_after=3600)
     gd.avail_blob_fn = blobs.append
-    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 22.0, "battery": 95}))
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 22.0, "battery": 95}))   # sensor
+    gd.on_z2m("zigbee2mqtt/Test 1", json.dumps({"state": "ON"}))                        # switch
     gd.mon_batch.flush(); lora.sent.clear()
 
-    gd.report_liveness()                      # 1. sweep = bootstrap (dashboard nie może być pusty)
-    gd.mon_batch.flush()
-    assert lora.sent, "pierwszy sweep po starcie MUSI wysłać stan (bootstrap)"
-    assert blobs, "blob availability musi lecieć (to on niesie teraz liveness)"
+    gd.report_liveness(); gd.mon_batch.flush()      # 1. sweep = bootstrap dla WSZYSTKICH
+    assert lora.sent, "pierwszy sweep po starcie MUSI wysłać stan (bootstrap dashboardu)"
+    assert blobs, "blob availability musi lecieć (nośnik liveness binarnych)"
+
+    def sids_sent():
+        out = set()
+        for fr in lora.sent:
+            for e in json.loads(fr).get("d", []):
+                out.add(e[0])
+        return out
+
     lora.sent.clear()
-
-    gd.report_liveness(); gd.report_liveness()   # kolejne sweepy BEZ zmiany stanu
+    gd.report_liveness(); gd.report_liveness()      # kolejne sweepy BEZ żadnej zmiany
     gd.mon_batch.flush()
-    assert lora.sent == [], f"sweep bez zmiany NIE MOŻE nadawać: {lora.sent}"
+    got = sids_sent()
+    assert 0 in got, "czujnik POMIAROWY (Temp 1) MUSI raportować cyklicznie — odczyt się starzeje"
+    assert 3 not in got, f"przekaźnik (Test 1) NIE MOŻE nadawać bez zmiany stanu: {lora.sent}"
 
-    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 26.0, "battery": 95}))
+    lora.sent.clear()
+    gd.on_z2m("zigbee2mqtt/Test 1", json.dumps({"state": "OFF"}))
     gd.mon_batch.flush()
-    assert any('"t":22' not in s for s in lora.sent) and lora.sent, "zmiana stanu MUSI polecieć"
-    print("✅ zero heartbeatów wartości: nadaje tylko zmiana (+ bootstrap i blob availability)")
+    assert 3 in sids_sent(), "zmiana stanu przekaźnika MUSI polecieć natychmiast"
+    print("✅ polityka: binarne tylko zdarzeniowo, pomiarowe cyklicznie (P3) + bootstrap")
 
 
 def test_alarm_bypasses_channel_arbiter():
@@ -484,7 +494,7 @@ def test_alarm_bypasses_channel_arbiter():
 
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
-             test_alarm_bypasses_channel_arbiter, test_no_value_heartbeat_only_changes,
+             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
