@@ -110,3 +110,39 @@ def decode_short(short_fields):
         else:
             out[cap] = val
     return out
+
+
+# ── HASH ZGODNOŚCI DANYCH (B6, 2026-08-01) ──────────────────────────────────
+# Po przejściu na raportowanie zdarzeniowe (binarne) zbieżności mirrora nie pilnuje już periodyk,
+# tylko HASH: bramka wysyła `dh` w HB, supervisor liczy to samo ze swojego lustra i przy rozjeździe
+# dociąga pełny stan JEDNYM transferem (`dsnap`) zamiast zalewać łącze powtórkami.
+#
+# WARUNEK KONIECZNY: obie strony MUSZĄ liczyć identycznie, inaczej hash wiecznie się nie zgadza
+# i dociąganie chodzi w kółko — czyli dokładnie ten spam, który usuwamy. Dlatego:
+#   • liczymy na formie KRÓTKIEJ (`encode_short`), nie na nazwach z2m/HA (sup ma je zdekodowane),
+#   • WYCINAMY `q` (LQI zmienia się przy każdym pakiecie) i `a` (availability ma własny kanał: blob
+#     `avail` + hash `oh`) — inaczej hash skakałby bez związku z danymi,
+#   • floaty formatujemy sztywno `%.1f` (0.1 to i tak rozdzielczość `encode_short`),
+#   • sortujemy po sid, żeby kolejność słowników nie miała znaczenia.
+_HASH_SKIP = ('q', 'a')
+
+
+def _hash_val(v):
+    if isinstance(v, bool):
+        return '1' if v else '0'
+    if isinstance(v, float):
+        return f'{v:.1f}'
+    return str(v)
+
+
+def state_hash(items):
+    """items: iterable (sid, short_fields_dict) → 8-hex skrót stanu. Puste = '0'."""
+    import hashlib
+    parts = []
+    for sid, fields in sorted(items, key=lambda kv: int(kv[0])):
+        kv = sorted((k, _hash_val(v)) for k, v in (fields or {}).items() if k not in _HASH_SKIP)
+        if kv:                                     # urządzenie bez wartości nie wnosi nic do hasha
+            parts.append(f"{sid}:" + ",".join(f"{k}={v}" for k, v in kv))
+    if not parts:
+        return '0'
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:8]

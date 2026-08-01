@@ -9,7 +9,7 @@ Any incoming `b` ⇒ device available=ON + last_seen refresh (online cascade).
 """
 import time
 
-from .z2m_reader import decode_short
+from .z2m_reader import decode_short, encode_short, state_hash
 
 
 def _now_str():
@@ -70,6 +70,19 @@ class SupervisorData:
             applied += 1
         if self.log and applied:
             self.log.info('DATA', f'📊 b {gw}: {applied}/{len(items)} urządzeń zaktualizowanych')
+
+    def state_hash(self, gw):
+        """To samo co GatewayData.state_hash, ale z LUSTRA — liczone na formie krótkiej, żeby
+        obie strony dawały identyczny wynik (`encode_short(decode_short(x)) == x`)."""
+        items = []
+        devs = self.disc.devices(gw) or {}
+        for dev, fields in (self.state.get(gw) or {}).items():
+            sid = (devs.get(dev) or {}).get('sid')
+            if sid is None:
+                continue
+            items.append((sid, encode_short({k: v for k, v in fields.items()
+                                             if k not in ('available', 'last_seen')})))
+        return state_hash(items)
 
     def _note_unknown(self, gw, sid):
         """Zbierz nierozpoznany sid; melduj zbiorczo raz na `unknown_window`.

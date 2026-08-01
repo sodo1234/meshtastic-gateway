@@ -16,7 +16,7 @@ import time
 from collections import deque
 
 from .batcher import Batcher
-from .z2m_reader import compute_delta, encode_short, TYPE_CAPS
+from .z2m_reader import compute_delta, encode_short, state_hash, TYPE_CAPS
 
 
 def _now_str():
@@ -429,6 +429,23 @@ class GatewayData:
             # retransmitować pakiet, który stał w `_out` za arbitrem transferu (i „gubić" dane,
             # których nikt nie nadał).
             self.pri_batch.mark_sent(pid)
+
+    def state_hash(self):
+        """Hash stanu urządzeń monitored+priority — trafia do HB jako `dh` (B6, 2026-08-01).
+        Po przejściu binarnych na raportowanie zdarzeniowe to hash, a nie periodyk, pilnuje
+        zbieżności lustra supervisora: rozjazd ⇒ sup dociąga pełny stan jednym transferem."""
+        items = []
+        for dev, info in list(self.disc.devices.items()):
+            if not self.disc.is_monitored(dev):
+                continue
+            sid = self.disc.short_ids.get(dev)
+            if sid is None:
+                continue
+            st = self.states.get(dev, {})
+            caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
+            if caps:
+                items.append((sid, encode_short(caps)))
+        return state_hash(items)
 
     def ack_pri(self, pid):
         """`{t:back,g,p}` z supervisora → potwierdź pakiet priorytetowy (koniec retransmisji)."""
