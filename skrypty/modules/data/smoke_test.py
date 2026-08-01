@@ -418,6 +418,37 @@ def test_pri_bypasses_slot_and_jumps_queue():
     print("✅ P1 omija slot + wchodzi na przód kolejki `_out` (wolumen zostaje w slocie)")
 
 
+def test_state_hash_symmetric_gateway_vs_supervisor():
+    """B6 (2026-08-01): hash zgodności danych MUSI wychodzić identycznie po obu stronach —
+    bramka liczy ze swoich stanów z2m, supervisor ze swojego LUSTRA (nazwy zdekodowane).
+    Gdyby się rozjechały, sup dociągałby pełny stan w kółko = dokładnie ten spam, który
+    usuwamy. LQI (`q`) i availability (`a`) są celowo poza hashem: mają własne kanały."""
+    from modules.data import GatewayData, SupervisorData
+    gd = GatewayData("G1", FakeGwDiscovery(), FakeLora(), mon_interval=999, pri_interval=999)
+    gd.on_z2m("zigbee2mqtt/Temp 1",
+              json.dumps({"temperature": 22.5, "humidity": 46, "battery": 95, "linkquality": 200}))
+    gd.on_z2m("zigbee2mqtt/Leak 1",
+              json.dumps({"water_leak": False, "battery": 90, "linkquality": 11}))
+    sd = SupervisorData(FakeHA(), FakeSupDiscovery())
+    for pkt in gd.mon_batch.flush() + gd.pri_batch.flush():
+        sd.handle_b(pkt)
+    assert gd.state_hash() == sd.state_hash("G1"), \
+        f"hash rozjechany: gw={gd.state_hash()} sup={sd.state_hash('G1')}"
+
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 26.0, "humidity": 46, "battery": 95}))
+    assert gd.state_hash() != sd.state_hash("G1"), "zmiana na bramce MUSI dać rozjazd hasha"
+    for pkt in gd.mon_batch.flush():
+        sd.handle_b(pkt)
+    assert gd.state_hash() == sd.state_hash("G1"), "po dociągnięciu hashe MUSZĄ się zejść"
+
+    # sam LQI nie może ruszyć hasha (zmienia się przy każdym pakiecie)
+    h = gd.state_hash()
+    gd.on_z2m("zigbee2mqtt/Temp 1",
+              json.dumps({"temperature": 26.0, "humidity": 46, "battery": 95, "linkquality": 7}))
+    assert gd.state_hash() == h, "LQI nie może wpływać na hash danych"
+    print("✅ hash danych symetryczny gw↔sup, reaguje na zmianę, odporny na LQI")
+
+
 def test_reporting_policy_binary_event_sensor_cyclic():
     """POLITYKA (user 2026-07-31 / doprecyzowanie 2026-08-01): binarne (przekaźniki, door/leak/ruch)
     WYŁĄCZNIE zdarzeniowo — stan binarny się nie starzeje; pomiarowe (`sensor`) CYKLICZNIE co P3 —
@@ -494,7 +525,7 @@ def test_alarm_bypasses_channel_arbiter():
 
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
-             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic,
+             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic, test_state_hash_symmetric_gateway_vs_supervisor,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,

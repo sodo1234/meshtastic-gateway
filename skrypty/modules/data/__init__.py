@@ -9,11 +9,11 @@ Modules:
 from .batcher import Batcher
 from .gateway_data import GatewayData
 from .supervisor_data import SupervisorData
-from .z2m_reader import (compute_delta, encode_short, decode_short,
+from .z2m_reader import (compute_delta, encode_short, decode_short, state_hash,
                          CAP_SHORT, SHORT_CAP, TYPE_CAPS)
 
 __all__ = [
     "Batcher", "GatewayData", "SupervisorData",
-    "compute_delta", "encode_short", "decode_short",
+    "compute_delta", "encode_short", "decode_short", "state_hash",
     "CAP_SHORT", "SHORT_CAP", "TYPE_CAPS",
 ]
