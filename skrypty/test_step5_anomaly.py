@@ -583,7 +583,13 @@ def run_gateway(log):
     _avail_gate = {'h': None, 'ts': 0.0}
 
     def _send_avail_blob(blob):
-        h = hashlib.md5(json.dumps(blob.get('a'), separators=(',', ':'), sort_keys=True)
+        # B1 (2026-08-03): LQI jedzie tym blobem (wypadło z ramek `b`), więc gate nie może patrzeć
+        # wyłącznie na 'a' — inaczej link quality zamarzałby do wymuszenia co 6h. Do hasha wchodzi
+        # LQI ZGRUBSZONE do kwartyli (0-3): realne pogorszenie łącza (200→60) przepycha blob,
+        # a normalny jitter (255→244) nie — czyli dokładnie to, przed czym gate powstał.
+        gate_src = {'a': blob.get('a'),
+                    'q': {k: int(v) // 64 for k, v in (blob.get('q') or {}).items()}}
+        h = hashlib.md5(json.dumps(gate_src, separators=(',', ':'), sort_keys=True)
                         .encode()).hexdigest()[:8]
         now = time.time()
         if h == _avail_gate['h'] and now - _avail_gate['ts'] < 6 * 3600:
@@ -1414,6 +1420,7 @@ def run_supervisor(log):
         elif kind == 'avail' and isinstance(payload, dict):
             # (d) pełny sweep availability jednym blobem {ts, a:{sid:0/1}} → update wszystkich naraz
             bits = payload.get('a', {})
+            lqs = payload.get('q', {})       # B1 (2026-08-03): LQI przyjechało blobem, nie w `b`
             rev = {info.get('sid'): name for name, info in sup_disc.devices(gw).items()}
             n = 0
             for sid, bit in bits.items():
@@ -1432,7 +1439,12 @@ def run_supervisor(log):
                         # bramka mówi wprost, kto żyje. Gdy padnie CAŁA bramka, blob przestaje
                         # przychodzić i timeouty odpalają jak dotąd (właściwa semantyka).
                         sup_data.last_msg_ts[(gw, dev)] = time.time()
-            log.info('XFER', f'📥 avail blob [{gw}] {n}/{len(bits)} sid → availability + zegar offline')
+                        lq = lqs.get(sid)
+                        if lq is not None:
+                            # merge w stan urządzenia → value_json.linkquality (encja LQI mirrora)
+                            sup_data.apply_st(gw, dev, {'linkquality': lq})
+            log.info('XFER', f'📥 avail blob [{gw}] {n}/{len(bits)} sid → availability + zegar offline'
+                             + (f' + LQI {len(lqs)}' if lqs else ''))
         elif kind == 'dsnap' and isinstance(payload, dict):
             # B6: pełny stan urządzeń bramki po rozjeździe hasha — jeden transfer zamiast
             # periodycznych powtórek. Wchodzi tą samą ścieżką co `b` (handle_b), żeby merge,

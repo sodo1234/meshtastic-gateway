@@ -75,12 +75,16 @@ def _norm(cap, value):
     return value
 
 
-def encode_short(caps_dict, available=True):
+def encode_short(caps_dict, available=True, include_avail=True):
     """Encode {cap: value} (+availability) into a short-key dict for a `b` entry.
 
     {'temperature':22.5,'battery':95} → {'a':1,'t':22.5,'b':95}
+
+    include_avail=False pomija `a` (B2, 2026-08-03): availability ma własny kanał (blob
+    `avail` + hash `oh`), a supervisor przy braku `a` przyjmuje ON (handle_b: setdefault).
+    Bramka wysyła `a` tylko gdy 0 albo przy powrocie 0→1 — reszta wpisów jest o pole chudsza.
     """
-    out = {'a': 1 if available else 0}
+    out = {'a': 1 if available else 0} if include_avail else {}
     for cap, val in caps_dict.items():
         sk = CAP_SHORT.get(cap)
         if sk:
