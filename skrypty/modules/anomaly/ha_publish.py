@@ -44,11 +44,12 @@ class AnomalyBucketPublisher:
                 "state_topic": topic, "value_template": "{{ value_json.count | default(0) }}",
                 "json_attributes_topic": topic, "icon": icon, "device": di},
                 separators=(',', ':')), retain=True)
-            cuid = f"lora_gw_{gl}_{cnt}"                   # licznik devices_*
-            self.mqtt.publish(f"{self.hp}/sensor/{cuid}/config", json.dumps({
-                "name": f"GW {gw} {nm} #", "object_id": cuid, "unique_id": cuid,
-                "state_topic": topic, "value_template": "{{ value_json.count | default(0) }}",
-                "icon": icon, "device": di}, separators=(',', ':')), retain=True)
+            # USUNIĘTE 2026-08-03 (C1): druga encja `lora_gw_{gl}_{devices_*}` o nazwie „… #" była
+            # CZYSTYM DUPLIKATEM tej wyżej — ten sam `state_topic`, ten sam `value_template`,
+            # różnica tylko taka, że bez `json_attributes_topic` (czyli bez listy do popupu).
+            # HA nadawał jej entity_id z sufiksem `_2` („Anomalie Offline #"), więc klient widział
+            # w encjach po dwa liczniki tego samego. Dashboard i tak używa wersji z listą.
+            # Retained config duplikatu kasuje się pustym payloadem — patrz deploy/purge_dupes_g2.py.
         self._regd.add(gw)
         if self.log:
             self.log.info('ANOM', f'📋 encje anomalii bramki {gw} zarejestrowane (offline/battery/other + devices_*)')
