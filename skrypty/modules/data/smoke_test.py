@@ -449,6 +449,39 @@ def test_state_hash_symmetric_gateway_vs_supervisor():
     print("✅ hash danych symetryczny gw↔sup, reaguje na zmianę, odporny na LQI")
 
 
+def test_dsnap_recovers_mirror_after_lost_frames():
+    """B6, realny scenariusz: supervisor GUBI ramki (strata RF / restart / dziura w mapie), więc
+    jego lustro się rozjeżdża — i przy raportowaniu zdarzeniowym NIC samo tego nie naprawi.
+    Hash pokazuje rozjazd, a blob `dsnap` (ten sam format wpisów co `b`) domyka lustro jednym
+    transferem zamiast periodycznych powtórek."""
+    from modules.data import GatewayData, SupervisorData, encode_short, TYPE_CAPS
+    gd = GatewayData("G1", FakeGwDiscovery(), FakeLora(), mon_interval=999, pri_interval=999)
+    sd = SupervisorData(FakeHA(), FakeSupDiscovery())
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 20.0, "humidity": 40, "battery": 99}))
+    for pkt in gd.mon_batch.flush():
+        sd.handle_b(pkt)
+    assert gd.state_hash() == sd.state_hash("G1")
+
+    # …trzy kolejne zmiany, których supervisor NIE dostał (ramki zgubione)
+    for t in (21.0, 23.0, 25.5):
+        gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": t, "humidity": 40, "battery": 99}))
+        gd.mon_batch.flush()                       # wysłane w eter, ale do supa nie dotarły
+    assert gd.state_hash() != sd.state_hash("G1"), "zgubione ramki MUSZĄ dać rozjazd hasha"
+
+    # dsnap: bramka pakuje pełny stan monitored dokładnie tak, jak robi to handle_dsnap_req
+    snap = {}
+    for dev, info in gd.disc.devices.items():
+        sid = gd.disc.short_ids.get(dev)
+        st = gd.states.get(dev, {})
+        caps = {k: st[k] for k in TYPE_CAPS.get(info.get("type", "sensor"), ()) if k in st}
+        if caps and sid is not None:
+            snap[str(sid)] = encode_short(caps, available=True)
+    sd.handle_b({"t": "b", "g": "G1", "ts": 1,
+                 "d": [[int(s), f] for s, f in snap.items()]})
+    assert gd.state_hash() == sd.state_hash("G1"), "dsnap MUSI domknąć lustro jednym transferem"
+    print("✅ dsnap: po zgubionych ramkach hash wykrywa rozjazd, blob domyka lustro")
+
+
 def test_reporting_policy_binary_event_sensor_cyclic():
     """POLITYKA (user 2026-07-31 / doprecyzowanie 2026-08-01): binarne (przekaźniki, door/leak/ruch)
     WYŁĄCZNIE zdarzeniowo — stan binarny się nie starzeje; pomiarowe (`sensor`) CYKLICZNIE co P3 —
@@ -525,7 +558,7 @@ def test_alarm_bypasses_channel_arbiter():
 
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short,
-             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic, test_state_hash_symmetric_gateway_vs_supervisor,
+             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
