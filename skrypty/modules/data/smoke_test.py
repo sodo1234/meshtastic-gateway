@@ -136,13 +136,14 @@ def test_gateway_on_z2m_routing():
     # bridge/set topics ignored
     gd.on_z2m("zigbee2mqtt/bridge/devices", "[]")
     gd.on_z2m("zigbee2mqtt/Temp 1/set", "{}")
-    # linkquality rides along on a real delta
+    # B1 (2026-08-03): LQI jest ŚLEDZONE, ale NIE jedzie już w `b` — trafia do blobu `avail`
     gd.mon_batch.flush()
     gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 23.0, "battery": 95, "linkquality": 84}))
     pkts = gd.mon_batch.flush()
     fields = pkts[0]["d"][0][1]
-    assert fields.get("q") == 84, f"linkquality ride-along missing: {fields}"
-    print("✅ GatewayData.on_z2m: delta gating + mon/pri routing + online + LQI ride-along")
+    assert gd.linkquality.get("Temp 1") == 84, "LQI musi być śledzone lokalnie (do blobu)"
+    assert "q" not in fields, f"LQI nie ma prawa rozpychać ramki `b`: {fields}"
+    print("✅ GatewayData.on_z2m: delta gating + mon/pri routing + online + LQI poza `b`")
 
 
 def test_gateway_handle_req():
@@ -193,7 +194,8 @@ def test_gateway_periodic_liveness():
     gd.mon_batch.flush(); lora.sent.clear()
     gd.report_liveness()
     entry = sid0_entries()[-1]                    # sid 0 = Temp 1
-    assert entry[1].get("a") == 1 and entry[1].get("t") == 22.0, entry
+    # B2: dostępność bez zmiany → `a` NIE leci (sup czyta brak jako ON); wartości lecą jak dotąd
+    assert entry[1].get("a") is None and entry[1].get("t") == 22.0, entry
     # DEAD: cisza z2m > offline_after → available=0 (#7)
     gd.last_msg_ts["Temp 1"] = time.time() - 10
     lora.sent.clear()
@@ -269,7 +271,8 @@ def test_gateway_per_type_offline():
         return None
     lora.sent.clear(); gd.report_liveness()
     assert avail(0) == 0, "Temp 1 (sensor, 5s) → offline"
-    assert avail(2) == 1, "Leak 1 (binary, 100s) → wciąż online"
+    # B2 (2026-08-03): online = BRAK `a` w ramce (supervisor czyta brak jako ON). Offline dalej jawnie.
+    assert avail(2) != 0, "Leak 1 (binary, 100s) → wciąż online"
     gd.offline_after_fn = lambda t: None         # fallback → skalar offline_after=5
     # B3+B4 (2026-07-31): sweep nie powtarza już niezmienionego stanu, więc żeby sprawdzić samą
     # ścieżkę fallbacku, kasujemy latch dostępności — wtedy offline jest ZMIANĄ i leci jak zawsze.
@@ -556,8 +559,42 @@ def test_alarm_bypasses_channel_arbiter():
     print("✅ alarm P1 omija arbitra kanału (batcher + drenaż `_out`), wolumen dalej czeka")
 
 
+def test_b1_b2_slim_entries():
+    """B1+B2 (2026-08-03): wpis `b` bez `q` (LQI → blob) i bez `a` dopóki dostępność się nie
+    zmienia. Straż regresji na trzech rzeczach naraz, bo błąd tutaj psuje DANE, nie kosmetykę:
+    (1) `a` MUSI polecieć przy offline, (2) MUSI wrócić przy powrocie online — inaczej merge
+    Batchera zostawiłby w ramce stare `a:0`, (3) LQI MUSI być w blobie, bo encja mirrora go czyta."""
+    from modules.data import GatewayData
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    blobs = []
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, send_spacing=0,
+                     report_interval=1, offline_after=3600)
+    gd.avail_blob_fn = blobs.append
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 22.0, "battery": 95,
+                                                "linkquality": 84}))
+
+    def fields_of(pkts, sid=0):
+        for pkt in pkts:
+            for e in pkt.get("d", []):
+                if e[0] == sid:
+                    return e[1]
+        return None
+
+    assert "a" not in fields_of(gd.mon_batch.flush()), "zwykły wpis nie potrzebuje `a` (sup czyta ON)"
+
+    gd._enqueue("Temp 1", {}, available=False)                    # urządzenie zamilkło
+    assert fields_of(gd.mon_batch.flush()) == {"a": 0}, "offline MUSI iść jawnie"
+
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 25.0}))   # wróciło
+    assert fields_of(gd.mon_batch.flush()).get("a") == 1, "powrót online MUSI nieść `a:1`"
+
+    gd.report_liveness()
+    assert blobs and blobs[-1].get("q", {}).get("0") == 84, f"LQI musi jechać blobem: {blobs[-1:]}"
+    print("✅ B1+B2: `b` bez LQI i bez zbędnego `a`, offline/powrót jawne, LQI w blobie")
+
+
 if __name__ == "__main__":
-    tests = [test_imports, test_compute_delta, test_encode_decode_short,
+    tests = [test_imports, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
              test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,

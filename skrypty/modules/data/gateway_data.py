@@ -83,7 +83,8 @@ class GatewayData:
         self.states = {}               # {dev: last full Z2M state dict}
         self.last_seen = {}            # {dev: "date HH:MM:SS"}
         self.last_msg_ts = {}          # {dev: epoch} — dowolna wiadomość z2m (dla stagnation)
-        self.linkquality = {}          # {dev: Zigbee LQI 0-255} — ride-along, no own trigger
+        self.linkquality = {}          # {dev: Zigbee LQI 0-255} — jedzie blobem `avail`, nie w `b` (B1)
+        self._a_sent = {}              # {dev: bool} — ostatnia dostępność WYSŁANA w `b` (B2)
         self._alive = {}               # {dev: bool} — ostatnio zaraportowana dostępność (transition log)
         self._start_ts = 0.0           # znacznik startu (grace zanim ogłosimy offline)
         self._out = deque()            # paced outbound queue (both batchers share it)
@@ -217,12 +218,16 @@ class GatewayData:
                 self.on_avail(dev, available)
             except Exception:
                 pass
-        cd = dict(caps_dict)
-        if available:
-            lq = self.linkquality.get(dev)  # ride-along: LQI nie wyzwala batcha, ale jedzie z delta
-            if lq is not None:
-                cd['linkquality'] = lq
-        short = encode_short(cd, available=available)
+        # B1/B2 (2026-08-03): wpis `b` chudnie o dwa pola, które nic nie wnosiły.
+        #  • `q` (LQI) był w 87% wpisów, nigdy nie wyzwalał wysyłki (ride-along) i tylko rozpychał
+        #    ramkę → przeniesiony do blobu `avail` (pełny sweep, jeden skompresowany transfer).
+        #  • `a` szło w 100% wpisów, choć availability ma własny kanał (blob + hash `oh`).
+        #    Wysyłamy je tylko gdy 0 albo przy powrocie 0→1; brak `a` supervisor czyta jako ON
+        #    (handle_b: setdefault). Warunek „powrotu" jest konieczny także dlatego, że Batcher
+        #    MERGE'uje wpisy tego samego sid w oknie — bez a:1 stare a:0 zostałoby w ramce.
+        include_a = (not available) or (self._a_sent.get(dev) is False)
+        self._a_sent[dev] = available
+        short = encode_short(caps_dict, available=available, include_avail=include_a)
         if dev in self.disc.priority_names:
             self.pri_batch.add(sid, short, force_flush=force)
         else:
@@ -299,6 +304,7 @@ class GatewayData:
         # wartości `b` (heartbeat #8), non-monitored trafiają TYLKO do blobu.
         use_blob = bool(full_sweep and self.avail_blob_fn)
         blob = {}
+        lq_blob = {}                   # B1: LQI żywych urządzeń — tu, nie w każdym wpisie `b`
         for dev, info in list(self.disc.devices.items()):
             monitored = self.disc.is_monitored(dev)
             if inactive and not monitored:
@@ -317,6 +323,12 @@ class GatewayData:
             sid = self.disc.short_ids.get(dev)
             if use_blob and sid is not None:
                 blob[str(sid)] = 1 if alive else 0        # availability wszystkich → blob
+                lq = self.linkquality.get(dev)
+                if alive and lq is not None:
+                    try:
+                        lq_blob[str(sid)] = int(round(float(lq)))
+                    except (TypeError, ValueError):
+                        pass
             changed = (self._alive.get(dev) != alive)    # (d) zmiana dostępności od ostatniego sweepu
             # EFEKTYWNOŚĆ (2026-07-05): non-monitored na PEŁNYM sweepie z blobem → TYLKO blob, NIE
             # także `b`. Bug: przy starcie (pusty _alive → changed=True dla WSZYSTKICH) słał 199×
@@ -362,7 +374,10 @@ class GatewayData:
         # (d) pełny sweep availability → JEDEN skompresowany transfer (ts w blobie RAZ, nie per-pakiet)
         if use_blob and blob:
             try:
-                self.avail_blob_fn({'ts': int(now), 'a': blob})
+                payload = {'ts': int(now), 'a': blob}
+                if lq_blob:
+                    payload['q'] = lq_blob                # B1: LQI ride-along blobu, nie ramek `b`
+                self.avail_blob_fn(payload)
                 if self.log:
                     self.log.info('DATA', f'📤 avail blob: {len(blob)} sid → ReliableTransfer (1 transfer, zamiast ~{-(-len(blob)//6)} pkt `b`)')
             except Exception as e:
