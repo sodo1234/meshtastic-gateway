@@ -341,8 +341,35 @@ def test_reconciler_offline_unack_and_diag():
     print("✅ reconciler: offline unack przy re-arm + diagnostyka stale (zgubione recovery)")
 
 
+def test_delta_and_snapshot_share_gateway_clock():
+    """2026-08-03: delta `an_d` i blob `ansnap` muszą dać się UPORZĄDKOWAĆ. Transfer blobu trwa na
+    łączu LoRa ~1-2 min, delta to jeden pakiet — zaobserwowano live, jak spóźniony snapshot skasował
+    anomalię dodaną w międzyczasie deltą. Wspólną osią jest zegar BRAMKI (`ts` w obu ramkach);
+    supervisor odrzuca snapshot starszy niż ostatnio zastosowana zmiana."""
+    from modules.anomaly import AnomalyStore, AnomalyReconciler
+    sid2dev = {0: "Temp 1"}
+    st = AnomalyStore(resolve_dev=lambda gw, sid: sid2dev.get(sid))
+    snaps, deltas = [], []
+    truth = [[0, "lb", 20]]
+    rec = AnomalyReconciler(
+        "G1", st, probes=[lambda: list(truth)],
+        resolve_dev=lambda sid: sid2dev.get(sid), dev_to_sid=lambda dev: {"Temp 1": 0}.get(dev),
+        readd_fn=lambda sid, code, val: st.handle_ab({"g": "G1", "d": [[sid, code, val]]}),
+        snapshot_send_fn=snaps.append, delta_send_fn=deltas.append,
+        interval=999, mute_window=0)
+    rec.run_once()                                   # bootstrap → pełny blob (brak _last_sent)
+    assert snaps and isinstance(snaps[-1].get("ts"), int), f"snapshot bez ts: {snaps[-1:]}"
+    truth.append([0, "th", 30.0])                    # mała zmiana → delta
+    rec.run_once()
+    assert deltas, "mała zmiana powinna pójść deltą"
+    assert isinstance(deltas[-1].get("ts"), int), f"delta bez ts (brak osi czasu): {deltas[-1]}"
+    assert deltas[-1]["ts"] >= snaps[-1]["ts"], "zegar bramki musi być niemalejący"
+    print("✅ an_d i ansnap niosą zegar bramki (oś porządkująca spóźniony snapshot)")
+
+
 if __name__ == "__main__":
-    tests = [test_imports, test_stagnation_battery_vs_mains, test_stagnation_recovery,
+    tests = [test_imports, test_delta_and_snapshot_share_gateway_clock,
+             test_stagnation_battery_vs_mains, test_stagnation_recovery,
              test_stagnation_skips_unseen, test_offline_by_type, test_offline_recovery_and_grace,
              test_battery_low_critical_recovery, test_anomaly_batcher_dedup_and_flush,
              test_anomaly_batcher_split, test_stagnation_all_devices_and_emit,

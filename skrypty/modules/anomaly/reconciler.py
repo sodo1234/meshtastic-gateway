@@ -188,7 +188,11 @@ class AnomalyReconciler:
         small = 0 < (len(added) + len(removed)) <= self.delta_max
         if (self.delta_send_fn and small and not force_send
                 and self._last_sent is not None):
-            self.delta_send_fn({"t": "an_d", "g": self.gw_id,
+            # `ts` (2026-08-03): delta i snapshot muszą dać się UPORZĄDKOWAĆ po stronie supervisora.
+            # Transfer blobu trwa tu ~1-2 min, delta to jeden pakiet — bez wspólnej osi czasu
+            # spóźniony snapshot kasował anomalię dodaną w międzyczasie deltą. Zegar bramki
+            # (jedno źródło dla obu ramek) daje ścisłą kolejność, niezależnie od latencji łącza.
+            self.delta_send_fn({"t": "an_d", "g": self.gw_id, "ts": int(ts),
                                 "a": added, "r": removed, "h": h})
             if self.log:
                 self.log.info('ANOM', f'📤 [AN_D] delta +{len(added)}/-{len(removed)} '
