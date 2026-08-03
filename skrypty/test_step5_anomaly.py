@@ -49,7 +49,7 @@ from modules.transport import Dispatcher, MqttTransport, LoraTransport
 from modules.transport.tx_queue import PriorityTxQueue
 from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
                                GatewayDiscovery, SupervisorDiscovery, SupervisorLinkProbe)
-from modules.data import GatewayData, SupervisorData
+from modules.data import GatewayData, SupervisorData, encode_short, TYPE_CAPS
 from modules.params import ParamSync
 from modules.anomaly import (StagnationEngine, OfflineMonitor, GatewayOfflineAnomaly, AlarmMonitor,
                              BatteryMonitor, TempHumMonitor, AnomalyBatcher, AnomalyStore)
@@ -171,6 +171,10 @@ def run_gateway(log):
                          # pełnych ansnap co dump_interval). an_reconciler zdefiniowany niżej,
                          # wywołanie dopiero po starcie HB (wzorzec jak param_sync wyżej).
                          **({'ah': an_reconciler._last_hash} if an_reconciler._last_hash else {}),
+                         # B6 (2026-08-01): hash STANU URZĄDZEŃ. Odkąd binarne raportują wyłącznie
+                         # zdarzeniowo, zbieżności lustra nie pilnuje periodyk tylko ten hash — sup
+                         # porównuje ze swoim i przy rozjeździe prosi o `dsnap` (jeden transfer).
+                         'dh': data.state_hash(),
                          **gw_mode.state()})            # STEP 5: gm=tryb, ga=aktywna (supresja offline)
 
     # ── STEP 4: slotowanie (krok 7) — batch `b` nadawany TYLKO w oknie tej bramki ──
@@ -878,6 +882,31 @@ def run_gateway(log):
     dispatcher.register('cfg', lambda d: log.info('RX', 'cfg (passthrough)'))
     # ACK batcha priorytetowego z supervisora → koniec retransmisji tego pakietu.
     dispatcher.register('back', lambda d: for_me(d) and data.ack_pri(d.get('p')))
+
+    def handle_dsnap_req(d):
+        """B6: sup wykrył rozjazd hasha `dh` → odeślij PEŁNY stan monitored+priority JEDNYM
+        skompresowanym transferem (wzorzec 1:1 z `ansnap`/`devmap`). To zamiennik periodycznego
+        heartbeatu wartości: zamiast nadawać w kółko „na wszelki wypadek", nadajemy raz i tylko
+        wtedy, gdy lustro faktycznie się rozjechało."""
+        if not for_me(d):
+            return
+        snap = {}
+        for dev, info in list(discovery.devices.items()):
+            if not discovery.is_monitored(dev):
+                continue
+            sid = discovery.short_ids.get(dev)
+            if sid is None:
+                continue
+            st = data.states.get(dev, {})
+            caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
+            if caps:
+                snap[str(sid)] = encode_short(caps, available=data._alive.get(dev, True))
+        if not snap:
+            log.warn('DATA', '↻ dsnap_req: brak stanów do wysłania')
+            return
+        log.info('DATA', f'↻ dsnap_req [{gw_id}]: {len(snap)} urządzeń → blob (rozjazd hasha)')
+        rt.start_send(gw_id, 'dsnap', {'ts': int(time.time()), 's': snap})
+    dispatcher.register('dsnap_req', handle_dsnap_req)
     dispatcher.set_fallback(lambda d: log.debug('RX', f'unknown t={d.get("t")}'))
 
     # ── Local MQTT (gateway broker) ──
@@ -1364,6 +1393,7 @@ def run_supervisor(log):
         arbiter=arbiter, accept_gw=None)
     expected_cal_hash = {gw: scheduler.schedule_hash(gw, win_days) for gw in known_gateways}
     cal_sync_guard = {}                                  # gw → ts ostatniego auto-sync (debounce drift)
+    dsnap_guard = {}                                     # B6: gw → ts ostatniej prośby o dsnap
     gw_push_inflight = {}                                # gw → ts cal_begin(gw_push): transfer w drodze
 
     # BULK: odbiór ReliableTransfer (mass_offline z bramki = z2m-down → cała bramka niedostępna).
@@ -1403,6 +1433,21 @@ def run_supervisor(log):
                         # przychodzić i timeouty odpalają jak dotąd (właściwa semantyka).
                         sup_data.last_msg_ts[(gw, dev)] = time.time()
             log.info('XFER', f'📥 avail blob [{gw}] {n}/{len(bits)} sid → availability + zegar offline')
+        elif kind == 'dsnap' and isinstance(payload, dict):
+            # B6: pełny stan urządzeń bramki po rozjeździe hasha — jeden transfer zamiast
+            # periodycznych powtórek. Wchodzi tą samą ścieżką co `b` (handle_b), żeby merge,
+            # publikacja encji, zegar offline i licznik dostępności działały identycznie.
+            snap = payload.get('s', {})
+            entries = []
+            for sid, short in snap.items():
+                try:
+                    entries.append([int(sid), short])
+                except (TypeError, ValueError):
+                    entries.append([sid, short])
+            if entries:
+                sup_data.handle_b({'t': 'b', 'g': gw, 'ts': payload.get('ts'), 'd': entries})
+                log.info('XFER', f'📥 dsnap [{gw}] {len(entries)} urządzeń → lustro zsynchronizowane '
+                                 f'(hash {sup_data.state_hash(gw)})')
         elif kind == 'ansnap' and isinstance(payload, dict):
             # FAZA 1: autorytatywny blob aktywnych anomalii z bramki → reconcile store sup (add+remove)
             _reconcile_ansnap(gw, payload)
@@ -2140,6 +2185,19 @@ def run_supervisor(log):
                 cal_sync_guard[gw] = now
                 log.info('CAL', f'🔄 {gw} cal drift ({cal}≠{expected_cal_hash.get(gw)}) → re-sync')
                 targeted_calendar_sync([gw])
+        # B6 (2026-08-01): hash STANU URZĄDZEŃ. Odkąd binarne raportują wyłącznie zdarzeniowo,
+        # to jedyny mechanizm pilnujący, że lustro supa nie rozjechało się po cichu (zgubiona
+        # ramka, restart supa, dziura w mapie). Rozjazd ⇒ jeden `dsnap` zamiast periodycznego
+        # zalewu. Debounce 300 s: transfer trwa, a hash bramki zmienia się przy KAŻDEJ zmianie
+        # stanu — bez tego prośby leciałyby seriami w trakcie normalnego ruchu.
+        dh = d.get('dh')
+        if dh and gw and dh != sup_data.state_hash(gw):
+            _now = time.time()
+            if _now - dsnap_guard.get(gw, 0) > 300:
+                dsnap_guard[gw] = _now
+                log.info('DATA', f'🔄 {gw} rozjazd hasha danych ({dh}≠{sup_data.state_hash(gw)}) '
+                                 f'→ proszę o dsnap')
+                send_to_all({"t": "dsnap_req", "g": gw})
         # #2: SYNC CZASU sterowany hashem — TYLKO gdy rozjazd, nie na każdym starcie.
         # Rozjazd = pierwszy kontakt w sesji (offset nieznany) LUB tq bramki nieświeży
         # (unsynced/stale/holdover). synced/ntp po 1. sync = cisza. „supervisor inicjalizuje".
