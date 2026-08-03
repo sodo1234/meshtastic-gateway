@@ -610,6 +610,32 @@ _MONITOR_RULES = [
 ]
 
 
+MONITOR_WINDOW_MIN = 15          # ile ostatnich minut logu bierzemy pod uwagę w werdykcie
+
+
+def _recent_rows(rows, window_min):
+    """Zostaw linie z ostatnich `window_min` minut logu. Odniesienie = OSTATNI znacznik czasu
+    w logu (log jest zdalny, tail bywa nieświeży — zegar tej maszyny nie jest miarodajny).
+    Linie bez znacznika (kontynuacje, tracebacki) zostają, bo należą do poprzedzającej je linii.
+    Gdy w oknie nie ma nic sensownego, oddajemy całość — lepiej pokazać za dużo niż nic."""
+    stamp = _re.compile(r"^(\d\d):(\d\d):(\d\d)")
+    marks = [(i, stamp.match(l)) for i, l in enumerate(rows)]
+    marks = [(i, int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)))
+             for i, m in marks if m]
+    if not marks:
+        return rows
+    last = marks[-1][1]
+    cutoff_i = 0
+    for i, sec in marks:
+        delta = last - sec
+        if delta < 0:                       # przejście przez północ
+            delta += 24 * 3600
+        if delta <= window_min * 60:
+            cutoff_i = i
+            break
+    return rows[cutoff_i:] if cutoff_i else rows
+
+
 @app.route("/api/monitor")
 def api_monitor():
     host = request.args.get("host")
@@ -629,6 +655,14 @@ def api_monitor():
         return jsonify({"host": host, "role": role, "lines": 0, "health": "—",
                         "loss": 0, "irreg": 0, "tx": 0, "rx": 0, "rules": {},
                         "note": "brak logu (harness stopped?)"})
+    # OKNO CZASOWE (2026-08-03): werdykt ma opisywać STAN BIEŻĄCY, nie historię bufora.
+    # Dotąd liczyliśmy zdarzenia z całych ~3000 linii, więc naprawiona retransmisja sprzed godzin
+    # świeciła „PROBLEM" identycznie jak awaria trwająca w tej chwili — a przy zdrowym łączu
+    # retransmisje SĄ normalne (transfer ma własny ACK+retry i sam się naprawia).
+    # Punktem odniesienia jest ostatni znacznik czasu W LOGU, nie zegar tej maszyny: log jest
+    # zdalny i tail bywa nieświeży. Ujemna różnica = przejście przez północ.
+    rows = _recent_rows(rows, MONITOR_WINDOW_MIN)
+    text = "\n".join(rows)
     rules = {}
     for key, cat, rx, human in _MONITOR_RULES:
         m = [l for l in rows if _re.search(rx, l)]
