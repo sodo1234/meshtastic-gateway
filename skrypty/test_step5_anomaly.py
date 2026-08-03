@@ -1737,6 +1737,10 @@ def run_supervisor(log):
     an_v10.allow_fn = sup_disc.allowed          # MIRROR WHITELIST: encje per-anomalia tylko dla lustra
     anomaly_store.on_change = lambda gw: (publish_anomalies(gw), an_v10.publish(gw))
 
+    # Znacznik czasu (ZEGAR BRAMKI) ostatnio zastosowanej zmiany anomalii z danej bramki —
+    # oś porządkująca delty `an_d` i snapshoty `ansnap`. Patrz straż w _reconcile_ansnap.
+    gw_an_ts = {}
+
     def _seed_avail_from_store(gw):
         """Odtwórz availability z AUTORYTATYWNEJ listy offline (persist po restarcie / ansnap
         od bramki). dev_avail żyje tylko w pamięci procesu — po restarcie puste, więc licznik
@@ -1756,9 +1760,25 @@ def run_supervisor(log):
     def _reconcile_ansnap(gw, payload):
         """FAZA 1: blob aktywnych anomalii z bramki (rt kind='ansnap') = AUTORYTATYWNA lista. Reconcile
         store supervisora: dodaj/aktualizuj wszystkie z blobu + USUŃ te dla tej bramki, których w blobie
-        NIE MA (recovery lub ręczny clear na bramce = źródle prawdy). Pusty blob → skasuj wszystkie gw."""
+        NIE MA (recovery lub ręczny clear na bramce = źródle prawdy). Pusty blob → skasuj wszystkie gw.
+
+        STRAŻ AKTUALNOŚCI (2026-08-03, złapane testem `offline`): transfer blobu trwa na tym łączu
+        ~1-2 min, a delta `an_d` to JEDEN pakiet — więc delta potrafi wyprzedzić snapshot zbudowany
+        PRZED nią. Zaobserwowane: ansnap zbudowany 13:46:19 (0 anomalii) dojechał 13:47:37 i skasował
+        anomalię offline, którą delta dodała 13:47:19 → alarm znikał z dashboardu do najbliższego
+        AH-GATE (do 15 min). Porządkujemy je ZEGAREM BRAMKI (`ts` w obu ramkach — jedno źródło
+        czasu, więc kolejność jest ścisła, bez zgadywania po latencji łącza): snapshot starszy niż
+        ostatnio zastosowana zmiana z tej bramki jest odrzucany w całości. Hash by tu nie wystarczył
+        — po DUŻEJ zmianie bramka wysyła blob, więc jego hash z definicji różni się od ostatnio
+        znanego i świeży snapshot zostałby wyrzucony."""
         from modules.anomaly.batcher import CODE_CAT
         blob = payload.get('a', []) or []
+        snap_ts = payload.get('ts') or 0
+        if snap_ts and snap_ts < gw_an_ts.get(gw, 0):
+            log.warn('ANOM', f'⏭️ ansnap [{gw}] NIEAKTUALNY (ts {snap_ts} < {gw_an_ts[gw]}) — '
+                             f'delta wyprzedziła transfer, reconcile pominięty')
+            return
+        gw_an_ts[gw] = max(gw_an_ts.get(gw, 0), snap_ts)
         anomaly_store.handle_ab({'g': gw, 'd': blob})          # add/update (brak recovery w blobie)
         present = set()
         for row in blob:
@@ -1812,6 +1832,8 @@ def run_supervisor(log):
             return
         adds = d.get('a', []) or []
         rems = d.get('r', []) or []
+        if d.get('ts'):                      # zegar bramki → straż aktualności ansnapa
+            gw_an_ts[gw] = max(gw_an_ts.get(gw, 0), d['ts'])
         if adds:
             anomaly_store.handle_ab({'g': gw, 'd': adds})
         for row in rems:
