@@ -357,6 +357,9 @@ class HAEntities:
             ("sup_time", "Supervisor Time", "{{ value_json.sup_time | default('--') }}", "mdi:clock-star-four-points", None, "sensor"),
             ("sup_lost_pong", "Sup Lost Pong", "{{ value_json.sup_lost_pong | default(0) }}", "mdi:sync-alert", None, "sensor"),
             ("time_offset", "Time Offset", "{{ value_json.time_offset | default('--') }}", "mdi:clock-alert", None, "sensor"),
+            # C3 (2026-08-03): RTT ping→pong obok offsetu. Offset jest po korekcie RTT/2, więc
+            # klient musi widzieć, z jak dużej liczby ta połowa jest brana (łącze asymetryczne).
+            ("sup_rtt", "Supervisor RTT", "{{ value_json.sup_rtt | default('--') }}", "mdi:swap-horizontal-circle", None, "sensor"),
             ("last_sync", "Last Sync", "{{ value_json.last_sync | default('--') }}", "mdi:clock-sync", None, "sensor"),
         ]
         # UWAGA: brak "device" celowo — z device HA włącza has_entity_name i ignoruje

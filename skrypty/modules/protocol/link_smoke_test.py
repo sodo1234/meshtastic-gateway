@@ -90,8 +90,32 @@ def test_discovery_anti_spam_and_force():
     print("✅ discovery anti-spam 180s (disc_meta+disc_vio) + force=True bypass")
 
 
+def test_rtt_measured_only_for_awaited_pong():
+    """C3 (2026-08-03): kafel czasu ma pokazywać dryf zegarow, nie latencje LoRa. Jedyny moment,
+    w ktorym bramka ZNA opoznienie, to pelny obieg ping->pong, wiec probe musi je zmierzyc
+    (a offset = (teraz - RTT/2) - czas_supa). Pong, na ktory NIE czekalismy (spozniony z
+    poprzedniej rundy), zawyzylby RTT o cala przerwe miedzy pingami - stad warunek _awaiting."""
+    from modules.protocol import SupervisorLinkProbe
+    lora, clk = FakeLora(), FakeClock()
+    probe = SupervisorLinkProbe("G1", lora, get_params=lambda: (15, 25, 2), clock=clk)
+    assert probe.last_rtt is None, "bez obiegu nie ma czego mierzyc"
+    probe._next_ping_ts = clk.t - 1
+    probe.check()                       # ping poszedl
+    clk.advance(4.8)                    # odpowiedz po 4,8 s
+    probe.handle_sup_pong({"g": "G1"})
+    assert abs(probe.last_rtt - 4.8) < 0.01, probe.last_rtt
+    # offset po korekcie: sup odpowiedzial ~RTT/2 temu, wiec zegary roznia sie o 0, nie o 4,8 s
+    sup_sec = clk.t - 4.8 / 2.0         # zegar supa w chwili WYSLANIA pongu (zegary zgodne)
+    assert abs((clk.t - probe.last_rtt / 2.0) - sup_sec) < 0.01, "korekta RTT/2 ma wyzerowac latencje"
+    stale = probe.last_rtt
+    clk.advance(900)
+    probe.handle_sup_pong({"g": "G1"})  # pong bez oczekiwania (spozniony/duplikat)
+    assert probe.last_rtt == stale, "pong spoza rundy NIE moze psuc pomiaru"
+    print("✅ C3: RTT mierzone tylko dla oczekiwanego pongu + korekta RTT/2 zdejmuje latencje")
+
+
 if __name__ == "__main__":
-    tests = [test_ping_pong_online, test_timeout_retries_offline_then_note_rx,
+    tests = [test_ping_pong_online, test_rtt_measured_only_for_awaited_pong, test_timeout_retries_offline_then_note_rx,
              test_discovery_anti_spam_and_force]
     failed = 0
     for t in tests:

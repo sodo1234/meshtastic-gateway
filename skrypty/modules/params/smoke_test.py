@@ -37,7 +37,9 @@ def test_imports():
 def test_defaults_and_entities():
     ps, sent, mq, _ = _sync("gateway")
     assert ps.get("P1") == 48 and ps.get("T3") == 120 and ps.get("P3") == 15
-    assert ps.get("P4") == 15 and ps.get("T4") == 25 and ps.get("PR") == 2
+    # T4: 25 → 60 (2026-08-03). Timeout pingu MUSI być dłuższy niż RTT łącza (sup→gw 16-72 s),
+    # inaczej świeża bramka melduje „supervisor offline" przy zdrowym łączu.
+    assert ps.get("P4") == 15 and ps.get("T4") == 60 and ps.get("PR") == 2
     ps.register_entities()
     cfgs = [t for t, _, _ in mq.pub if "/number/" in t and t.endswith("/config")]
     assert len(cfgs) == 15, f"expected 15 number configs, got {len(cfgs)}"

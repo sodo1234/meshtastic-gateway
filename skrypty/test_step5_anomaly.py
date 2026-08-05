@@ -266,7 +266,7 @@ def run_gateway(log):
     vio_states = {v['id']: ('ON' if v.get('default') else 'OFF')
                   for v in vio_config if v['type'] == 'switch'}
     gw_stats = {'last_sup_rx_ts': 0.0, 'last_sup_rx': '--',
-                'last_sync': '--', 'time_offset': '--', '_last_sync_ts': 0.0,
+                'last_sync': '--', 'time_offset': '--', 'sup_rtt': '--', '_last_sync_ts': 0.0,
                 'sup_time': '--',                       # #8: czas supervisora (z pakietu sync)
                 'sup_link': 'ON', 'sup_lost_pong': 0}   # F2: nadpisywane przez SupervisorLinkProbe.on_state
     SUP_LINK_TIMEOUT = CONFIG.get('sup_link_timeout', 3600)
@@ -332,9 +332,18 @@ def run_gateway(log):
         persist_path=CONFIG.get('state', {}).get('params_path', '/tmp/lora_params.json'),
         ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
         on_change=lambda k, v: log.info('PARAM', f'↻ apply {k}={v} (mechanizm)'),
-        seed={'TH': _an_seed.get('temp_high'), 'TL': _an_seed.get('temp_low'),
-              'HH': _an_seed.get('hum_high'), 'HL': _an_seed.get('hum_low'),
-              'BL': _an_seed.get('battery_low', 25), 'BC': _an_seed.get('battery_critical', 15)})
+        # E3 (2026-08-03): PRESET PRODUKCYJNY. Kolejność: default modułu → `params_preset`
+        # z config.py → progi z sekcji `anomaly` → persist (edycje usera z dashboardu wygrywają).
+        # Po co: nowa bramka wstaje z wartościami dla TEGO wdrożenia, a nie z fabrycznymi —
+        # bez tego pierwsze uruchomienie potrafi sypać fałszywymi alarmami (np. T4 krótszy niż
+        # realny RTT łącza = „supervisor offline" co ping). Preset trzyma się w config.py, bo
+        # to jedyny plik per-maszyna (deploy nie nadpisuje go — patrz deploy/deploy_g1.sh).
+        seed=dict(CONFIG.get('params_preset', {}),
+                  **{k: v for k, v in {
+                      'TH': _an_seed.get('temp_high'), 'TL': _an_seed.get('temp_low'),
+                      'HH': _an_seed.get('hum_high'), 'HL': _an_seed.get('hum_low'),
+                      'BL': _an_seed.get('battery_low', 25),
+                      'BC': _an_seed.get('battery_critical', 15)}.items() if v is not None}))
 
     # FIX offline (2026-06-15): per-typ timeout offline z T1/T2/T3 (minuty→sek) zamiast
     # jednego 1920s. Mapa typu HA → param (CLAUDE.md: T1 switch/light, T2 temp/hum sensor,
@@ -769,16 +778,25 @@ def run_gateway(log):
         lora_send({'t': 'vbtn_ack', 'g': gw_id, 'id': vid})
     dispatcher.register('vbtn', handle_vbtn)
 
-    def _apply_time_sync(sec, src='sync'):
+    def _apply_time_sync(sec, src='sync', rtt=None):
         # F(2026-07-18): wspólna aktualizacja czasu supervisora — używane przez `sync` ORAZ
         # `sup_pong` (pong niesie sec co P4). Dotąd tylko `sync`, który dla bramek z NTP nigdy
         # nie lecił (time_quality='ntp' poza triggerem resync na sup) → sup_time/offset/last_sync
         # ZAMARZAŁY. Pong odświeża je co ping (bez nowego ruchu LoRa).
+        # C3 (2026-08-03, decyzja usera): kafel „offsetu" pokazywał dotąd CAŁE opóźnienie LoRa
+        # (potrafiło być +21 s), a nie dryf zegarów — obie maszyny mają NTP i realnie się nie
+        # rozjeżdżają. Pakiet `sec` opisuje zegar supervisora z chwili WYSŁANIA pongu, czyli
+        # sprzed ~RTT/2. Odejmujemy tę połowę: zostaje to, co jest naprawdę różnicą zegarów.
+        # UWAGA (uczciwie): łącze jest ASYMETRYCZNE (gw→sup ~5 s, sup→gw 16-72 s pod ruchem),
+        # więc RTT/2 to przybliżenie, nie pomiar. Dlatego RTT pokazujemy obok offsetu — kafel
+        # ma mówić, na czym liczba stoi. Ścieżka `sync` (inicjuje sup) nie zna RTT → bez korekty.
         try:
-            offset = int(time.time()) - int(sec)
+            base = time.time() - (rtt / 2.0 if rtt else 0.0)
+            offset = int(round(base - int(sec)))
         except (TypeError, ValueError):
             return
         gw_stats['time_offset'] = f'{offset:+d}s'
+        gw_stats['sup_rtt'] = (f'{rtt:.1f}s' if rtt else gw_stats.get('sup_rtt', '--'))
         gw_stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
         gw_stats['_last_sync_ts'] = time.time()      # znacznik świeżości → time_quality='synced'
         try:
@@ -807,7 +825,7 @@ def run_gateway(log):
         sup_link_probe.handle_sup_pong(d)            # F2: link alive
         sec = d.get('sec')
         if sec:                                       # F(2026-07-18): pong niesie czas supervisora → odśwież
-            _apply_time_sync(sec, 'pong')
+            _apply_time_sync(sec, 'pong', rtt=getattr(sup_link_probe, 'last_rtt', None))
         _apply_zg(d.get('zg'))                        # 2026-07-28: zgodność policzona przez supa
 
     def _apply_zg(z):
@@ -1082,7 +1100,11 @@ def run_gateway(log):
             ('zg_disc', 'Disc — zgodność', 'mdi:check-decagram', 'zg_disc'),
             ('zg_param', 'Param — zgodność', 'mdi:check-decagram', 'zg_param'),
             ('zg_cal', 'Kalendarz — zgodność', 'mdi:calendar-check', 'zg_cal'),
-            ('zg_anom', 'Anomalie — zgodność', 'mdi:alert-decagram', 'zg_anom')]:
+            ('zg_anom', 'Anomalie — zgodność', 'mdi:alert-decagram', 'zg_anom'),
+            # 2026-08-03: 5. flaga + jej hash. Stan urządzeń pilnuje dziś hash `dh` (B6), nie
+            # periodyk — więc rozjazd lustra ma być widoczny tak samo jak disc/param/cal/anom.
+            ('data_hash', 'Hash Danych', 'mdi:database-check', 'data_hash'),
+            ('zg_data', 'Dane — zgodność', 'mdi:database-sync', 'zg_data')]:
         uid = f"lora_{gw_lower}_{eid}"
         mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
             "name": f"GW {gw_id} {nm}", "object_id": uid, "unique_id": uid,
@@ -1271,11 +1293,15 @@ def run_gateway(log):
                         offline += 1
         last_hb = (datetime.fromtimestamp(heartbeat._last_hb).strftime('%H:%M:%S')
                    if heartbeat._last_hb else '--')
-        _zg = str(gw_stats.get('zg') or '')               # 4 flagi od supa: disc/param/cal/anom
-        _zgv = [('zgodny ✅' if c == '1' else 'ROZJAZD ⚠️') for c in _zg[:4]]
-        _zgv += ['--'] * (4 - len(_zgv))                  # brak pongu = '--' (nie kłam ✅)
-        _zg_all = ('WSZYSTKO ZGODNE ✅' if _zg == '1111'
-                   else 'ROZJAZD ⚠️' if len(_zg) == 4 else '--')
+        # 5 flag od supa: disc/param/cal/anom/DANE (piąta doszła 2026-08-03 — hash `dh` z B6).
+        # Zgodność liczy sup (ma obie strony), bramka tylko odbija. Starszy supervisor pchający
+        # 4 znaki nie wywraca kafli: brakująca flaga zostaje '--', a nie fałszywe ✅.
+        _ZG_N = 5
+        _zg = str(gw_stats.get('zg') or '')
+        _zgv = [('zgodny ✅' if c == '1' else 'ROZJAZD ⚠️') for c in _zg[:_ZG_N]]
+        _zgv += ['--'] * (_ZG_N - len(_zgv))
+        _zg_all = ('WSZYSTKO ZGODNE ✅' if _zg == '1' * _ZG_N
+                   else 'ROZJAZD ⚠️' if len(_zg) == _ZG_N else '--')
         ha.pub_gw_stats(gw_id, {
             'uptime': int(now - heartbeat.start_time),
             'total': total, 'monitored': mon, 'priority': prio, 'offline': offline,
@@ -1284,13 +1310,16 @@ def run_gateway(log):
             'sup_lost_pong': gw_stats.get('sup_lost_pong', 0),   # F2: licznik epizodów braku pong
             'sup_last_rx': gw_stats['last_sup_rx'],
             'time_offset': gw_stats['time_offset'], 'last_sync': gw_stats['last_sync'],
+            'sup_rtt': gw_stats.get('sup_rtt', '--'),        # C3: na czym stoi offset (RTT/2)
             'sup_time': gw_stats.get('sup_time', '--'),      # #8: czas supervisora (z sync)
             'anom_hash': (getattr(an_reconciler, '_last_hash', '') or 'brak'),  # 2026-07-29:
                                                              # pusty = zero aktywnych anomalii
             'disc_hash': discovery.disc_hash or '--',        # STEP 17: hash disc
             'param_hash': param_sync.params_hash(),          # STEP 17: hash parametrów
+            'data_hash': data.state_hash(),                  # B6: hash stanu urządzeń (5. flaga)
             'zg_disc': _zgv[0], 'zg_param': _zgv[1],         # 2026-07-28: zgodność z sup_pong
-            'zg_cal': _zgv[2], 'zg_anom': _zgv[3], 'zg_all': _zg_all})
+            'zg_cal': _zgv[2], 'zg_anom': _zgv[3],
+            'zg_data': _zgv[4], 'zg_all': _zg_all})          # 2026-08-03: 5. flaga DANE
 
     publish_gwstat()
 
@@ -2086,6 +2115,8 @@ def run_supervisor(log):
                 ('cal_hash_ok', 'Kalendarz — zgodność', 'mdi:calendar-check', 'cal_ok'),   # F9
                 ('anom_hash', 'Hash anomalii (bramka)', 'mdi:alert-decagram', 'anomaly'),  # #9
                 ('anom_hash_ok', 'Anomalie — zgodność', 'mdi:check-decagram', 'anomaly_ok'),  # #9
+                ('data_hash', 'Hash danych (bramka)', 'mdi:database-check', 'data'),        # B6/5. flaga
+                ('data_hash_ok', 'Dane — zgodność', 'mdi:database-sync', 'data_ok'),        # B6/5. flaga
                 ('all_hashes_ok', 'Zgodność OGÓLNA', 'mdi:shield-check', 'all_ok')]:       # #9 zbiorczy
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
@@ -2288,9 +2319,15 @@ def run_supervisor(log):
             _param_ok = bool(psync is not None and _param != '--' and _param == psync.params_hash())
             _cal_ok = bool(_cal and _cal != '--' and _cal == expected_cal_hash.get(gw))
             _ah_ok = bool(gw_ah_sync.get(gw)) if _ah != '--' else True
-            _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok
+            # 5. FLAGA — DANE (2026-08-03, decyzja usera). Hash stanu urządzeń (`dh`, B6) jest
+            # równorzędny z disc/param/cal/anom: odkąd binarne raportują tylko zdarzeniowo, to on
+            # pilnuje, że lustro nie rozjechało się po cichu. Bez flagi klient nie widzi rozjazdu,
+            # który system i tak sam naprawia blobem `dsnap` — a widzieć powinien.
+            _dh = d.get('dh', '--')
+            _data_ok = bool(_dh and _dh != '--' and _dh == sup_data.state_hash(gw))
+            _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok and _data_ok
             _zgv = ''.join('1' if f else '0'               # → sup_pong ORAZ push przy zmianie
-                           for f in (_disc_ok, _param_ok, _cal_ok, _ah_ok))
+                           for f in (_disc_ok, _param_ok, _cal_ok, _ah_ok, _data_ok))
             if gw_zg.get(gw) != _zgv:                      # PUSH tylko przy ZMIANIE — steady
                 gw_zg[gw] = _zgv                           # state = 0 ramek. Sam pong nie wystarcza:
                 send_to_all({"t": "zg", "g": gw, "z": _zgv})   # probe bramki pinguje TYLKO przy ciszy.
@@ -2303,6 +2340,7 @@ def run_supervisor(log):
                 'param': _param, 'param_ok': _mark(_param_ok),
                 'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok),
                 'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
+                'data': _dh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash stanu urządzeń (B6)
                 'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
                 separators=(',', ':')), retain=True)
     dispatcher.register('hb', on_hb)
