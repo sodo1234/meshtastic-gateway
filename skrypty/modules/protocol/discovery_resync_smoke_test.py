@@ -63,6 +63,47 @@ def test_incomplete_mirror_requests_disc():
     print("✅ niepełny mirror → check_complete żąda disc")
 
 
+def test_no_disc_while_devmap_in_flight():
+    """ANTY-FLOOD (2026-08-05): gdy mapa JUŻ LECI, żadna ścieżka nie ponawia `disc`.
+
+    Zmierzone przed fixem na żywym starcie: transfer 108 s, a w tym czasie 7 żądań `disc`
+    (note_hash + check_complete ×4 + fallback), bo `lista niepełna (0/7)` jest prawdziwa
+    przez CAŁY transfer. Koszt: ~21 s kanału na śmieci (cooldown 3 s na ramkę).
+
+    UWAGA co do zakresu (lekcja z pomiaru): gate MUSI patrzeć na DOWOLNY transfer od bramki,
+    nie tylko na 'devmap'. Arbiter serializuje transfery, więc podczas mass_offline mapa i tak
+    nie przyjdzie — a to właśnie mass_offline trwał wtedy w tle. Gate zawężony do 'devmap'
+    przepuściłby cały ten flood."""
+    reqs = []
+    d = _sup(78, reqs)
+    d.note_devn('G1', 194)
+    d.xfer_busy_fn = lambda gw: True          # devmap w drodze
+    d.check_complete()
+    d.note_hash('G1', 'INNY_HASH')
+    assert reqs == [], f"podczas transferu NIE wolno prosić o disc, a poszło: {reqs}"
+
+    d.xfer_busy_fn = lambda gw: False         # transfer się skończył, mapa nadal dziurawa
+    d.check_complete()
+    assert reqs == ['G1'], f"po transferze retry musi ruszyć od razu, mam: {reqs}"
+    print("✅ gate: cisza w trakcie devmapy, retry natychmiast po niej")
+
+
+def test_broken_xfer_gate_does_not_block_discovery():
+    """Gate jest optymalizacją — jego awaria NIE MOŻE zablokować naprawy mapy.
+    Wyjątek w xfer_busy_fn ⇒ zachowujemy się jak przed fixem (żądamy disc)."""
+    reqs = []
+    d = _sup(78, reqs)
+    d.note_devn('G1', 194)
+
+    def _boom(gw):
+        raise RuntimeError('transport padł')
+
+    d.xfer_busy_fn = _boom
+    d.check_complete()
+    assert reqs == ['G1'], "awaria gate'u nie może uciszyć discovery"
+    print("✅ awaria gate'u = zachowanie sprzed fixu (discovery działa)")
+
+
 def test_disc_request_drops_hash_when_incomplete():
     """Żądanie `disc` przy niepełnym mirrorze NIE niesie hasha — inaczej bramka
     odpowie meta_only i devmapa nigdy nie dojdzie (samo-blokada)."""
@@ -149,6 +190,7 @@ def test_complete_mirror_reports_nothing():
 
 if __name__ == "__main__":
     tests = [test_hb_devn_marks_mirror_incomplete, test_incomplete_mirror_requests_disc,
+             test_no_disc_while_devmap_in_flight, test_broken_xfer_gate_does_not_block_discovery,
              test_disc_request_drops_hash_when_incomplete, test_complete_mirror_stays_quiet,
              test_unknown_devn_assumes_complete, test_devn_ignores_garbage,
              test_burst_then_backoff_never_gives_up, test_incomplete_is_reported_with_numbers,

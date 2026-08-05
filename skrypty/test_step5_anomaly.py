@@ -1498,6 +1498,16 @@ def run_supervisor(log):
                           chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
                           arbiter=arbiter, accept_gw=None)   # agreguj transfery wszystkich bramek
 
+    # ANTY-FLOOD (2026-08-05): wszystkie trzy ścieżki ponawiania `disc` (note_hash,
+    # check_complete, fallback po pingu) pytają transport, czy od tej bramki COKOLWIEK leci.
+    #
+    # DLACZEGO DOWOLNY KIND, A NIE TYLKO 'devmap': ChannelArbiter serializuje transfery, więc
+    # dopóki trwa mass_offline/anomalie/kalendarz, devmap NIE MOŻE przyjść równolegle — żądanie
+    # `disc` w tym oknie jest z definicji bezcelowe, a kosztuje ramkę i 3 s kanału. Zmierzone na
+    # starcie 2026-08-05: transfer mass_offline 108 s, a w jego trakcie 7 żądań `disc` w 2 min;
+    # mapa i tak poszła dopiero PO nim. Gate zawężony do 'devmap' nie ruszyłby tam palcem.
+    sup_disc.xfer_busy_fn = lambda gw: rt.receiving(gw)
+
     def on_calendar_received_sup(gw, direction, compact):
         """REVERSE (gw_push): bramka pushuje swój harmonogram → NADPISZ per-bramka źródło supa.
 
@@ -2258,7 +2268,15 @@ def run_supervisor(log):
         dh = d.get('dh')
         if dh and gw and dh != sup_data.state_hash(gw):
             _now = time.time()
-            if _now - dsnap_guard.get(gw, 0) > 300:
+            # C (2026-08-05): bez MAPY urządzeń dsnap jest bezużyteczny — sid nie mają nazw,
+            # więc `handle_b` odrzuci wpisy jako „nieznane sid" (zaobserwowane 15:40:40, sekundę
+            # po prośbie wysłanej przy pustym mirrorze). Rozjazd na pustym lustrze jest ponadto
+            # OCZYWISTY i zniknie sam, gdy devmap dojedzie. Czekamy więc na mapę, zamiast
+            # dokładać transfer do zatoru startowego.
+            if not sup_disc.is_complete(gw) or sup_disc._xfer_busy(gw):
+                log.debug('DATA', f'⏸️ {gw} rozjazd danych, ale brak kompletnej mapy — '
+                                  f'dsnap_req odłożony do czasu devmapy')
+            elif _now - dsnap_guard.get(gw, 0) > 300:
                 dsnap_guard[gw] = _now
                 log.info('DATA', f'🔄 {gw} rozjazd hasha danych ({dh}≠{sup_data.state_hash(gw)}) '
                                  f'→ proszę o dsnap')
@@ -2718,7 +2736,10 @@ def run_supervisor(log):
         log.info('CMD', '⚡ start: ping→pong (resync kalendarza/discovery/anomalii/czasu TYLKO przy rozjeździe)')
         sup_hb.manual_ping_all(known_gateways, send_broadcast_fn=lambda: send_to_all({"t": "ping"}))
         time.sleep(22)
-        missing = [g for g in known_gateways if not sup_disc.gw_synced.get(g)]
+        # Pomijamy bramki, których mapa WŁAŚNIE LECI — „brak mapy" jest wtedy stanem przejściowym,
+        # a nie zgubionym pongiem. Bez tego fallback dokładał trzecie żądanie do transferu w toku.
+        missing = [g for g in known_gateways
+                   if not sup_disc.gw_synced.get(g) and not sup_disc._xfer_busy(g)]
         if missing:
             log.info('CMD', f'⚡ fallback disc (brak mapy po pingu: {missing})')
             for g in missing:

@@ -56,6 +56,31 @@ class ReliableTransfer:
         if self.arbiter is not None:
             self.arbiter.hold(self.chunk_ack_timeout + 4.0)
 
+    def receiving(self, gw=None, kind=None, stale_after=300.0):
+        """Czy TRWA ODBIÓR transferu (opcjonalnie: tej bramki / tego rodzaju)?
+
+        PO CO: logika ponawiania `disc` na supervisorze pytała o mapę urządzeń, nie wiedząc,
+        że mapa właśnie leci — a transfer trwa dłużej niż okno retry (zmierzone 2026-08-05:
+        devmap 108 s, 7 żądań `disc` w 2 min, w efekcie DRUGI zbędny transfer). Na bramce
+        z ~200 urządzeniami transfer jest wielokrotnie dłuższy, więc to skaluje się w lawinę.
+
+        stale_after: wpis starszy niż to NIE liczy się jako aktywny — zawieszony transfer
+        nie może zablokować discovery na zawsze (gate ma tłumić flood, nie naprawę).
+
+        gw/kind '?' (begin zgubiony na RF, odtwarzany z chunku-sieroty) traktujemy jako
+        potencjalnie nasze: lepiej chwilę zamilczeć niż dołożyć do zatoru."""
+        now = time.time()
+        with self.lock:
+            for info in self.incoming.values():
+                if now - info.get('ts', 0) > stale_after:
+                    continue
+                if gw is not None and info.get('gw') not in (gw, '?', None):
+                    continue
+                if kind is not None and info.get('kind') not in (kind, '?', None):
+                    continue
+                return True
+        return False
+
     def _note_foreign(self, tid):
         self._foreign.add(tid)
         if len(self._foreign) > 64:
