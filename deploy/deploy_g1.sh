@@ -58,6 +58,12 @@ echo "== smoke testy NA MASZYNIE (szybkie, bez sprzętu)"
 ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && for m in data.smoke_test anomaly.smoke_test params.smoke_test; do \
   venv/bin/python -m modules.\$m 2>&1 | tail -1; done"
 
+if [ "${NORESTART:-0}" = "1" ]; then
+  echo "== NORESTART=1 → proces startuje Launcher (pre-kill + tmux po jego stronie)"
+  echo "✅ kod wgrany ($HOST). Wystartuj z Launchera :8765."
+  exit 0
+fi
+
 echo "== restart procesu (tmux $SESSION)"
 ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && tmux kill-session -t $SESSION 2>/dev/null; sleep 3; \
   tmux new -d -s $SESSION 'venv/bin/python -u test_step5_anomaly.py 2>>/tmp/test_transport.stderr.log'; sleep 12; \

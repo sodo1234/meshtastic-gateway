@@ -491,9 +491,14 @@ def pull_log(host, role, script=""):
     return {"ok": False, "err": p.stderr or p.stdout}
 
 
-def open_tail_wt(host, role):
-    """Open new wt.exe tab with live tail."""
-    log = ROLE_META[role]["remote_log"]
+def open_tail_wt(host, role, script=""):
+    """Open new wt.exe tab with live tail.
+
+    script MUSI być przekazany dla harnessów test_* — ich żywy log to
+    /tmp/test_transport.log, a ROLE_META wskazuje /tmp/gateway.log,
+    czyli plik, który przy tych skryptach w ogóle nie rośnie (podgląd
+    martwego logu = fałszywy obraz stanu systemu)."""
+    log = resolve_meta(role, script)["remote_log"]
     title = f"{role.upper()}-{host}"
     # Launch wt.exe directly (no intermediate `cmd /c start`, which flashed a
     # console window). wt opens its own GUI tab; CREATE_NO_WINDOW keeps the
@@ -763,7 +768,7 @@ def api_pull():
 @app.route("/api/open-tail", methods=["POST"])
 def api_open_tail():
     d = request.get_json()
-    open_tail_wt(d.get("host"), d.get("role"))
+    open_tail_wt(d.get("host"), d.get("role"), d.get("script", ""))
     return jsonify({"ok": True})
 
 
