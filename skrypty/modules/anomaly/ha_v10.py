@@ -39,6 +39,12 @@ def _safe(s):
 
 
 class AnomalyHAv10Bridge:
+    # MIRROR WHITELIST (2026-07-26): opcjonalny filtr (gw, dev) -> bool. Ustawiany z harnessu
+    # TYLKO dla instancji supervisora — bramka u siebie musi widziec anomalie WSZYSTKICH
+    # urzadzen (bramka = zrodlo prawdy). Liczniki an_* licza dalej wszystko, filtr dotyczy
+    # wylacznie encji per-anomalia w HA supervisora.
+    allow_fn = None
+
     def __init__(self, store, mqtt, ha_prefix, state_prefix, logger=None):
         self.store = store              # AnomalyStore (anomalies: {(gw,dev,cat): {code,value,ts}})
         self.mqtt = mqtt
@@ -74,6 +80,8 @@ class AnomalyHAv10Bridge:
         for (g, dev, cat), a in list(self.store.anomalies.items()):
             if g != gw:
                 continue
+            if self.allow_fn is not None and not self.allow_fn(g, dev):
+                continue                    # MIRROR WHITELIST: brak lustra -> brak encji
             atype = CODE_ATYPE.get(a.get("code"), a.get("code") or "other")
             safe_id = _safe(f"{gw}_{dev}_{atype}")
             desired[safe_id] = (dev, atype, a.get("value"), a.get("ts"), cat)
