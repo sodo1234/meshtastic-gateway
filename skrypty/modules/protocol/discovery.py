@@ -331,6 +331,11 @@ class SupervisorDiscovery:
         self.log = logger
         self.request_disc_fn = request_disc_fn
         self.disc_retry = disc_retry
+        # xfer_busy_fn: callable(gw) -> bool — czy mapa urządzeń tej bramki WŁAŚNIE LECI.
+        # Ustawiane z harnessu na rt.receiving(gw, kind='devmap'). Bez tego każda ścieżka
+        # ponawiania pytała o coś, co jest w drodze: `lista niepełna (0/7)` jest prawdziwe
+        # przez CAŁY transfer, więc retry wypalał się w kółko i zamawiał drugi transfer.
+        self.xfer_busy_fn = None
         self.persist_path = persist_path
         self.gw_devices = {}  # {gw: {dev: {type, caps, sid}}}
         self.gw_hashes = {}   # {gw: last advertised hash (disc_meta/hb)}
@@ -404,6 +409,15 @@ class SupervisorDiscovery:
         devmapy (samo-blokada: fałszywy stempel synced unieważniał własną naprawę)."""
         return self.gw_synced.get(gw, '') if self.is_complete(gw) else ''
 
+    def _xfer_busy(self, gw):
+        """Mapa tej bramki jest w drodze → nie ponawiaj żądania (patrz xfer_busy_fn)."""
+        if self.xfer_busy_fn is None:
+            return False
+        try:
+            return bool(self.xfer_busy_fn(gw))
+        except Exception:
+            return False        # gate jest optymalizacją — jego awaria nie może blokować discovery
+
     def check_complete(self, retry_after=18, max_try=2, idle_retry=900):
         """Re-request disc if the device list is incomplete (lost db packet).
         Event-driven, capped — runs only after an incomplete discovery."""
@@ -414,6 +428,14 @@ class SupervisorDiscovery:
             have = len(self.gw_devices.get(gw, {}))
             if have >= expected:
                 self.gw_disc_try[gw] = 0
+                continue
+            if self._xfer_busy(gw):
+                # Lista jest niepełna WŁAŚNIE DLATEGO, że transfer trwa — zapełni się na końcu.
+                # Nie przesuwamy gw_disc_ts: po zakończeniu transferu retry ma być gotowy od razu,
+                # jeśli mapa faktycznie dojdzie dziurawa.
+                if self.log:
+                    self.log.debug('DISC', f'⏸️ {gw} lista niepełna ({have}/{expected}), '
+                                           f'ale devmap w drodze — nie ponawiam disc')
                 continue
             # BACKOFF (2026-07-25): krótka seria szybkich prób (zgubiony pakiet), potem rzadki
             # retry — zamiast twardego capa, po którym system milczał do restartu, zostawiając
@@ -440,6 +462,12 @@ class SupervisorDiscovery:
         self.gw_hashes[gw] = hash_
         if hash_ == self.gw_synced.get(gw):
             self._pending.pop(gw, None)
+            return
+        if self._xfer_busy(gw):
+            # Hash się różni, bo mirror jest jeszcze pusty — a mapa właśnie leci.
+            # Żądanie teraz = druga kopia tego samego transferu.
+            if self.log:
+                self.log.debug('DISC', f'⏸️ {gw} rozjazd hasha, ale devmap w drodze — nie żądam disc')
             return
         prev = self._pending.get(gw)
         now = time.time()
@@ -477,6 +505,8 @@ class SupervisorDiscovery:
             dtype = TYPE_REV.get(type_char, 'sensor')
             caps = caps_str if isinstance(caps_str, str) else ''
             self.gw_devices[gw][name] = {'sid': sid, 'type': dtype, 'caps': caps}
+            if not self.allowed(gw, name):     # MIRROR WHITELIST: sid-mapowanie zostaje, encje nie
+                continue
             if dtype == 'switch':
                 self.ha.reg_switch_dev(gw, name)
             elif dtype == 'binary_sensor':
@@ -509,6 +539,8 @@ class SupervisorDiscovery:
             except (TypeError, ValueError):
                 sid_i = sid
             self.gw_devices[gw][name] = {'sid': sid_i, 'type': dtype, 'caps': caps}
+            if not self.allowed(gw, name):     # MIRROR WHITELIST: sid-mapowanie zostaje, encje nie
+                continue
             if dtype == 'switch':
                 self.ha.reg_switch_dev(gw, name)
             elif dtype == 'binary_sensor':
@@ -523,6 +555,20 @@ class SupervisorDiscovery:
         if self.log:
             self.log.info('DISC', f'📋 devmap {gw}: {len(devs)} urządzeń zarejestrowanych '
                           f'(synced hash={h})')
+
+    # ── MIRROR WHITELIST (2026-07-26) ────────────────────────────────────────────
+    # Supervisor publikuje encje HA TYLKO dla urządzeń z listy per-bramka. Pusta lub
+    # brakująca lista = przepuszczaj wszystko (opt-out, nie opt-in — zasada projektu).
+    # Ustawiane z harnessu: sup_disc.whitelist = CONFIG['mirror_whitelist'].
+    whitelist = {}
+
+    def allowed(self, gw, name):
+        wl = (self.whitelist or {}).get(gw)
+        return True if not wl else name in wl
+
+    def mirror_devices(self, gw):
+        """Urządzenia bramki przefiltrowane whitelistą — źródło dla lustra encji."""
+        return {n: i for n, i in self.devices(gw).items() if self.allowed(gw, n)}
 
     @staticmethod
     def _safe(s):
