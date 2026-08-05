@@ -218,6 +218,26 @@ GATEWAY_CONFIG = {
     # ale danych NIE batchują (oszczędność LoRa). Przykład wg v38 (Temp 3/4 = martwe encje, pominięte).
     "monitored": ["Test 1", "Test 2", "Temp 1", "Temp 2"],   # sensory+switche; v38: +Temp 3/4
     "priority_devices": ["Leak 1", "Door 1"],                # security → P1 10s
+
+    # ── E3 (2026-08-03): PRESET PRODUKCYJNY PARAMETRÓW ──────────────────────────────────
+    # Wartości startowe pokręteł dashboardu dla TEGO wdrożenia. Stosowane TYLKO gdy nie ma
+    # jeszcze persistu (`state.params_path`) — edycje usera z dashboardu zawsze wygrywają
+    # i nie są nadpisywane przy restarcie. Deploy NIE dotyka config.py, więc preset to
+    # naturalne miejsce na różnice między bramkami (G1 carport ≠ G2 testbed).
+    # Dlaczego to w ogóle istnieje: świeża bramka bez presetu wstaje na fabrycznych
+    # wartościach i potrafi od razu sypać fałszywymi alarmami (klasyk: timeout pingu
+    # KRÓTSZY niż realny RTT łącza = „supervisor offline" przy zdrowym łączu).
+    "params_preset": {
+        "P1": 48,    # h  — stagnacja urządzeń bateryjnych
+        "P2": 24,    # h  — stagnacja urządzeń sieciowych
+        "P3": 15,    # min— kadencja raportowania pomiarowych (binarne = zdarzeniowo, B3/B4)
+        "T1": 30,    # min— offline switch/light
+        "T2": 60,    # min— offline temp/hum
+        "T3": 120,   # min— offline door/leak/motion (bateryjne raportują rzadko)
+        "P4": 15,    # min— interwał ping→supervisor (siatka NA CISZĘ, nie stały ruch)
+        "T4": 60,    # s  — timeout pingu; MUSI być > RTT łącza (sup→gw bywa 16-72 s)
+        "PR": 2,     # x  — retry pingu
+    },
     # Inne przykłady do rozważenia:
     #   monitored=[] → wszystkie (max ruch LoRa); priority=["Smoke 1","Leak 1"] (czujniki krytyczne)
     #   produkcja: monitored=lista ważnych temp/switch, priority=tylko pożar/wyciek/dostęp

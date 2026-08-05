@@ -38,6 +38,10 @@ class SupervisorLinkProbe:
         self._sent_ts = 0.0
         self._retries_left = 0
         self._next_ping_ts = 0.0
+        # C3 (2026-08-03): czas obiegu ostatniego ping→pong [s]. Jedyny moment, w którym bramka
+        # ZNA opóźnienie łącza, więc jedyne miejsce, gdzie da się je odjąć od „offsetu zegara".
+        # None = nie zmierzono (jeszcze nie było pełnego obiegu).
+        self.last_rtt = None
         self._lock = threading.Lock()
         self.running = False
 
@@ -128,7 +132,14 @@ class SupervisorLinkProbe:
 
     # ── wejście: pong / dowolny ruch od supervisora ──────
     def handle_sup_pong(self, data=None):
-        """dispatcher 'sup_pong' — supervisor potwierdził żywotność."""
+        """dispatcher 'sup_pong' — supervisor potwierdził żywotność.
+
+        Przy okazji mierzy RTT: `_sent_ts` to nasz zegar w chwili wysłania pinga, więc różnica
+        jest czystym czasem obiegu, bez mieszania zegarów obu maszyn. Liczymy tylko dla pongu,
+        na który CZEKALIŚMY (`_awaiting`) — spóźniony pong z poprzedniej rundy dałby zawyżone RTT."""
+        with self._lock:
+            if self._awaiting and self._sent_ts:
+                self.last_rtt = max(0.0, self._clock() - self._sent_ts)
         self._go_online()
 
     def note_rx(self):

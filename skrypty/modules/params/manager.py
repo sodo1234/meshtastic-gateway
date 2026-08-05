@@ -50,7 +50,11 @@ PARAM_DEFS = {
     # czytane na żywo, więc strojenie interwału/timeoutu z dashboardu bez restartu.
     "P4": {"default": 15,  "min": 1, "max": 1440, "step": 1, "unit": "min",
            "name": "Ping sup interwał", "icon": "mdi:timer-sync"},
-    "T4": {"default": 25,  "min": 5, "max": 300,  "step": 1, "unit": "s",
+    # 2026-08-03: default 25 → 60 s. 25 s było KRÓTSZE niż realny RTT tego łącza (sup→gw
+    # potrafi iść 16-72 s pod ruchem, bo jedna antena obsługuje wszystkie bramki), więc świeżo
+    # wdrożona bramka meldowała „supervisor offline" przy zdrowym łączu. Timeout krótszy niż
+    # RTT nie wykrywa awarii — produkuje ją.
+    "T4": {"default": 60,  "min": 5, "max": 300,  "step": 1, "unit": "s",
            "name": "Ping sup timeout", "icon": "mdi:timer-alert"},
     "PR": {"default": 2,   "min": 0, "max": 10,   "step": 1, "unit": "x",
            "name": "Ping sup retry", "icon": "mdi:repeat"},
