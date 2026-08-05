@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LoRa SCADA — konsola + Home Assistant
+Comment=Startuje harness w widocznym oknie z logami i otwiera HA w przegladarce
+Exec=/home/td/meshtastic/deploy/lora_autostart.sh
+Icon=utilities-terminal
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=15
