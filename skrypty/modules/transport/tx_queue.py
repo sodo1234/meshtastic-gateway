@@ -24,12 +24,12 @@ import time
 _PRIO = {
     # P0 — reaktywne + POTWIERDZENIA: zawsze pierwsze (odblokowują transfery bulk, sterowanie)
     'rt_cack': 0, 'cal_cack': 0, 'rt_ack': 0, 'cal_ack': 0, 'back': 0,   # `back` = ACK batcha P1
-    'pong': 0, 'st': 0, 'ack': 0, 'sync': 0, 'hb': 0, 'vsw_st': 0,
+    'pong': 0, 'st': 0, 'stm': 0, 'ack': 0, 'sync': 0, 'hb': 0, 'vsw_st': 0,
     'disc_meta': 0, 'disc_vio': 0, 'param_upd': 0,
     # P1 — sterowanie / żądania + BULK chunki. Bulk to stop-and-wait (1 chunk naraz w kolejce),
     # więc P1 = „transfer raz rozpoczęty kończy się szybko" (bije wolumen ab/b), ale NIGDY nie
     # wyprzedza cacków P0. Jeden transfer bulk naraz pilnuje bulk-mutex (patrz start_send).
-    'cmd': 1, 'vsw': 1, 'params': 1, 'cfg': 1, 'req': 1, 'cal_req': 1, 'disc': 1,
+    'cmd': 1, 'cmdm': 1, 'vsw': 1, 'params': 1, 'cfg': 1, 'req': 1, 'cal_req': 1, 'disc': 1,
     'rt_begin': 1, 'rt_chunk': 1, 'rt_end': 1,
     'cal_begin': 1, 'cal_chunk': 1, 'cal_end': 1,
     # P2 — anomalie

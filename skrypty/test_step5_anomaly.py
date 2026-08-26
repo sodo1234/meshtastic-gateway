@@ -47,6 +47,7 @@ sys.path.insert(0, SCRIPT_DIR)
 from config import CONFIG, ROLE
 from modules.transport import Dispatcher, MqttTransport, LoraTransport
 from modules.transport.tx_queue import PriorityTxQueue
+from modules.protocol.bulk import Coalescer, cmd_frames, st_frames  # ramki ZBIORCZE cmdm/stm
 from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
                                GatewayDiscovery, SupervisorDiscovery, SupervisorLinkProbe)
 from modules.data import GatewayData, SupervisorData, encode_short, TYPE_CAPS
@@ -311,6 +312,25 @@ def run_gateway(log):
     def lora_send(obj):
         lora.send(json.dumps(obj, separators=(',', ':')))
 
+    # ── RAMKA ZBIORCZA `stm` (2026-08-26) — masowa zmiana stanu szła 1 ramka `st` na
+    #    urządzenie (pomiar: 67× st w 7 min, pik 42 ramki/min przy suficie ~20/min).
+    #    Teraz statusy z krótkiego okna lecą jedną ramką `stm` na kilkanaście urządzeń.
+    #    Potwierdzenia cmd też tędy — SĄ świadomie wyłączone z burst-guarda `b` i to one
+    #    dominowały ruch. Okno jest krótkie i supervisor ma optimistic UI, więc klik
+    #    nadal wygląda natychmiastowo. ──
+    _bulk_cfg = CONFIG.get('control', {})
+    def _flush_st(items):
+        for fr in st_frames(gw_id, items, max_bytes=_bulk_cfg.get('bulk_max_bytes', 200)):
+            lora_send(fr)
+        if len(items) > 1:
+            log.info('CTRL', f'📦 st zbiorczo: {len(items)} urządzeń → mniej ramek LoRa')
+    st_bulk = Coalescer(_flush_st, window=_bulk_cfg.get('bulk_window_st', 3.0),
+                        logger=log, name='st')
+
+    def st_send(dev, cap, val):
+        """Status urządzenia → supervisor. Przez okno zbiorcze; 1 sztuka = stara ramka `st`."""
+        st_bulk.add((dev, cap, val))
+
     def for_me(d):
         g = d.get('g'); return (g is None) or (g == gw_id)
 
@@ -398,6 +418,36 @@ def run_gateway(log):
 
     # ── STEP 5: anomalie (offline+battery+stagnation, ALL devices) → AnomalyBatcher → `ab` P2 ──
     an_cfg = CONFIG.get('anomaly', {})
+
+    # ── URZĄDZENIA WYŁĄCZONE Z ANOMALII (2026-08-24, polecenie usera) ──────────────────────
+    # `anomaly.no_anomaly` = wzorce fnmatch (np. 'RA*_S*') urządzeń zainstalowanych na obiekcie,
+    # ale NIEUŻYWANYCH — na G1 to 82 czujniki ruchu. Bez tego każdy z nich zgłaszał offline i
+    # stagnację, zalewając listy anomalii alarmami o sprzęcie, którego nikt nie obsługuje.
+    # Filtr działa U ŹRÓDŁA (silniki offline/stagnacja), więc urządzenia nie wchodzą do zbiorów
+    # anomalii → nie ma ich ani w hashu `oh`, ani w dump_anom, ani u supervisora.
+    # Anomalie baterii/temp/wilgoci celowo ZOSTAJĄ — user wykluczył wyłącznie offline i stagnację.
+    _no_anom_pat = list(an_cfg.get('no_anomaly', []))
+
+    _skip_logged = []                     # jednorazowy log PO zapełnieniu discovery
+
+    def _skip_anom(dev):
+        if not _no_anom_pat:
+            return False
+        import fnmatch
+        # Licznik logujemy dopiero przy pierwszym realnym użyciu: przy starcie discovery.devices
+        # jest jeszcze puste (z2m dopiero się ogłasza), więc policzenie tu dałoby „0 urządzeń" —
+        # diagnostyka, która myli bardziej, niż pomaga.
+        if not _skip_logged and discovery.devices:
+            _skip_logged.append(True)
+            hit = [d for d in discovery.devices if any(fnmatch.fnmatchcase(d, p) for p in _no_anom_pat)]
+            log.info('ANOM', f'🔕 anomalie offline/stagnacja WYŁĄCZONE dla {len(hit)}/'
+                             f'{len(discovery.devices)} urządzeń (wzorce: {", ".join(_no_anom_pat)})')
+        return any(fnmatch.fnmatchcase(dev, pat) for pat in _no_anom_pat)
+
+    if _no_anom_pat:
+        log.info('ANOM', f'🔕 wykluczenie anomalii offline/stagnacja aktywne '
+                         f'(wzorce: {", ".join(_no_anom_pat)}) — licznik po discovery')
+
     anomaly_batcher = AnomalyBatcher(
         gw_id, lora_send, interval=an_cfg.get('flush_interval', 30),
         max_payload=an_cfg.get('max_payload', 150), logger=log, arbiter=arbiter)
@@ -460,6 +510,7 @@ def run_gateway(log):
         get_timeout=_offline_min_for, logger=log,
         check_interval=an_cfg.get('offline_check', 30),
         grace=an_cfg.get('offline_grace', 120),
+        skip_dev=_skip_anom,                             # nieużywany sprzęt nie zgłasza offline
         is_active=gw_mode.offline_active)                 # #9: offline_active — calendar off-hours dalej wykrywa offline (BMS)
 
     def _offline_hash():
@@ -500,7 +551,8 @@ def run_gateway(log):
     stagnation = StagnationEngine(
         gw_id, discovery, data, get_thresholds=lambda: (param_sync.get('P1'), param_sync.get('P2')),
         logger=log, check_interval=an_cfg.get('stagnation_check', 300),
-        emit=anomaly_batcher.add, all_devices=True)
+        emit=anomaly_batcher.add, all_devices=True,
+        skip_dev=_skip_anom)                             # nieużywany sprzęt nie zgłasza stagnacji
 
     def handle_dump_anom(d):                              # STEP 5: live re-check → pełny zrzut anomalii
         if d.get('g') not in (gw_id, None):
@@ -696,9 +748,7 @@ def run_gateway(log):
                          daemon=True).start()
     dispatcher.register('disc', handle_disc_request)
 
-    def handle_cmd(d):
-        if not for_me(d): return
-        dev = d.get('d'); cap = d.get('c', 'state'); val = str(d.get('v', '')).upper()
+    def _apply_cmd(dev, cap, val):
         if dev in discovery.devices:                       # REALNE urządzenie Zigbee → steruj przez Z2M
             z2m_cap = cap if cap != 'state' else 'state'
             mqtt.publish(f'zigbee2mqtt/{dev}/set',
@@ -707,15 +757,29 @@ def run_gateway(log):
             if CONFIG.get('control', {}).get('optimistic_status', False):
                 # optimistic: odeślij `st` OD RAZU (nie czekaj na Z2M); realny `st` z
                 # propagate_state_from_z2m i tak skoryguje gdy potwierdzenie dotrze/się różni.
-                lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': val})
+                st_send(dev, cap, val)
                 log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → Z2M set + st OPTIMISTIC (bez czekania)')
             else:
                 log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → Z2M set (czekam na realne potwierdzenie)')
         else:                                              # urządzenie wirtualne (vio) — bez Z2M
             dev_states[dev] = val
             log.info('CTRL', f'🎛️ cmd {dev} {cap}={val} → applied (virtual)')
-            lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': val})
+            st_send(dev, cap, val)
+
+    def handle_cmd(d):
+        if not for_me(d): return
+        _apply_cmd(d.get('d'), d.get('c', 'state'), str(d.get('v', '')).upper())
     dispatcher.register('cmd', handle_cmd)
+
+    def handle_cmdm(d):
+        """Ramka ZBIORCZA: jedna komenda, lista urządzeń (masowe ON/OFF z dashboardu)."""
+        if not for_me(d): return
+        cap = d.get('c', 'state'); val = str(d.get('v', '')).upper()
+        devs = d.get('d') or []
+        log.info('CTRL', f'📦 cmdm {len(devs)} urządzeń {cap}={val}')
+        for dev in devs:
+            _apply_cmd(dev, cap, val)
+    dispatcher.register('cmdm', handle_cmdm)
 
     def propagate_state_from_z2m(topic, payload):
         """STEP 4 fix: KAŻDA zmiana stanu sterowalnego urządzenia (switch/light) z Z2M →
@@ -760,7 +824,7 @@ def run_gateway(log):
         st_burst.append(now_b)
         log.info('CTRL', f'🎛️ {dev} {cap}={real} (z2m, {"cmd" if was_pending else "zewn."}) '
                  f'→ st (online+licznik)')
-        lora_send({'t': 'st', 'g': gw_id, 'd': dev, 'c': cap, 'v': real})
+        st_send(dev, cap, real)
         # licznik bramki: gwstat_loop (co 300s); supervisor przelicza po `st` (handle_st → _set_avail)
 
     def handle_vsw(d):
@@ -925,10 +989,17 @@ def run_gateway(log):
             caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
             if caps:
                 snap[str(sid)] = encode_short(caps, available=data._alive.get(dev, True))
+                data.note_sent(dev, caps)                 # B6: blob to też wysyłka → karmi `dh`
+        # PUSTY ZRZUT TEŻ JEST ZRZUTEM (2026-08-24). Wcześniej brak wartości = ciche `return`,
+        # co zakleszczało system dokładnie w stanie carportu za dnia: przekaźniki bez zasilania ⇒
+        # zero wartości ⇒ bramka `dh="0"`, a supervisor z wartościami sprzed 10 dni prosił o
+        # dsnap w kółko i nigdy go nie dostawał. „Nie mam żadnych wartości" to pełnoprawna
+        # odpowiedź — dopiero ona pozwala supervisorowi wyczyścić lustro i zejść się hashem.
         if not snap:
-            log.warn('DATA', '↻ dsnap_req: brak stanów do wysłania')
-            return
-        log.info('DATA', f'↻ dsnap_req [{gw_id}]: {len(snap)} urządzeń → blob (rozjazd hasha)')
+            log.info('DATA', f'↻ dsnap_req [{gw_id}]: brak wartości → wysyłam PUSTY zrzut '
+                             f'(lustro supervisora ma się wyczyścić)')
+        else:
+            log.info('DATA', f'↻ dsnap_req [{gw_id}]: {len(snap)} urządzeń → blob (rozjazd hasha)')
         rt.start_send(gw_id, 'dsnap', {'ts': int(time.time()), 's': snap})
     dispatcher.register('dsnap_req', handle_dsnap_req)
     dispatcher.set_fallback(lambda d: log.debug('RX', f'unknown t={d.get("t")}'))
@@ -1485,10 +1556,14 @@ def run_supervisor(log):
                     entries.append([int(sid), short])
                 except (TypeError, ValueError):
                     entries.append([sid, short])
+            # ZRZUT JEST AUTORYTATYWNY: najpierw kasujemy stare wartości, potem nanosimy nowe.
+            # `handle_b` merge'uje (dict.update), więc bez tego czyszczenia wartości, których
+            # bramka już nie ma, zostawałyby w lustrze i `dh` nigdy by się nie zszedł.
+            _cleared = sup_data.clear_values(gw)
             if entries:
                 sup_data.handle_b({'t': 'b', 'g': gw, 'ts': payload.get('ts'), 'd': entries})
-                log.info('XFER', f'📥 dsnap [{gw}] {len(entries)} urządzeń → lustro zsynchronizowane '
-                                 f'(hash {sup_data.state_hash(gw)})')
+            log.info('XFER', f'📥 dsnap [{gw}] {len(entries)} urządzeń (wyczyszczono {_cleared}) '
+                             f'→ lustro zsynchronizowane (hash {sup_data.state_hash(gw)})')
         elif kind == 'ansnap' and isinstance(payload, dict):
             # FAZA 1: autorytatywny blob aktywnych anomalii z bramki → reconcile store sup (add+remove)
             _reconcile_ansnap(gw, payload)
@@ -1936,6 +2011,13 @@ def run_supervisor(log):
         while running.is_set() and interval > 0:
             time.sleep(interval)
             for gw in known_gateways:
+                # OFFLINE-GATE (2026-08-13): bramka bez HB nigdy nie przyśle `ah`, więc AH-GATE jej
+                # nie zatrzyma i cykl waliłby dump w martwy eter bez końca. Zmierzone na G1 (cisza
+                # od 08-02): 337 `dump_anom` w 7 dni vs 4 na żywym G2. Ten sam warunek online co
+                # w `targeted_calendar_sync`. Bramka wraca → HB → dump poleci normalnie.
+                if not sup_hb.gateways.get(gw, {}).get('online'):
+                    log.debug('ANOM', f'⏭️ dump_anom [{gw}] pominięty — bramka offline')
+                    continue
                 # AH-GATE (2026-07-07): HB niesie hash stanu anomalii bramki — zgodny z lokalnym →
                 # pełny dump ZBĘDNY (oszczędność ~10-14 pkt LoRa/cykl). Dump tylko przy rozjeździe
                 # lub braku informacji (bramka bez ah = stary soft / przed pierwszym blobem).
@@ -1947,6 +2029,18 @@ def run_supervisor(log):
     ctrl_cfg = CONFIG.get('control', {})
     ctrl_timeout = ctrl_cfg.get('timeout', 15); ctrl_retries = ctrl_cfg.get('retries', 2)
     pending_cmd = {}; cmd_lock = threading.Lock()
+
+    # ── RAMKA ZBIORCZA `cmdm` (2026-08-26) — „wszystkie ON" z dashboardu szło 1 ramka `cmd`
+    #    na urządzenie (pomiar: 104× cmd w 7 min). Krótkie okno zbiorcze grupuje kliknięcia
+    #    per (bramka, cap, wartość) i tnie na ramki ≤220 B. RETRY zostaje PER URZĄDZENIE
+    #    (pending_cmd trzyma pojedynczy `cmd`) — powtórki są rzadkie, nie ma czego grupować. ──
+    def _flush_cmd(items):
+        for fr in cmd_frames(items, max_bytes=ctrl_cfg.get('bulk_max_bytes', 200)):
+            send_to_all(fr)
+        if len(items) > 1:
+            log.info('CTRL', f'📦 cmd zbiorczo: {len(items)} urządzeń → mniej ramek LoRa')
+    cmd_bulk = Coalescer(_flush_cmd, window=ctrl_cfg.get('bulk_window_cmd', 1.5),
+                         logger=log, name='cmd')
     refresh_regd = set()                                 # (gw,dev) refresh buttons created
     ls_regd = set()                                      # (gw,dev) binary last_seen sensors
 
@@ -2405,15 +2499,26 @@ def run_supervisor(log):
     # F5: bramka prosi o sync czasu → targeted sync (to samo co przycisk per-gw)
     dispatcher.register('sync_req', lambda d: send_to_all({"t": "sync", "sec": int(time.time()), "g": d.get('g')}))
 
-    def handle_st(d):
-        gw = d.get('g', '?'); dev = d.get('d'); val = str(d.get('v', '')).upper()
-        if dev:
-            with cmd_lock: pending_cmd.pop((gw, dev), None)
-            cmd_failed.discard((gw, dev))                # st potwierdza działanie → czyść cmd-failure
-            _set_avail(gw, dev, True)                    # STEP 4 fix: online w dev_avail → licznik spada
-            sup_data.apply_st(gw, dev, {"state": val})   # MERGE + last_seen (był full-replace bez ts → gubił last_seen/capy)
+    def _apply_st(gw, dev, val, quiet=False):
+        if not dev: return
+        with cmd_lock: pending_cmd.pop((gw, dev), None)
+        cmd_failed.discard((gw, dev))                # st potwierdza działanie → czyść cmd-failure
+        _set_avail(gw, dev, True)                    # STEP 4 fix: online w dev_avail → licznik spada
+        sup_data.apply_st(gw, dev, {"state": val})   # MERGE + last_seen (był full-replace bez ts → gubił last_seen/capy)
+        if not quiet:
             log.info('CTRL', f'🎛️ st {gw}/{dev} = {val} → online + odbite w HA (cmd/zmiana zewn.)')
+
+    def handle_st(d):
+        _apply_st(d.get('g', '?'), d.get('d'), str(d.get('v', '')).upper())
     dispatcher.register('st', handle_st)
+
+    def handle_stm(d):
+        """Ramka ZBIORCZA statusów: jedna ramka, mapa {urządzenie: wartość}."""
+        gw = d.get('g', '?'); m = d.get('d') or {}
+        for dev, val in m.items():
+            _apply_st(gw, dev, str(val).upper(), quiet=True)   # linia na urządzenie = ten sam flood, tylko w logu
+        log.info('CTRL', f'📦 stm {gw}: {len(m)} urządzeń → online + odbite w HA')
+    dispatcher.register('stm', handle_stm)
 
     def handle_vsw_st(d):
         gw = d.get('g', '?'); vid = d.get('id')
@@ -2596,7 +2701,7 @@ def run_supervisor(log):
             # potem nadpisze potwierdzoną wartością. Bez tego klik wygląda jak "nie złapał".
             ha.pub_device_state(gw, dev, {"state": val, "available": "ON"})
             log.info('CTRL', f'🎛️ dashboard {gw}/{dev} → {val} (optimistic, timeout {ctrl_timeout}s)')
-            send_to_all(msg)
+            cmd_bulk.add((gw, dev, "state", val))
 
     def note_gw_activity(gw):
         """Bramka ONLINE jeśli przyszła JAKAKOLWIEK wiadomość LoRa z `g` (nie tylko HB/pong).
@@ -2755,8 +2860,16 @@ def run_supervisor(log):
         si = cal_cfg.get('sync_interval', 0)             # 0 = tylko start/przycisk; >0 = okresowo
         while running.is_set() and si > 0:
             time.sleep(si)
+            # 2026-08-13: cykl tylko CZYTA HA i odświeża OCZEKIWANY hash. Wysyłkę robi drift-branch
+            # w on_hb — czyli wyłącznie do bramki, która faktycznie ma inny harmonogram. Wcześniejsze
+            # `targeted_calendar_sync()` pchało pełny transfer do KAŻDEJ bramki co interwał, także gdy
+            # nikt nic nie zmienił. Bez tego odświeżenia edycja `calendar.lora_global` na HA supa była
+            # niewidoczna aż do restartu/przycisku: hash bramki zgadzał się ze STARYM expected.
             if read_ha_calendar():
-                targeted_calendar_sync()
+                for _cg in known_gateways:
+                    expected_cal_hash[_cg] = scheduler.schedule_hash(_cg, win_days)
+                log.info('CAL', f'📅 cykliczny odczyt HA ({si}s) → expected_cal_hash odświeżony '
+                                f'(push zrobi drift-branch tylko przy realnej różnicy)')
     threading.Thread(target=initial_calendar, daemon=True, name='cal-init').start()
 
     log.info('MAIN', '═' * 50)
