@@ -14,10 +14,14 @@
 #     `params_preset` — wszystko PER-MASZYNA. Nadpisanie configu z repo wywraca bramkę.
 #   • /tmp/lora_* — stany, persist anomalii, mapa sid, parametry ustawione z dashboardu.
 #
-# Użycie:  bash deploy/deploy_g1.sh [host]        (domyślnie 100.104.38.14 = G1 carport)
+# Użycie:  bash deploy/deploy_g1.sh [host]        (domyślnie 100.68.79.100 = G1 carport)
 #          bash deploy/deploy_g1.sh 100.98.155.78 gw    (G2 testbed, sesja tmux `gw`)
+#
+# ADRES G1 (2026-08-13): 100.68.79.100. Poprzednie 100.104.38.14 i 100.93.121.31 są MARTWE —
+# nie wracać do nich. Ten sam adres musi siedzieć w launcher/app.py LAN_HOSTS, inaczej Launcher
+# nie dosięgnie bramki (a procesy startujemy WYŁĄCZNIE z Launchera — zasada projektu).
 set -u
-HOST="${1:-100.104.38.14}"
+HOST="${1:-100.68.79.100}"
 SESSION="${2:-gw}"
 USER_SSH="td"
 SRC="$(cd "$(dirname "$0")/../skrypty" && pwd)"
@@ -55,7 +59,7 @@ print('AST OK', len(files), 'plikow')
 EOF" || { echo "❌ walidacja nie przeszła — NIE restartuję (kod na maszynie do cofnięcia z backupu)"; exit 4; }
 
 echo "== smoke testy NA MASZYNIE (szybkie, bez sprzętu)"
-ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && for m in data.smoke_test anomaly.smoke_test params.smoke_test; do \
+ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && for m in data.smoke_test anomaly.smoke_test params.smoke_test protocol.bulk_smoke_test; do \
   venv/bin/python -m modules.\$m 2>&1 | tail -1; done"
 
 if [ "${NORESTART:-0}" = "1" ]; then

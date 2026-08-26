@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G1 (carport): docelowa lista `monitored` = RA1-15_{1,2,3} + RB1-13_{1,2,3} = 84 przekaźniki.
+"""G1 (carport): docelowa lista `monitored` = RA1-15_{1,2,3} + RB1-11_{1,2,3} = 78 przekaźników.
 
 PO CO: dziś G1 ma `monitored` = 194 z 194 urządzeń (A4 w planie sprzedażowym), więc tryb
 bramki nic nie gating'uje, a sweep obejmuje wszystko — przy 93% całego ruchu LoRa systemu.
-Zawężenie do 84 realnie sterowanych przekaźników jest największą pojedynczą oszczędnością
+Zawężenie do 78 realnie sterowanych przekaźników jest największą pojedynczą oszczędnością
 pasma, jaka została do zrobienia.
 
-⚠️ DO POTWIERDZENIA PRZY G1: mirror supervisora ma dziś RA=45 (komplet) ale RB=33, czyli
-   RB1-11. RB12_x i RB13_x (6 urządzeń) NIE istnieją w lustrze — bo dotychczasowa
-   mirror_whitelist stała na 78 i je odcinała. Zanim wpiszesz 84 na stałe, uruchom ten
-   skrypt NA G1 z --check: powie, czy RB12/RB13 faktycznie są w zigbee2mqtt carportu.
-   Jeśli ich nie ma, docelowa liczba to 78, a nie 84 — i trzeba ustalić dlaczego.
+ROZSTRZYGNIĘTE 2026-08-13 (user, wprost): monitored = WYŁĄCZNIE przekaźniki RA1-15_{1,2,3}
+i RB1-11_{1,2,3}. Wcześniejsze `RB_MAX = 13` (84 szt.) było domysłem z adnotacją „do
+potwierdzenia przy G1" — mirror supervisora pokazywał RA=45 (komplet) i RB=33 (czyli RB1-11),
+co zgadza się z decyzją usera. RB12/RB13 NIE wchodzą. Czujniki ruchu (SNZB-03P) do monitored
+NIE wchodzą — mają zostać widoczne na dashboardzie bramki, ale nie generują ruchu LoRa.
 
 Użycie:
     python3 deploy/g1_monitored.py                 # wypisz listę + snippet do config.py
@@ -22,7 +22,7 @@ import json
 import sys
 
 RA_MAX = 15          # RA1..RA15
-RB_MAX = 13          # RB1..RB13  (dziś w lustrze tylko do RB11 — patrz uwaga wyżej)
+RB_MAX = 11          # RB1..RB11  (decyzja usera 2026-08-13; było 13 = domysł)
 KANALY = (1, 2, 3)   # każdy przekaźnik ma 3 wyjścia
 
 
@@ -48,7 +48,9 @@ def check_z2m(items):
     sys.path.insert(0, '/home/td/meshtastic')
     try:
         import config as c
-        from modules.data.z2m_reader import Z2MReader          # noqa: F401
+        # (2026-08-13) był tu import `Z2MReader` oznaczony jako nieużywany — klasa nie istnieje
+        # w `modules.data.z2m_reader`, więc --check wywracał się na starcie. Usunięty: lista
+        # urządzeń idzie wprost z `bridge/devices`, żaden moduł projektu nie jest tu potrzebny.
     except Exception as e:
         print(f'❌ uruchom to NA BRAMCE G1 (brak config/modules): {e}')
         return 1
