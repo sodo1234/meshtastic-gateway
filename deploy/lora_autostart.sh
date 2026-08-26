@@ -98,6 +98,21 @@ else
   sleep 6
 fi
 
+# ── 3b. Dziennik ruchu LoRa (TYLKO supervisor) ───────────────────────────────
+# Supervisor ma internet non stop i widzi obie strony łącza: własne TX oraz wszystko, co
+# odbiera po LoRa od bramek. Bramka carportu bywa odcięta od sieci, więc to JEDYNE miejsce,
+# gdzie da się trzymać trwały, porównywalny zapis ruchu. Osobne pliki per bramka
+# (`logs/traffic_sup_*.tsv`, `logs/traffic_g1_*.tsv`) → różnica pokazuje realne straty RF.
+if [ "$ROLE" = "supervisor" ]; then
+  if pgrep -f "[l]ora_traffic_log.py --collect" >/dev/null; then
+    log "dziennik ruchu już działa"
+  else
+    log "startuję dziennik ruchu LoRa"
+    cd "$DIR" && setsid nohup "$DIR/venv/bin/python" tools/lora_traffic_log.py --collect \
+      >/tmp/traffic_collector.log 2>&1 </dev/null &
+  fi
+fi
+
 # ── 4. WIDOCZNE okno: logi albo POWÓD śmierci (nigdy pusty ekran) ────────────
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   gnome-terminal --title="LoRa SCADA — ${ROLE} (${SESSION})" -- tmux attach -t "$SESSION" &

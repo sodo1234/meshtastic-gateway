@@ -17,7 +17,8 @@ SSH_USER = "td"
 REMOTE_DIR = "~/meshtastic"
 REMOTE_VENV = "~/meshtastic/venv/bin/python"
 LAN_HOSTS = [
-    ("100.93.121.31", "carport-g1"),   # PRODUKCJA fizyczna carport = G1 (Tailscale)
+    ("100.68.79.100", "carport-g1"),   # PRODUKCJA fizyczna carport = G1 (Tailscale, adres z 2026-08-13;
+                                       # poprzednie 100.93.121.31 i 100.104.38.14 są MARTWE — nie wracać do nich)
     ("100.98.155.78", "carport-g2"),   # stara bramka = G2
     ("100.79.111.24", "supervisor"),   # supervisor G0
 ]
