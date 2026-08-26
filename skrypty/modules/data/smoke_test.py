@@ -449,7 +449,21 @@ def test_state_hash_symmetric_gateway_vs_supervisor():
     gd.on_z2m("zigbee2mqtt/Temp 1",
               json.dumps({"temperature": 26.0, "humidity": 46, "battery": 95, "linkquality": 7}))
     assert gd.state_hash() == h, "LQI nie może wpływać na hash danych"
-    print("✅ hash danych symetryczny gw↔sup, reaguje na zmianę, odporny na LQI")
+
+    # REGRESJA 2026-08-13 — DOMINUJĄCA przyczyna fałszywych `dsnap` (253 bloby w 7 dni).
+    # Zmiana PONIŻEJ progu delty (temp 0.5) aktualizuje `states`, ale NICZEGO nie wysyła.
+    # Gdy `dh` liczyło się ze `states`, hash uciekał lustru, którego nikt nie miał jak dogonić →
+    # trwały „rozjazd" i blob co raport. `dh` liczy się z `sent_states`, więc milczy razem z łączem.
+    h2 = gd.state_hash()
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 26.3, "humidity": 46, "battery": 95}))
+    assert not gd.mon_batch.flush(), "zmiana pod progiem NIE może nic wysłać"
+    assert gd.state_hash() == h2, "hash NIE może uciec, skoro nic nie poszło w eter"
+    assert gd.state_hash() == sd.state_hash("G1"), "lustro supa dalej zgodne = zero fałszywych dsnap"
+
+    # …a zmiana POWYŻEJ progu nadal musi dawać rozjazd (leczenie zostaje natychmiastowe)
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 28.0, "humidity": 46, "battery": 95}))
+    assert gd.state_hash() != sd.state_hash("G1"), "realna zmiana MUSI być widoczna jako rozjazd"
+    print("✅ hash danych symetryczny gw↔sup, reaguje na zmianę, odporny na LQI i na zmiany pod progiem")
 
 
 def test_dsnap_recovers_mirror_after_lost_frames():

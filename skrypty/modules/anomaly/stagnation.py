@@ -12,7 +12,8 @@ import time
 
 class StagnationEngine:
     def __init__(self, gw_id, discovery, data, lora_send=None, get_thresholds=None,
-                 logger=None, check_interval=300, emit=None, all_devices=False):
+                 logger=None, check_interval=300, emit=None, all_devices=False,
+                 skip_dev=None):
         self.gw_id = gw_id
         self.disc = discovery            # GatewayDiscovery (devices, short_ids, is_monitored)
         self.data = data                 # GatewayData (last_msg_ts)
@@ -24,6 +25,11 @@ class StagnationEngine:
         # stagnacja dla WSZYSTKICH urządzeń (CLAUDE.md), nie tylko monitored.
         self.emit = emit
         self.all_devices = all_devices
+        # WYKLUCZENIE Z ANOMALII (2026-08-24, polecenie usera): urządzenia zainstalowane na
+        # obiekcie, ale nieużywane (czujniki ruchu G1) — nie mają zgłaszać stagnacji. Filtr stoi
+        # U ŹRÓDŁA, nie w batcherze: inaczej dev zostaje w self.stagnant i dalej zanieczyszcza
+        # snapshot()/dump_anom oraz hash anomalii, mimo że ramka `ab` nie poszła.
+        self.skip_dev = skip_dev         # callable(dev) → True = pomiń całkowicie
         self.stagnant = set()            # dev names currently reported stagnant
         self.running = True
 
@@ -49,6 +55,9 @@ class StagnationEngine:
         now = time.time()
         for dev, info in list(self.disc.devices.items()):
             if not self.all_devices and not self.disc.is_monitored(dev):
+                continue
+            if self.skip_dev and self.skip_dev(dev):
+                self.stagnant.discard(dev)       # gdyby wpadł przed wykluczeniem — wyczyść
                 continue
             ts = self.data.last_msg_ts.get(dev)
             if ts is None:
