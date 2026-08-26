@@ -238,6 +238,31 @@ def test_kaskada_tylko_w_dol():
     assert 'self._cascade_devices(gw, online=True)' not in src,         'kaskada W GÓRĘ wróciła — supervisor znów będzie zmyślał dostępność urządzeń'
     print(f'  ✓ 8. kaskada tylko w dół ({n_down} urządzeń zgaszonych, w górę brak)')
 
+def test_heartbeat_miesci_sie_w_ramce():
+    """9. HB MUSI zmieścić się w 220 B — Meshtastic ucina PO CICHU.
+
+    Regresja 2026-08-26: dołożenie `sh` (hash statusu) wypchnęło heartbeat G1 na 228 B i od
+    19:48 supervisor NIE DOSTAŁ ŻADNEGO HB — mimo że bramka żyła i dalej słała `b`, bloby
+    i sup_ping. Objaw był podstępny: dashboard pokazywał bramkę jako online (bo `note_gw_activity`
+    reaguje na DOWOLNĄ ramkę), tylko hashe i liczniki zamarzły. Ten test liczy ramkę z REALNYMI
+    wartościami z produkcji, żeby kolejne pole nie przepchnęło jej przez sufit po cichu."""
+    import json
+
+    # NAJGORSZY REALNY przypadek: długi uptime, wszystkie hashe niepuste, `sh` ≠ `dh`.
+    hb = {"t": "hb", "g": "G1", "up": 152457, "dev": 194, "mon": 78, "pri": 0,
+          "ts": 1787766486, "hash": "f795e257116c", "ph": "fbade8dc", "cal": "8d0d515f7fa0",
+          "m": 0, "tq": "synced", "ah": "c3ba9619", "dh": "e13720b4", "sh": "e92896",
+          "gm": "night", "ga": 1}
+    n = len(json.dumps(hb, separators=(',', ':')))
+    assert n <= 220, (f'HB ma {n} B > 220 B — Meshtastic utnie go PO CICHU i heartbeaty '
+                      f'przestaną dochodzić (dokładnie to stało się G1 2026-08-26: ostatni HB '
+                      f'19:48, potem cisza mimo żywej bramki). Zanim dołożysz pole do HB, '
+                      f'USUŃ jakieś — tak zrobiliśmy z `oh`, które nikt nie czytał.')
+    bez_sh = {k: v for k, v in hb.items() if k != 'sh'}
+    m_ = len(json.dumps(bez_sh, separators=(',', ':')))
+    assert m_ <= 220
+    print(f'  ✓ 9. heartbeat {m_} B (hashe zgodne) / {n} B (sh≠dh) — limit 220, zapas {220 - n} B')
+
 
 if __name__ == '__main__':
     test_startup_seed_nie_zalewa_lora()
@@ -248,4 +273,5 @@ if __name__ == '__main__':
     test_hb_jitter_lamie_zbieznosc_faz()
     test_status_hash_niesie_dostepnosc()
     test_kaskada_tylko_w_dol()
-    print("\n🎯 wedge_smoke_test: 8/8 — regresje G1 (2026-08-24 + 2026-08-26) zabezpieczone")
+    test_heartbeat_miesci_sie_w_ramce()
+    print("\n🎯 wedge_smoke_test: 9/9 — regresje G1 (2026-08-24 + 2026-08-26) zabezpieczone")

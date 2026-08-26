@@ -157,7 +157,10 @@ def status_hash(items):
             parts.append(f"{sid}:" + ",".join(f"{k}={v}" for k, v in kv))
     if not parts:
         return '0'
-    return hashlib.md5("|".join(parts).encode()).hexdigest()[:8]
+    # 6 hex, nie 8: `sh` jedzie w heartbeacie, który ma twardy sufit 220 B i jest już pod korek.
+    # 16 mln wartości w zupełności wystarcza do WYKRYWANIA ZMIANY (nie jest to podpis
+    # kryptograficzny), a każde 2 B w tej ramce są na wagę złota.
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:6]
 
 
 def state_hash(items):
