@@ -233,12 +233,24 @@ GATEWAY_CONFIG = {
     # wartościach i potrafi od razu sypać fałszywymi alarmami (klasyk: timeout pingu
     # KRÓTSZY niż realny RTT łącza = „supervisor offline" przy zdrowym łączu).
     "params_preset": {
-        "P1": 48,    # h  — stagnacja urządzeń bateryjnych
-        "P2": 24,    # h  — stagnacja urządzeń sieciowych
+    # 2026-08-26 STROJENIE Z POMIARU (G1): bateryjne raportują baterię co 34-48 h
+    #   (zdrowy ra12_s9 = 46,2 h) → P1=48 h odpalało stagnację na SPRAWNYCH.
+        "P1": 96,    # h  — stagnacja urządzeń bateryjnych
+    # 2026-08-26: przekaźniki G1 zmieniają stan max co ~14,8 h (pomiar 48 h) → 24 h
+    #   nie miało marginesu na dzień bez przełączeń.
+        "P2": 36,    # h  — stagnacja urządzeń sieciowych
         "P3": 15,    # min— kadencja raportowania pomiarowych (binarne = zdarzeniowo, B3/B4)
-        "T1": 30,    # min— offline switch/light
-        "T2": 60,    # min— offline temp/hum
-        "T3": 120,   # min— offline door/leak/motion (bateryjne raportują rzadko)
+    # 2026-08-26: z2m sam orzeka niedostępność przekaźnika po 10 min (availability.active),
+    #   45 min = werdykt z2m + tranzyt LoRa + zapas.
+        "T1": 45,    # min— offline switch/light
+    # 2026-08-26: przy kadencji P3=15 min to 6 zgubionych raportów.
+        "T2": 90,    # min— offline temp/hum
+    # 2026-08-26 NAJWAŻNIEJSZA ZMIANA: 120 min zgłaszało CISZĘ W STREFIE jako awarię.
+    #   Pomiar 7 dni na G1: zdrowe czujniki ruchu milczą do 41 h, a z2m sam daje im
+    #   24 h (availability.passive.timeout=1440). 1440 min = ten sam horyzont: łapie
+    #   realnie martwy czujnik (wszystkie 4 martwe wyszły właśnie po ~24 h), a spokojna
+    #   noc już nie generuje alarmu.
+        "T3": 1440,   # min— offline door/leak/motion (bateryjne raportują rzadko)
         "P4": 15,    # min— interwał ping→supervisor (siatka NA CISZĘ, nie stały ruch)
         "T4": 60,    # s  — timeout pingu; MUSI być > RTT łącza (sup→gw bywa 16-72 s)
         "PR": 2,     # x  — retry pingu

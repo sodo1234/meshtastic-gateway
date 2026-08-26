@@ -176,6 +176,10 @@ def run_gateway(log):
                          # zdarzeniowo, zbieżności lustra nie pilnuje periodyk tylko ten hash — sup
                          # porównuje ze swoim i przy rozjeździe prosi o `dsnap` (jeden transfer).
                          'dh': data.state_hash(),
+                         # 2026-08-26: `sh` = hash STANU, KTÓRY BRAMKA ZNA (z z2m). `dh` mówi „co
+                         # dowiozłem supervisorowi" i po restarcie jest 0 — jako wskaźnik na
+                         # dashboardzie kłamał. `sh` odpowiada „co wiem"; sh≠dh = dane w drodze.
+                         'sh': data.status_hash(),
                          **gw_mode.state()})            # STEP 5: gm=tryb, ga=aktywna (supresja offline)
 
     # ── STEP 4: slotowanie (krok 7) — batch `b` nadawany TYLKO w oknie tej bramki ──
@@ -309,6 +313,46 @@ def run_gateway(log):
             return 'holdover'
         return 'unsynced'                            # brak NTP i brak/stary sync = czas podejrzany
 
+    def _hydrate_states_from_ha():
+        """Seed `data.states` z LOKALNEGO HA po starcie (2026-08-26).
+
+        z2m publikuje stan urządzeń BEZ retain, więc po restarcie harnessu `states` jest puste aż
+        urządzenie samo coś nadeśle — a przekaźnik carportu odezwie się dopiero o zmierzchu.
+        Skutek widoczny na dashboardzie: `dh`/`sh` = 0, a supervisor po `dsnap_req` dostaje PUSTY
+        zrzut i kasuje sobie lustro 78 przekaźników. HA na bramce te stany ma (encje z2m), więc
+        bierzemy je stamtąd: jedno zapytanie HTTP, zero ruchu Zigbee i zero ruchu LoRa.
+        `setdefault` — świeży pakiet z z2m ma zawsze pierwszeństwo nad seedem."""
+        import urllib.request as _u
+        cfg = CONFIG.get('ha_api', {})
+        url, tok = cfg.get('url'), cfg.get('token')
+        if not url or not tok:
+            return
+        for _ in range(30):                       # discovery leci asynchronicznie
+            if discovery.devices:
+                break
+            time.sleep(2)
+        try:
+            req = _u.Request(url.rstrip('/') + '/api/states',
+                             headers={'Authorization': 'Bearer ' + tok})
+            stany = {e['entity_id']: e['state'] for e in json.load(_u.urlopen(req, timeout=30))}
+        except Exception as e:
+            log.warn('DATA', f'hydracja stanów z HA nieudana: {e}')
+            return
+        n = 0
+        for dev, info in list(discovery.devices.items()):
+            if info.get('type') not in ('switch', 'light'):
+                continue                          # bateryjne i tak nie mają stanu sterowanego
+            st = stany.get(f"{info.get('type')}.{dev.lower().replace(' ', '_')}")
+            if st not in ('on', 'off'):
+                continue
+            biezace = data.states.setdefault(dev, {})
+            if 'state' not in biezace:
+                biezace['state'] = st.upper()
+                n += 1
+        log.info('DATA', f'🌱 hydracja z HA: {n} urządzeń ma stan po starcie '
+                         f'(sh={data.status_hash()}) — lustro nie zostanie wyzerowane')
+    threading.Thread(target=_hydrate_states_from_ha, daemon=True, name='hydrate').start()
+
     def lora_send(obj):
         lora.send(json.dumps(obj, separators=(',', ':')))
 
@@ -328,7 +372,22 @@ def run_gateway(log):
                         logger=log, name='st')
 
     def st_send(dev, cap, val):
-        """Status urządzenia → supervisor. Przez okno zbiorcze; 1 sztuka = stara ramka `st`."""
+        """Status urządzenia → supervisor. Przez okno zbiorcze; 1 sztuka = stara ramka `st`.
+
+        `note_sent` (2026-08-26): `st` TO TEŻ WYSYŁKA STANU, więc musi karmić `dh` — dokładnie
+        jak `_enqueue` (ramki `b`) i blob `dsnap`. Supervisor po `st` robi `apply_st` → stan ląduje
+        w jego lustrze i NATYCHMIAST zmienia JEGO hash; bez tej linii bramka o tym nie wie i hashe
+        się rozjeżdżają, aż dogoni je batch `b` (zmierzone 26-56 s) albo zamaskuje debounce 90 s.
+        Są przypadki, w których `b` NIE przyjdzie wcale i rozjazd zostaje na stałe:
+          • potwierdzenie cmd bez realnej zmiany (włącz to, co już jest ON) — `compute_delta`
+            zwraca pusto, więc `_enqueue` się nie odpala, a `st` (was_pending) leci zawsze,
+          • `optimistic_status: True` — `st` idzie PRZED jakimkolwiek pakietem z z2m.
+        Klucze są zgodne: `sent_states` i `SupervisorData.apply_st` trzymają PEŁNE nazwy capów
+        ('state'), obie strony liczą hash przez `encode_short`."""
+        try:
+            data.note_sent(dev, {cap: val})
+        except Exception as e:                       # wirtualne vio nie mają sid — hash je pomija
+            log.debug('DATA', f'note_sent({dev}) pominięte: {e}')
         st_bulk.add((dev, cap, val))
 
     def for_me(d):
@@ -1174,7 +1233,10 @@ def run_gateway(log):
             ('zg_anom', 'Anomalie — zgodność', 'mdi:alert-decagram', 'zg_anom'),
             # 2026-08-03: 5. flaga + jej hash. Stan urządzeń pilnuje dziś hash `dh` (B6), nie
             # periodyk — więc rozjazd lustra ma być widoczny tak samo jak disc/param/cal/anom.
-            ('data_hash', 'Hash Danych', 'mdi:database-check', 'data_hash'),
+            # 2026-08-26: kafel pokazuje `status_hash` (co bramka WIE), nie `data_hash` (co
+            # wysłała) — ten drugi po restarcie stoi na 0 i wyglądał jak awaria. Zgodność lustra
+            # nadal pilnuje osobna flaga „Dane — zgodność".
+            ('data_hash', 'Hash Status', 'mdi:database-check', 'status_hash'),
             ('zg_data', 'Dane — zgodność', 'mdi:database-sync', 'zg_data')]:
         uid = f"lora_{gw_lower}_{eid}"
         mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
@@ -1388,6 +1450,7 @@ def run_gateway(log):
             'disc_hash': discovery.disc_hash or '--',        # STEP 17: hash disc
             'param_hash': param_sync.params_hash(),          # STEP 17: hash parametrów
             'data_hash': data.state_hash(),                  # B6: hash stanu urządzeń (5. flaga)
+            'status_hash': data.status_hash(),               # 2026-08-26: hash stanu ZNANEGO bramce
             'zg_disc': _zgv[0], 'zg_param': _zgv[1],         # 2026-07-28: zgodność z sup_pong
             'zg_cal': _zgv[2], 'zg_anom': _zgv[3],
             'zg_data': _zgv[4], 'zg_all': _zg_all})          # 2026-08-03: 5. flaga DANE
@@ -2219,7 +2282,7 @@ def run_supervisor(log):
                 ('cal_hash_ok', 'Kalendarz — zgodność', 'mdi:calendar-check', 'cal_ok'),   # F9
                 ('anom_hash', 'Hash anomalii (bramka)', 'mdi:alert-decagram', 'anomaly'),  # #9
                 ('anom_hash_ok', 'Anomalie — zgodność', 'mdi:check-decagram', 'anomaly_ok'),  # #9
-                ('data_hash', 'Hash danych (bramka)', 'mdi:database-check', 'data'),        # B6/5. flaga
+                ('data_hash', 'Hash status (bramka)', 'mdi:database-check', 'data'),        # B6/5. flaga
                 ('data_hash_ok', 'Dane — zgodność', 'mdi:database-sync', 'data_ok'),        # B6/5. flaga
                 ('all_hashes_ok', 'Zgodność OGÓLNA', 'mdi:shield-check', 'all_ok')]:       # #9 zbiorczy
             uid = f"lora_gw_{gl}_{eid}"
@@ -2436,6 +2499,10 @@ def run_supervisor(log):
             # pilnuje, że lustro nie rozjechało się po cichu. Bez flagi klient nie widzi rozjazdu,
             # który system i tak sam naprawia blobem `dsnap` — a widzieć powinien.
             _dh = d.get('dh', '--')
+            # 2026-08-26: na kafel idzie `sh` (hash stanu, KTÓRY BRAMKA ZNA) — `dh` po restarcie
+            # bramki stoi na 0 i wyglądał jak awaria. Zgodność lustra dalej liczymy z `dh`,
+            # bo to ono opisuje, co bramka faktycznie dowiozła.
+            _sh = d.get('sh') or _dh
             _data_ok = bool(_dh and _dh != '--' and _dh == sup_data.state_hash(gw))
             _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok and _data_ok
             _zgv = ''.join('1' if f else '0'               # → sup_pong ORAZ push przy zmianie
@@ -2452,7 +2519,8 @@ def run_supervisor(log):
                 'param': _param, 'param_ok': _mark(_param_ok),
                 'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok),
                 'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
-                'data': _dh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash stanu urządzeń (B6)
+                'data': _sh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash STANU bramki (sh) + zgodność (dh)
+                'data_sent': _dh,                          # co bramka dowiozła (diagnostyka rozjazdu)
                 'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
                 separators=(',', ':')), retain=True)
     dispatcher.register('hb', on_hb)

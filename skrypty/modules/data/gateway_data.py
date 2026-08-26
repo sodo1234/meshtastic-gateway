@@ -492,6 +492,27 @@ class GatewayData:
                 items.append((sid, encode_short(caps)))
         return state_hash(items)
 
+    def status_hash(self):
+        """Hash STANU, KTÓRY BRAMKA ZNA (`states` z z2m) — do HB/pong jako `sh` (2026-08-26).
+
+        Po co osobno od `dh`: `dh` liczy się z `sent_states` (co WYSŁANO) i to jest poprawne dla
+        uzgadniania lustra supervisora — ale jako WSKAŹNIK NA DASHBOARDZIE jest mylący: świeżo
+        zrestartowana bramka nic jeszcze nie wysłała, więc pokazuje `0`, choć doskonale wie, w
+        jakim stanie są urządzenia. `sh` odpowiada na pytanie „co bramka wie", `dh` na „co z tego
+        dowiozła". Rozjazd `sh` vs `dh` = dane czekają na wysyłkę; oba równe = lustro zbieżne."""
+        items = []
+        for dev, info in list(self.disc.devices.items()):
+            if not self.disc.is_monitored(dev):
+                continue
+            sid = self.disc.short_ids.get(dev)
+            if sid is None:
+                continue
+            st = self.states.get(dev, {})
+            caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
+            if caps:
+                items.append((sid, encode_short(caps)))
+        return state_hash(items)
+
     def ack_pri(self, pid):
         """`{t:back,g,p}` z supervisora → potwierdź pakiet priorytetowy (koniec retransmisji)."""
         return self.pri_batch.ack(pid)
