@@ -372,7 +372,10 @@ GATEWAY_CONFIG = {
         "optimistic_status": False,
         # RAMKA ZBIORCZA (2026-08-26): statusy z tego okna [s] lecą jedną ramką `stm`.
         # Dłuższe niż po stronie cmd, bo potwierdzenia z z2m sączą się kilka sekund.
-        "bulk_window_st": 3.0,
+        # Zmierzone na harmonogramie 22:15 (G1): 65 potwierdzeń w 44 s, odstępy 1-3 s.
+        # Okno 3 s dawało flushe jednoelementowe (= stara ramka `st`) → 63 `st` + 2 `stm`.
+        "bulk_window_st": 20.0,
+        "bulk_max_items_st": 12,   # zapełniona ramka leci od razu, nie czeka do końca okna
         "bulk_max_bytes": 200,
         # UWAGA: `timeout`/`retries` (retry komendy po braku `st`) czyta ROLA SUPERVISORA
         # (run_supervisor), więc mieszkają w SUPERVISOR_CONFIG["control"] — nie tutaj. Tu zostaje
