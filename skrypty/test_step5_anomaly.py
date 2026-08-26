@@ -158,6 +158,17 @@ def run_gateway(log):
         return {n: {**i, 'monitored': bool(i.get('monitored') and not i.get('priority'))}
                 for n, i in discovery.get_devices_summary().items()}
 
+    def _hb_hashes():
+        """`dh` zawsze, `sh` TYLKO gdy się różni — heartbeat ma twardy sufit 220 B.
+
+        Regresja 2026-08-26: bezwarunkowe `sh` wypchnęło HB na 228 B i heartbeaty G1 przestały
+        docierać (bramka żyła, `b`/bloby/sup_ping leciały — zamarzły tylko hashe i liczniki
+        na dashboardzie). Gdy hashe są równe, `sh` nie wnosi nic: supervisor czyta wtedy `dh`
+        (`_sh = d.get('sh') or _dh`). Zaoszczędzone 16 B wraca do puli ramki."""
+        dh = data.state_hash()
+        sh = data.status_hash()
+        return {'dh': dh} if sh == dh else {'dh': dh, 'sh': sh}
+
     heartbeat = GatewayHeartbeat(
         gw_id=gw_id, devices_fn=_devices_summary_excl,
         lora=lora, logger=log,
@@ -165,7 +176,15 @@ def run_gateway(log):
         diag_fn=lambda: {'hash': discovery.disc_hash, 'ph': param_sync.params_hash(),
                          'cal': scheduler.schedule_hash(gw_id, cal_cfg.get('window_days', 14)),
                          'm': cal_state['mode'],        # STEP 4: hash kalendarza + bieżący tryb
-                         'oh': _offline_hash(),         # UNIFIKACJA: hash zbioru offline → drift→reconcile
+                         # `oh` USUNIĘTE 2026-08-26. Było nadawane w KAŻDYM heartbeacie i
+                         # NIGDY nieczytane — zero odbiorców po stronie supervisora (sprawdzone
+                         # grepem: brak `d.get('oh')`, brak w szablonach dashboardów). Kosztowało
+                         # 17 B w ramce, która ma twardy sufit 220 B (Meshtastic ucina PO CICHU).
+                         # Dołożenie `sh` wypchnęło HB na 228 B i heartbeaty G1 PRZESTAŁY
+                         # DOCHODZIĆ (ostatni 19:48:10, potem cisza mimo żywej bramki — `b`,
+                         # bloby i sup_ping leciały dalej). Martwe pole zwalnia miejsce dla
+                         # używanego. Gdyby `oh` kiedyś było potrzebne: dorobić mu ODBIORCĘ
+                         # razem z nadajnikiem, nie odwrotnie.
                          'tq': _time_quality(),         # STEP 5+: jakość czasu (synced/holdover/unsynced)
                          # AH-GATE (2026-07-07): hash stanu anomalii nadanego supervisorowi — sup
                          # porównuje ze swoim i żąda dump TYLKO przy rozjeździe (koniec ślepych
@@ -175,11 +194,9 @@ def run_gateway(log):
                          # B6 (2026-08-01): hash STANU URZĄDZEŃ. Odkąd binarne raportują wyłącznie
                          # zdarzeniowo, zbieżności lustra nie pilnuje periodyk tylko ten hash — sup
                          # porównuje ze swoim i przy rozjeździe prosi o `dsnap` (jeden transfer).
-                         'dh': data.state_hash(),
-                         # 2026-08-26: `sh` = hash STANU, KTÓRY BRAMKA ZNA (z z2m). `dh` mówi „co
-                         # dowiozłem supervisorowi" i po restarcie jest 0 — jako wskaźnik na
-                         # dashboardzie kłamał. `sh` odpowiada „co wiem"; sh≠dh = dane w drodze.
-                         'sh': data.status_hash(),
+                         # `dh` + (warunkowo) `sh` — patrz `_hb_hashes` wyżej. `sh` = hash STANU,
+                         # KTÓRY BRAMKA ZNA; `dh` = co z tego dowiozła. sh≠dh = dane w drodze.
+                         **_hb_hashes(),
                          **gw_mode.state()})            # STEP 5: gm=tryb, ga=aktywna (supresja offline)
 
     # ── STEP 4: slotowanie (krok 7) — batch `b` nadawany TYLKO w oknie tej bramki ──
