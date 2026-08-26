@@ -9155,6 +9155,22 @@
        ]
       },
       {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_g2_hash_danych_bramka",
+         "name": "HASH DANYCH",
+         "icon": "mdi:database-check",
+         "tap_action": {
+          "action": "more-info"
+         },
+         "state_display": "[[[ var s=String(entity.state||''); return s.length>8 ? s.slice(0,8) : s; ]]]"
+        }
+       ]
+      },
+      {
        "type": "custom:button-card",
        "template": "lora_base",
        "entity": "sensor.lora_g2_zgodnosc_ogolna",
@@ -9165,7 +9181,7 @@
         "action": "more-info"
        },
        "custom_fields": {
-        "content": "[[[ var f=function(id,lbl){var s=states[id];var v=s?s.state:'';var ok=/zgod|✅/i.test(v)&&!/niezg/i.test(v);var col=ok?'#4ade80':'#f87171';var ic=ok?'✅':'❌';return '<span style=\"display:inline-flex;align-items:center;gap:5px;margin-right:20px;\"><span style=\"font-size:10px;color:#737373;letter-spacing:1px;font-weight:700;\">'+lbl+'</span><span style=\"color:'+col+';font-size:15px;\">'+ic+'</span></span>';}; return '<div style=\"display:flex;flex-wrap:wrap;align-items:center;width:100%;\">'+f('sensor.lora_g2_disc_zgodnosc','DISC')+f('sensor.lora_g2_param_zgodnosc','PARAM')+f('sensor.lora_g2_kalendarz_zgodno','KALENDARZ')+f('sensor.lora_g2_anomalie_zgodnosc','ANOMALIE')+'</div>'; ]]]"
+        "content": "[[[ var f=function(id,lbl){var s=states[id];var v=s?s.state:'';var ok=/zgod|✅/i.test(v)&&!/niezg/i.test(v);var col=ok?'#4ade80':'#f87171';var ic=ok?'✅':'❌';return '<span style=\"display:inline-flex;align-items:center;gap:5px;margin-right:20px;\"><span style=\"font-size:10px;color:#737373;letter-spacing:1px;font-weight:700;\">'+lbl+'</span><span style=\"color:'+col+';font-size:15px;\">'+ic+'</span></span>';}; return '<div style=\"display:flex;flex-wrap:wrap;align-items:center;width:100%;\">'+f('sensor.lora_g2_disc_zgodnosc','DISC')+f('sensor.lora_g2_param_zgodnosc','PARAM')+f('sensor.lora_g2_kalendarz_zgodno','KALENDARZ')+f('sensor.lora_g2_anomalie_zgodnosc','ANOMALIE')+f('sensor.lora_g2_dane_zgodnosc','DANE')+'</div>'; ]]]"
        },
        "styles": {
         "card": [
@@ -9229,7 +9245,7 @@
          "icon": "[[[ var av = states['binary_sensor.lora_g2_test_1_available']; if (av && av.state === 'off') return 'mdi:alert-octagon'; return entity.state === 'on' ? 'mdi:lightbulb-on' : 'mdi:lightbulb-off-outline'; ]]]",
          "custom_fields": {
           "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G2</span>`; ]]]",
-          "info": "[[[ var av = states['binary_sensor.lora_g2_test_1_available']; var ls = states['sensor.lora_g2_test_1_last_seen']; var lqe = states['sensor.lora_g2_test_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\"><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${t}</div>`; ]]]"
+          "info": "[[[ var av = states['binary_sensor.lora_g2_test_1_available']; var ls = states['sensor.lora_g2_test_1_last_seen']; var lqe = states['sensor.lora_g2_test_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\"><span style=\"color:${col};\">● ${label}</span><br/><span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${t}</div>`; ]]]"
          },
          "styles": {
           "card": [
@@ -9300,7 +9316,7 @@
          "icon": "[[[ var av = states['binary_sensor.lora_g2_test_2_available']; if (av && av.state === 'off') return 'mdi:alert-octagon'; return entity.state === 'on' ? 'mdi:lightbulb-on' : 'mdi:lightbulb-off-outline'; ]]]",
          "custom_fields": {
           "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G2</span>`; ]]]",
-          "info": "[[[ var av = states['binary_sensor.lora_g2_test_2_available']; var ls = states['sensor.lora_g2_test_2_last_seen']; var lqe = states['sensor.lora_g2_test_2_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\"><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${t}</div>`; ]]]"
+          "info": "[[[ var av = states['binary_sensor.lora_g2_test_2_available']; var ls = states['sensor.lora_g2_test_2_last_seen']; var lqe = states['sensor.lora_g2_test_2_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; return `<div style=\"font-size:10px;color:#525252;margin-top:6px;\"><span style=\"color:${col};\">● ${label}</span><br/><span style=\"color:${lqCol};\">📶 ${lqTxt}</span><br/>${t}</div>`; ]]]"
          },
          "styles": {
           "card": [
@@ -9381,7 +9397,7 @@
          "icon": "[[[ var av = states['binary_sensor.lora_g2_leak_1_available']; if (av && av.state === 'off') return 'mdi:alert-octagon'; return entity.state === 'on' ? 'mdi:water-alert' : 'mdi:water'; ]]]",
          "custom_fields": {
           "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G2</span>`; ]]]",
-          "info": "[[[ var av = states['binary_sensor.lora_g2_leak_1_available']; var ls = states['sensor.lora_g2_leak_1_last_seen']; var lqe = states['sensor.lora_g2_leak_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var batt = states['sensor.lora_g2_leak_1_battery']; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; var b = batt && batt.state !== 'unavailable' ? batt.state : '--'; var battColor = '#4ade80'; if (b !== '--') { var bVal = parseInt(b); if (bVal < 10) battColor = '#f87171'; else if (bVal < 25) battColor = '#fbbf24'; } return `<div style=\"display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${b}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${t}</div></div>`; ]]]"
+          "info": "[[[ var av = states['binary_sensor.lora_g2_leak_1_available']; var ls = states['sensor.lora_g2_leak_1_last_seen']; var lqe = states['sensor.lora_g2_leak_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var batt = states['sensor.lora_g2_leak_1_battery']; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; var b = batt && batt.state !== 'unavailable' ? batt.state : '--'; var battColor = '#4ade80'; if (b !== '--') { var bVal = parseInt(b); if (bVal < 10) battColor = '#f87171'; else if (bVal < 25) battColor = '#fbbf24'; } return `<div style=\"display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${b}%</span><br/><span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${t}</div></div>`; ]]]"
          },
          "styles": {
           "card": [
@@ -9452,7 +9468,7 @@
          "icon": "[[[ var av = states['binary_sensor.lora_g2_door_1_available']; if (av && av.state === 'off') return 'mdi:alert-octagon'; return entity.state === 'on' ? 'mdi:door-open' : 'mdi:door-closed'; ]]]",
          "custom_fields": {
           "badge": "[[[ return `<span style=\"background:#141414;border:1px solid #22d3ee;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;color:#22d3ee;\">G2</span>`; ]]]",
-          "info": "[[[ var av = states['binary_sensor.lora_g2_door_1_available']; var ls = states['sensor.lora_g2_door_1_last_seen']; var lqe = states['sensor.lora_g2_door_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var batt = states['sensor.lora_g2_door_1_battery']; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; var b = batt && batt.state !== 'unavailable' ? batt.state : '--'; var battColor = '#4ade80'; if (b !== '--') { var bVal = parseInt(b); if (bVal < 10) battColor = '#f87171'; else if (bVal < 25) battColor = '#fbbf24'; } return `<div style=\"display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${b}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${t}</div></div>`; ]]]"
+          "info": "[[[ var av = states['binary_sensor.lora_g2_door_1_available']; var ls = states['sensor.lora_g2_door_1_last_seen']; var lqe = states['sensor.lora_g2_door_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var batt = states['sensor.lora_g2_door_1_battery']; var on = av && av.state === 'on'; var col = on ? '#4ade80' : '#f87171'; var label = on ? 'online' : 'offline'; var t = ls && ls.state !== 'unavailable' ? ls.state : '--'; var b = batt && batt.state !== 'unavailable' ? batt.state : '--'; var battColor = '#4ade80'; if (b !== '--') { var bVal = parseInt(b); if (bVal < 10) battColor = '#f87171'; else if (bVal < 25) battColor = '#fbbf24'; } return `<div style=\"display:flex; flex-direction:column; gap:2px; font-size:10px; color:#525252; margin-top:6px;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${b}%</span><br/><span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${t}</div></div>`; ]]]"
          },
          "styles": {
           "card": [
@@ -9545,7 +9561,7 @@
         }
        },
        "custom_fields": {
-        "content": "[[[ var t = states['sensor.lora_g2_temp_1_temperature']; var h = states['sensor.lora_g2_temp_1_humidity']; var b = states['sensor.lora_g2_temp_1_battery']; var ls = states['sensor.lora_g2_temp_1_last_seen']; var lqe = states['sensor.lora_g2_temp_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var av = states['binary_sensor.lora_g2_temp_1_available']; var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--'; var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--'; var batt = b && b.state !== 'unavailable' ? b.state : '--'; var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--'; var battColor = '#4ade80'; if (batt !== '--') { var battVal = parseInt(batt); if (battVal < 10) { battColor = '#f87171'; } else if (battVal < 25) { battColor = '#fbbf24'; } } var online = av && av.state === 'on'; var col = online ? '#4ade80' : '#f87171'; var label = online ? 'online' : 'offline'; var gw = 'G2'; var devName = 'Temp 1'; return `<div style=\"display: flex; flex-direction: column; height: 100%; width: 100%;\"><div style=\"display: flex; align-items: center; width: 100%; margin-bottom: 8px; justify-content: space-between; gap: 370px\"><div style=\"font-size: 14px; font-weight: 600; color: #e5e5e5;\">${devName}</div><div><span style=\"background:#141414; border:1px solid #22d3ee; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;\">${gw}</span></div></div><div style=\"display: flex; justify-content: space-between; align-items: center; width: 100%; flex-grow: 1; gap: 180px;\"><div style=\"display: flex; align-items: baseline; gap: 10px;\"><div><span style=\"font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;\">${temp}</span><span style=\"font-size:22px; color:#525252;\">°C</span></div><div><span style=\"font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;\">${hum}</span><span style=\"font-size:22px; color:#525252;\">%</span></div></div><div style=\"display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size:10px; color:#525252;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div>`; ]]]"
+        "content": "[[[ var t = states['sensor.lora_g2_temp_1_temperature']; var h = states['sensor.lora_g2_temp_1_humidity']; var b = states['sensor.lora_g2_temp_1_battery']; var ls = states['sensor.lora_g2_temp_1_last_seen']; var lqe = states['sensor.lora_g2_temp_1_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var av = states['binary_sensor.lora_g2_temp_1_available']; var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--'; var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--'; var batt = b && b.state !== 'unavailable' ? b.state : '--'; var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--'; var battColor = '#4ade80'; if (batt !== '--') { var battVal = parseInt(batt); if (battVal < 10) { battColor = '#f87171'; } else if (battVal < 25) { battColor = '#fbbf24'; } } var online = av && av.state === 'on'; var col = online ? '#4ade80' : '#f87171'; var label = online ? 'online' : 'offline'; var gw = 'G2'; var devName = 'Temp 1'; return `<div style=\"display: flex; flex-direction: column; height: 100%; width: 100%;\"><div style=\"display: flex; align-items: center; width: 100%; margin-bottom: 8px; justify-content: space-between; gap: 370px\"><div style=\"font-size: 14px; font-weight: 600; color: #e5e5e5;\">${devName}</div><div><span style=\"background:#141414; border:1px solid #22d3ee; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;\">${gw}</span></div></div><div style=\"display: flex; justify-content: space-between; align-items: center; width: 100%; flex-grow: 1; gap: 180px;\"><div style=\"display: flex; align-items: baseline; gap: 10px;\"><div><span style=\"font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;\">${temp}</span><span style=\"font-size:22px; color:#525252;\">°C</span></div><div><span style=\"font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;\">${hum}</span><span style=\"font-size:22px; color:#525252;\">%</span></div></div><div style=\"display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size:10px; color:#525252;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span><br/><span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div>`; ]]]"
        },
        "styles": {
         "card": [
@@ -10168,7 +10184,7 @@
         }
        },
        "custom_fields": {
-        "content": "[[[ var t = states['sensor.lora_g2_temp_2_temperature']; var h = states['sensor.lora_g2_temp_2_humidity']; var b = states['sensor.lora_g2_temp_2_battery']; var ls = states['sensor.lora_g2_temp_2_last_seen']; var lqe = states['sensor.lora_g2_temp_2_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var av = states['binary_sensor.lora_g2_temp_2_available']; var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--'; var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--'; var batt = b && b.state !== 'unavailable' ? b.state : '--'; var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--'; var battColor = '#4ade80'; if (batt !== '--') { var battVal = parseInt(batt); if (battVal < 10) { battColor = '#f87171'; } else if (battVal < 25) { battColor = '#fbbf24'; } } var online = av && av.state === 'on'; var col = online ? '#4ade80' : '#f87171'; var label = online ? 'online' : 'offline'; var gw = 'G2'; var devName = 'Temp 2'; return `<div style=\"display: flex; flex-direction: column; height: 100%; width: 100%;\"><div style=\"display: flex; align-items: center; width: 100%; margin-bottom: 8px; justify-content: space-between; gap: 370px\"><div style=\"font-size: 14px; font-weight: 600; color: #e5e5e5;\">${devName}</div><div><span style=\"background:#141414; border:1px solid #22d3ee; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;\">${gw}</span></div></div><div style=\"display: flex; justify-content: space-between; align-items: center; width: 100%; flex-grow: 1; gap: 180px;\"><div style=\"display: flex; align-items: baseline; gap: 10px;\"><div><span style=\"font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;\">${temp}</span><span style=\"font-size:22px; color:#525252;\">°C</span></div><div><span style=\"font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;\">${hum}</span><span style=\"font-size:22px; color:#525252;\">%</span></div></div><div style=\"display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size:10px; color:#525252;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span> · <span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div>`; ]]]"
+        "content": "[[[ var t = states['sensor.lora_g2_temp_2_temperature']; var h = states['sensor.lora_g2_temp_2_humidity']; var b = states['sensor.lora_g2_temp_2_battery']; var ls = states['sensor.lora_g2_temp_2_last_seen']; var lqe = states['sensor.lora_g2_temp_2_link_quality']; var lqv = lqe && lqe.state !== 'unavailable' && lqe.state !== 'unknown' && lqe.state !== '' ? parseInt(lqe.state) : null; var lqCol = lqv === null ? '#525252' : (lqv >= 100 ? '#4ade80' : (lqv >= 50 ? '#fbbf24' : '#f87171')); var lqTxt = lqv === null ? '--' : lqv; var av = states['binary_sensor.lora_g2_temp_2_available']; var temp = t && t.state !== 'unavailable' ? parseFloat(t.state).toFixed(1) : '--'; var hum = h && h.state !== 'unavailable' ? Math.round(parseFloat(h.state)) : '--'; var batt = b && b.state !== 'unavailable' ? b.state : '--'; var lsT = ls && ls.state !== 'unavailable' ? ls.state : '--'; var battColor = '#4ade80'; if (batt !== '--') { var battVal = parseInt(batt); if (battVal < 10) { battColor = '#f87171'; } else if (battVal < 25) { battColor = '#fbbf24'; } } var online = av && av.state === 'on'; var col = online ? '#4ade80' : '#f87171'; var label = online ? 'online' : 'offline'; var gw = 'G2'; var devName = 'Temp 2'; return `<div style=\"display: flex; flex-direction: column; height: 100%; width: 100%;\"><div style=\"display: flex; align-items: center; width: 100%; margin-bottom: 8px; justify-content: space-between; gap: 370px\"><div style=\"font-size: 14px; font-weight: 600; color: #e5e5e5;\">${devName}</div><div><span style=\"background:#141414; border:1px solid #22d3ee; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; color:#22d3ee;\">${gw}</span></div></div><div style=\"display: flex; justify-content: space-between; align-items: center; width: 100%; flex-grow: 1; gap: 180px;\"><div style=\"display: flex; align-items: baseline; gap: 10px;\"><div><span style=\"font-size:30px; font-weight:700; color:#22d3ee; line-height:1.1;\">${temp}</span><span style=\"font-size:22px; color:#525252;\">°C</span></div><div><span style=\"font-size:30px; font-weight:700; color:#4ade80; line-height:1.1;\">${hum}</span><span style=\"font-size:22px; color:#525252;\">%</span></div></div><div style=\"display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size:10px; color:#525252;\"><div><span style=\"color:${col};\">● ${label}</span> · <span style=\"color:${battColor};\">🔋 ${batt}%</span><br/><span style=\"color:${lqCol};\">📶 ${lqTxt}</span></div><div>${lsT}</div></div></div>`; ]]]"
        },
        "styles": {
         "card": [
@@ -10812,7 +10828,7 @@
             "action": "more-info"
            },
            "custom_fields": {
-            "content": "[[[ var p=states['sensor.lora_g2_pora_dnia'];var st=p?p.state:'--';var day=/Dzie/i.test(st);var sr=states['sensor.lora_g2_swit'];var ss=states['sensor.lora_g2_zmierzch'];var srT=sr?sr.state:'--';var ssT=ss?ss.state:'--';var icon=day?'☀️':'🌙';var col=day?'#fbbf24':'#c084fc';var lbl=day?'DZIEŃ':'NOC';return `<div style=\\\"display:flex;align-items:center;gap:18px;width:100%;\\\"><div style=\\\"font-size:44px;line-height:1;filter:drop-shadow(0 0 12px ${col}55);\\\">${icon}</div><div style=\\\"display:flex;flex-direction:column;gap:5px;\\\"><span style=\\\"font-size:18px;font-weight:800;color:${col};letter-spacing:3px;\\\">${lbl}</span><span style=\\\"font-size:11px;color:#525252;\\\">🌅 świt <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${srT}</span>  🌇 zmierzch <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${ssT}</span></span></div></div>`; ]]]"
+            "content": "[[[ var p=states['sensor.lora_g2_pora_dnia'];var st=p?p.state:'--';var day=/Dzie/i.test(st);var sr=states['sensor.lora_g2_swit'];var ss=states['sensor.lora_g2_zmierzch'];var srT=sr?sr.state:'--';var ssT=ss?ss.state:'--';var icon=day?'☀️':'🌙';var col=day?'#fbbf24':'#c084fc';var lbl=day?'DZIEŃ':'NOC';return `<div style=\\\"display:flex;align-items:center;gap:18px;width:100%;\\\"><div style=\\\"font-size:44px;line-height:1;filter:drop-shadow(0 0 12px ${col}55);\\\">${icon}</div><div style=\\\"display:flex;flex-direction:column;gap:5px;\\\"><span style=\\\"font-size:18px;font-weight:800;color:${col};letter-spacing:3px;\\\">${lbl}</span><div style=\\\"display:flex;flex-direction:column;gap:3px;font-size:11px;color:#525252;\\\"><span >🌅 świt <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${srT}</span></span><span >🌇 zmierzch <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${ssT}</span></span></div></div></div>`; ]]]"
            },
            "styles": {
             "card": [
@@ -10981,42 +10997,6 @@
           "name": [
            {
             "color": "#22d3ee"
-           }
-          ]
-         }
-        },
-        {
-         "type": "custom:button-card",
-         "template": "lora_btn",
-         "name": "PUSH ALL",
-         "icon": "mdi:calendar-multiple",
-         "tap_action": {
-          "action": "call-service",
-          "service": "button.press",
-          "service_data": {
-           "entity_id": "button.sync_calendar_all"
-          },
-          "confirmation": {
-           "text": "Wypchnąć kalendarz do WSZYSTKICH bramek?"
-          }
-         },
-         "styles": {
-          "card": [
-           {
-            "border": "1px solid #fbbf2455"
-           },
-           {
-            "height": "88px"
-           }
-          ],
-          "icon": [
-           {
-            "color": "#fbbf24"
-           }
-          ],
-          "name": [
-           {
-            "color": "#fbbf24"
            }
           ]
          }

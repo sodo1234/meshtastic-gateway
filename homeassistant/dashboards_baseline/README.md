@@ -13,10 +13,21 @@ python ../dash_sync.py diff           # czy live rozjechał się z baseline
 python ../dash_sync.py push sup-g1    # repo → LIVE (rollback / klonowanie bramki)
 ```
 Cele: `sup-g2` (100.79.111.24 `lora-scada`), `sup-g1` (100.79.111.24 `lora-scada-g1`),
-`gw-g2` (100.98.155.78 `lora-scada`). Bramka G1 (100.104.38.14) pominięta — host bez sieci.
+`gw-g2` (100.98.155.78 `lora-scada`), `gw-g1` (100.68.79.100 `lora-scada`),
+`gw-g1-carport` (100.68.79.100 `carport-dashboard`).
 
-Aktualne zrzuty: `live_sup_lora-scada_G2.json`, `live_sup_lora-scada-g1.json`,
-`live_gw_g2_lora-scada.json` (2026-07-30). Starsze `lora-scada-{sup,gw}.json` = zrzuty z 2026-07-19.
+**G1 wróciła do sieci 2026-08-24** pod adresem `100.68.79.100` (stary `100.104.38.14` jest MARTWY)
+i ma DWA dashboardy, oba objęte pullem. UWAGA: łącze do G1 bywa przerywane — `pull gw-g1` czasem
+trzeba powtórzyć (ssh timeout 255), to normalne, nie awaria.
+
+Aktualne zrzuty (2026-08-26, wszystkie 3 maszyny): `live_sup_lora-scada_G2.json` (5 widoków),
+`live_sup_lora-scada-g1.json` (4), `live_gw_g2_lora-scada.json` (5),
+`live_gw_g1_lora-scada.json` (5), `live_gw_g1_carport-dashboard.json` (2).
+Starsze `lora-scada-{sup,gw}.json` = zrzuty z 2026-07-19.
+
+Zmiana 2026-08-26: LQI (📶) przeniesione do OSOBNEJ linii w kafelkach — przy 3 kafelkach obok
+siebie wartość była ucinana. Dotyczy szablonów `carport_relay`/`carport_motion` (G1, sup-g1)
+oraz kart per-urządzenie na `sup-g2`. Zrobione po WS na żywym HA, potem `pull` do baseline.
 
 ---
 
