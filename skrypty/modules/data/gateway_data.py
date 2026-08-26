@@ -81,6 +81,7 @@ class GatewayData:
         # (event-driven z2m) — responsywność bez zmian. None = stare zachowanie (per-device `b`).
         self.avail_blob_fn = avail_blob_fn
         self.states = {}               # {dev: last full Z2M state dict}
+        self.sent_states = {}          # {dev: capy WYSŁANE w `b`} — źródło `dh` (B6), patrz _enqueue
         self.last_seen = {}            # {dev: "date HH:MM:SS"}
         self.last_msg_ts = {}          # {dev: epoch} — dowolna wiadomość z2m (dla stagnation)
         self.linkquality = {}          # {dev: Zigbee LQI 0-255} — jedzie blobem `avail`, nie w `b` (B1)
@@ -165,6 +166,17 @@ class GatewayData:
         # ANTY-SPAM: enqueue TYLKO na realną ZMIANĘ dostępności + force=False (batcher pakuje wiele
         # urządzeń w 1 pakiet). Poprzednio force=True + brak strażnika zmiany → z2m publikujący
         # availability 199 urządzeń (retained/re-eval) = 199 osobnych pakietów `b` [[sid,{a:0}]].
+        # SEED STARTOWY (2026-08-24): z2m przy starcie dosyła retained availability dla WSZYSTKICH
+        # urządzeń naraz, a `_alive` jest jeszcze puste — strażnik zmiany niżej przepuszcza wtedy
+        # KAŻDE urządzenie jako „zmianę". Na G1 (194 dev) to 32 pakiety `b` w jednej sekundzie:
+        # kolejka radia się zapycha, sendText() blokuje >90s, interfejs leci force-close i bramka
+        # milknie na dobre (live 2026-08-13: 10 dni ciszy). Na G2 (6 dev) = 1 pakiet, niewidoczne —
+        # dlatego bug ujawnił się dopiero po wgraniu G1 pełnej listy monitored.
+        # Stan początkowy ma jechać JEDNYM blobem `avail` z pierwszego full-sweepu report_liveness
+        # — dokładnie tak, jak ten sam problem rozwiązano już tam (patrz komentarz przy _sweep_n).
+        if dev not in self._alive:
+            self._alive[dev] = online          # zapamiętaj lokalnie, NIE nadawaj — blob dowiezie
+            return
         if self._alive.get(dev) != online:
             # patch #4: gdy bramka nieaktywna, NIE zgłaszaj availability non-monitored (lighting
             # powered-down → bez fałszywego offline). Monitored (temp/hum/leak/door) zawsze.
@@ -207,6 +219,21 @@ class GatewayData:
             return
         self._enqueue(dev, delta)
 
+    def note_sent(self, dev, caps):
+        """Zapamiętaj capy WYSŁANE supervisorowi — jedyne źródło `dh` (B6).
+
+        `dh` ma opisywać to, co bramka WYSŁAŁA, a nie to, co wie z z2m. Liczony ze świeżego
+        `self.states` był chronicznie o jeden cykl PRZED lustrem supa (wartość jedzie osobną ramką
+        `b`: tick batcha + kolejka TX + slot + cooldown, zmierzone 26-56 s) — więc sup widział
+        „rozjazd" przy KAŻDYM raporcie i zamawiał blob `dsnap`: 253 razy w 7 dni, wszystkie bez
+        powodu (jego hash równał się za każdym razem POPRZEDNIEMU `dh` bramki).
+
+        Delty kumulujemy tak samo jak `SupervisorData._merge`, żeby obie strony liczyły z tego
+        samego. Ramka zgubiona na RF nadal daje rozjazd — i o to chodzi, to jedyna realna strata.
+        Woła to KAŻDA ścieżka nadawania: `_enqueue` (ramki `b`) oraz blob `dsnap` w harnessie."""
+        if caps:
+            self.sent_states.setdefault(dev, {}).update(caps)
+
     def _enqueue(self, dev, caps_dict, force=False, available=True):
         sid = self.disc.short_ids.get(dev)
         if sid is None:
@@ -228,6 +255,7 @@ class GatewayData:
         include_a = (not available) or (self._a_sent.get(dev) is False)
         self._a_sent[dev] = available
         short = encode_short(caps_dict, available=available, include_avail=include_a)
+        self.note_sent(dev, caps_dict)
         if dev in self.disc.priority_names:
             self.pri_batch.add(sid, short, force_flush=force)
         else:
@@ -448,7 +476,9 @@ class GatewayData:
     def state_hash(self):
         """Hash stanu urządzeń monitored+priority — trafia do HB jako `dh` (B6, 2026-08-01).
         Po przejściu binarnych na raportowanie zdarzeniowe to hash, a nie periodyk, pilnuje
-        zbieżności lustra supervisora: rozjazd ⇒ sup dociąga pełny stan jednym transferem."""
+        zbieżności lustra supervisora: rozjazd ⇒ sup dociąga pełny stan jednym transferem.
+
+        Liczony z `sent_states` (co WYSŁANO), nie z `states` (co wiemy z z2m) — patrz `_enqueue`."""
         items = []
         for dev, info in list(self.disc.devices.items()):
             if not self.disc.is_monitored(dev):
@@ -456,7 +486,7 @@ class GatewayData:
             sid = self.disc.short_ids.get(dev)
             if sid is None:
                 continue
-            st = self.states.get(dev, {})
+            st = self.sent_states.get(dev, {})
             caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
             if caps:
                 items.append((sid, encode_short(caps)))

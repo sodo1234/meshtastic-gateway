@@ -91,7 +91,7 @@ class GatewayOfflineAnomaly:
     offline, wyczyść istniejące (urządzenia świadomie bez zasilania)."""
 
     def __init__(self, gw_id, discovery, data, emit, get_timeout, logger=None,
-                 check_interval=30, grace=120, is_active=None):
+                 check_interval=30, grace=120, is_active=None, skip_dev=None):
         self.gw_id = gw_id
         self.disc = discovery            # GatewayDiscovery (devices, short_ids) — ALL
         self.data = data                 # GatewayData (last_msg_ts keyed by dev)
@@ -101,6 +101,11 @@ class GatewayOfflineAnomaly:
         self.check_interval = check_interval
         self.grace = grace
         self.is_active = is_active       # callable() → bool (None = zawsze aktywna)
+        # WYKLUCZENIE Z ANOMALII (2026-08-24, polecenie usera): urządzenia zainstalowane, ale
+        # nieużywane (czujniki ruchu G1) — bez anomalii offline. Filtr U ŹRÓDŁA, żeby nie weszły
+        # do self.offline: ten zbiór karmi hash `oh`, snapshot() i dump_anom, więc samo zdławienie
+        # ramki `ab` nie wystarczyłoby (urządzenia dalej wisiałyby na liście u supervisora).
+        self.skip_dev = skip_dev         # callable(dev) → True = pomiń całkowicie
         self.offline = set()             # dev names (= availability offline, do hasha/dryfu)
         # ACK: urządzenia offline RĘCZNIE wyczyszczone (clear z bramki/supervisora przez ac_b).
         # Rozdziela AVAILABILITY (prawda — urządzenie nadal offline, zostaje w self.offline dla
@@ -140,6 +145,9 @@ class GatewayOfflineAnomaly:
         for dev in list(self.disc.devices.keys()):
             sid = self.disc.short_ids.get(dev)
             if sid is None:
+                continue
+            if self.skip_dev and self.skip_dev(dev):
+                self.offline.discard(dev)        # gdyby wpadł przed wykluczeniem — wyczyść hash
                 continue
             if not active:               # bramka nieaktywna → wyczyść offline, nie zgłaszaj
                 if dev in self.offline:

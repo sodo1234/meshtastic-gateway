@@ -14,12 +14,13 @@ class GatewayHeartbeat:
     """Gateway side: sends HB, responds to ping with pong."""
 
     def __init__(self, gw_id, devices_fn, lora, logger=None,
-                 interval=300, start_time=None, diag_fn=None):
+                 interval=300, start_time=None, diag_fn=None, jitter=None):
         """
         gw_id:       gateway ID (e.g. "G1")
         devices_fn:  callable() → dict of devices {name: {type, caps}}
         lora:        LoraTransport instance (for send)
         interval:    seconds between heartbeats
+        jitter:      +/- s losowego rozsuniecia (None = 5% interval); 0 = wylaczone
         diag_fn:     optional callable() → dict of extra diagnostics merged
                      into HB/pong payload (e.g. {'z2m': N, 'hash': H})
         """
@@ -31,7 +32,19 @@ class GatewayHeartbeat:
         self.start_time = start_time or time.time()
         self.diag_fn = diag_fn
         self._last_hb = 0
+        # JITTER HB (2026-08-24, zmierzona kolizja): przy stalym interwale dwie bramki, ktore raz
+        # trafia w te sama sekunde, koliduja JUZ ZAWSZE - HB swiadomie omija slotowanie (to
+        # liveness P0), wiec nic ich nie rozsuwa. Live 17:16:08 i 17:31:08: HB z G1 i G2 w tej
+        # samej sekundzie, dokladnie co 900 s, oba razy HB G1 przepadl.
+        # Losowe rozsuniecie +/-5% lamie zbieznosc faz bez ruszania architektury (HB zostaje poza
+        # slotem) i bez wplywu na wykrywanie offline (timeout to ~2x interwal).
+        self.jitter = max(0.0, float(jitter if jitter is not None else 0.05 * interval))
+        self._gap = self._next_gap()
         self.running = True
+
+    def _next_gap(self):
+        import random
+        return self.interval + random.uniform(-self.jitter, self.jitter)
 
     def build_payload(self, pkt_type='hb'):
         devs = self.devices_fn()
@@ -83,8 +96,9 @@ class GatewayHeartbeat:
         self.send_heartbeat()
         while self.running:
             time.sleep(10)
-            if time.time() - self._last_hb >= self.interval:
+            if time.time() - self._last_hb >= self._gap:
                 self.send_heartbeat()
+                self._gap = self._next_gap()      # kazdy cykl inny -> brak zbieznosci faz
 
 
 class SupervisorHeartbeat:

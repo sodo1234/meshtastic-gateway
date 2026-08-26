@@ -142,6 +142,27 @@ class SupervisorData:
         cur.update(fields)
         return dict(cur)
 
+    def clear_values(self, gw):
+        """Wyczyść WARTOŚCI lustra bramki, zostawiając dostępność i last_seen.
+
+        `dsnap` to ZRZUT, nie delta: czego w nim nie ma, tego bramka już nie ma. Bez tego
+        `_merge` (dict.update) potrafi wyłącznie DOKŁADAĆ — wartości raz wpisane zostawały w
+        lustrze na zawsze, więc `dh` nie miał jak się zejść z bramką.
+
+        Objaw live (2026-08-24, G1 carport): bramka po restarcie miała pusty `sent_states`
+        (przekaźniki bez zasilania w dzień ⇒ zero wartości) i słała `dh="0"`. Supervisor liczył
+        swój hash z wartości sprzed 10 dni, widział rozjazd i prosił o `dsnap` co 5 minut —
+        16 razy pod rząd, bez szansy na zbieżność. Zwrot: ile urządzeń wyczyszczono.
+        """
+        n = 0
+        for _dev, fields in (self.state.get(gw) or {}).items():
+            stale = [k for k in fields if k not in ('available', 'last_seen')]
+            if stale:
+                n += 1
+                for k in stale:
+                    fields.pop(k, None)
+        return n
+
     # ── sid → device name (from registered db) ──────────
     def _dev_from_sid(self, gw, sid):
         for name, info in self.disc.devices(gw).items():

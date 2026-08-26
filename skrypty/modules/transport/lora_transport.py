@@ -69,6 +69,14 @@ class LoraTransport:
         self.usb_reset_enabled = rc.get('usb_reset', True)
         self.usb_reset_after = rc.get('usb_reset_after', 2)   # po N nieudanych reconnectach → reset USB
         self.rx_timeout = rc.get('rx_timeout', 0)             # 0=off; >0 = brak RX > Ns gdy connected ⇒ wedge → reset
+        # ANTY-ZAMROŻENIE PĘTLI (2026-08-24, root-cause 10 dni ciszy G1): SerialInterface() oraz
+        # iface.close() na zwisniętym porcie potrafią NIE WRÓCIĆ NIGDY. Wołane wprost z pętli TX
+        # i pętli reconnectu zamrażały je na stałe: bramka żyła jako proces, ale nie nadała ani
+        # nie odebrała nic, a reconnect wykonał JEDNĄ próbę przez 10 dni. Odtąd oba wywołania idą
+        # przez wątek-strażnik z limitem czasu — pętle wracają do pracy nawet gdy port wisi.
+        self.connect_timeout = rc.get('connect_timeout', 45)  # s na SerialInterface()/TCPInterface()
+        self._connect_inflight = {}                           # {label: bool} — maks. 1 próba w locie
+        self._tx_blocked = {}                                 # {label: bool} — sendText() wciąż wisi
 
     # ── public API ──
     @staticmethod
@@ -174,24 +182,52 @@ class LoraTransport:
 
     # ── connection management ──
     def _connect_one(self, acfg):
+        """Podłącz antenę BEZ ryzyka zamrożenia wołającego (patrz connect_timeout w __init__).
+        Rejestracja interfejsu dzieje się WEWNĄTRZ wątku-strażnika, więc spóźniony sukces (po
+        przekroczeniu limitu) i tak trafia do self.interfaces zamiast osierocić port."""
         label = acfg['label']; port = acfg.get('port', '')
-        try:
-            if self._is_net(acfg):                          # antena po sieci (serial-over-IP)
-                if not self._meshtastic_tcp:
-                    raise RuntimeError("meshtastic.tcp_interface niedostępny")
-                host, tcp_port = self._tcp_host_port(acfg)
-                iface = self._meshtastic_tcp.TCPInterface(hostname=host, portNumber=tcp_port)
-                port = f"tcp://{host}:{tcp_port}"            # do logów/statusu
-            else:
-                iface = self._meshtastic.SerialInterface(devPath=port)
-            with self.lock: self.interfaces[label] = iface
-            self._reconnect_backoff[label] = 0
-            self._last_rx_ts = time.time()                  # świeże okno RX-watchdog po (re)connect
-            if self.log: self.log.info('ANT', f"✅ {label} ({port}) connected")
-            return True
-        except Exception as e:
-            if self.log: self.log.error('ANT', f"❌ {label} ({port}): {e}")
+        if self._connect_inflight.get(label):
+            return False                                    # próba już trwa — nie mnóż wątków
+        self._connect_inflight[label] = True
+        box = {}
+
+        def _mk():
+            shown = port
+            try:
+                if self._is_net(acfg):                      # antena po sieci (serial-over-IP)
+                    if not self._meshtastic_tcp:
+                        raise RuntimeError("meshtastic.tcp_interface niedostępny")
+                    host, tcp_port = self._tcp_host_port(acfg)
+                    iface = self._meshtastic_tcp.TCPInterface(hostname=host, portNumber=tcp_port)
+                    shown = f"tcp://{host}:{tcp_port}"       # do logów/statusu
+                else:
+                    iface = self._meshtastic.SerialInterface(devPath=port)
+                with self.lock: self.interfaces[label] = iface
+                self._reconnect_backoff[label] = 0
+                self._last_rx_ts = time.time()              # świeże okno RX-watchdog po (re)connect
+                box['ok'] = True
+                if self.log: self.log.info('ANT', f"✅ {label} ({shown}) connected")
+            except Exception as e:
+                if self.log: self.log.error('ANT', f"❌ {label} ({shown}): {e}")
+            finally:
+                self._connect_inflight[label] = False
+
+        t = threading.Thread(target=_mk, daemon=True, name=f"ant-connect-{label}")
+        t.start(); t.join(self.connect_timeout)
+        if t.is_alive():
+            if self.log:
+                self.log.error('ANT', f"⏱️ {label}: otwarcie portu nie wróciło w {self.connect_timeout}s "
+                                      f"— pętla reconnectu pracuje dalej (próba dokończy się w tle)")
             return False
+        return bool(box.get('ok'))
+
+    def _close_bg(self, label, iface):
+        """close() zwisniętego interfejsu w tle. NIGDY nie wołaj close() wprost z pętli TX —
+        na zapchanym porcie potrafi nie wrócić i zamraża nadawanie na stałe (live G1 2026-08-13)."""
+        def _do():
+            try: iface.close()
+            except Exception: pass
+        threading.Thread(target=_do, daemon=True, name=f"ant-close-{label}").start()
 
     def _force_release_port(self, port):
         """Close stale pyserial fds + lockfile after USB-Ethernet disconnect cycles."""
@@ -281,8 +317,7 @@ class LoraTransport:
                         if self.log: self.log.warn('ANT', f"⚠️ {label} ZWIS (unhealthy / brak RX>{self.rx_timeout}s) — force-close + reset USB")
                         with self.lock: old = self.interfaces.pop(label, None)
                         if old:
-                            try: old.close()
-                            except Exception: pass
+                            self._close_bg(label, old)      # close() potrafi zawisnąć — w tle
                         if not is_net:
                             self._force_release_port(port)
                             if self.usb_reset_enabled:
@@ -413,13 +448,25 @@ class LoraTransport:
         control, NIE zwis. Ubicie interfejsu po tx_timeout=8s tworzyło pętlę: burst → block →
         force-close → reconnect → burst → block… (sup głuchy dla bramki przez 3 dni). Teraz:
         po tx_timeout WARN + czekamy dalej do tx_hard_timeout (łącznie) — dopiero wtedy zwis."""
+        # STRAŻNIK WYCIEKU WĄTKÓW (2026-08-24): gdy poprzedni sendText() dla tej anteny NADAL wisi,
+        # nie startuj kolejnego. Python nie potrafi ubić wątku — porzucony wątek żyje wiecznie, a
+        # przy jednym wątku na każdy TX bramka G1 uzbierała 3072 wątki i load 1731 w 10 dni
+        # (maszyna przestała się nadawać do czegokolwiek). Flaga sama się kasuje, gdy sendText
+        # w końcu wróci, więc antena odzyskuje sprawność bez restartu procesu.
+        if self._tx_blocked.get(label):
+            if self.log:
+                self.log.warn('ANT', f"⛔ {label}: poprzedni sendText() wciąż wisi — pomijam ramkę "
+                                     f"(bez tego rośnie góra martwych wątków)")
+            return False
         result, error = [False], [None]
         def _do():
             try:
                 iface.sendText(text); result[0] = True
             except Exception as e:
                 error[0] = e
-        t = threading.Thread(target=_do, daemon=True)
+            finally:
+                self._tx_blocked.pop(label, None)   # wrócił — antena znów zdatna do nadawania
+        t = threading.Thread(target=_do, daemon=True, name=f"ant-tx-{label}")
         t.start(); t.join(timeout=self.tx_timeout)
         if t.is_alive():
             hard = max(getattr(self, 'tx_hard_timeout', 90) - self.tx_timeout, 1)
@@ -431,16 +478,15 @@ class LoraTransport:
             if self.log:
                 self.log.error('ANT', f"❌ TX {label}: sendText() blocked "
                                       f">{getattr(self, 'tx_hard_timeout', 90)}s — force-closing")
+            self._tx_blocked[label] = True          # wątek porzucony — blokuj kolejne, aż wróci
             with self.lock: dead = self.interfaces.pop(label, None)
             if dead:
-                try: dead.close()
-                except Exception: pass
+                self._close_bg(label, dead)         # close() na zwisie potrafi nie wrócić
             return False
         if error[0]:
             if self.log: self.log.error('ANT', f"❌ TX {label}: {error[0]}")
             with self.lock: dead = self.interfaces.pop(label, None)
             if dead:
-                try: dead.close()
-                except Exception: pass
+                self._close_bg(label, dead)
             return False
         return result[0]
