@@ -2498,11 +2498,30 @@ def run_supervisor(log):
             # równorzędny z disc/param/cal/anom: odkąd binarne raportują tylko zdarzeniowo, to on
             # pilnuje, że lustro nie rozjechało się po cichu. Bez flagi klient nie widzi rozjazdu,
             # który system i tak sam naprawia blobem `dsnap` — a widzieć powinien.
+            def _sup_status_hash(_gw):
+                """Lustrzany odpowiednik `GatewayData.status_hash()` — ten sam wzór po stronie
+                supervisora: capy z lustra + REALNA dostępność z `dev_avail`. Pozwala pokazać,
+                czy status (w tym masowa zmiana o zmierzchu/świcie) jest zsynchronizowany,
+                a nie tylko czy zgadzają się wartości, które bramka zdążyła dowieźć (`dh`)."""
+                from modules.data import encode_short as _es, status_hash as _sh_fn
+                _items = []
+                for _dev, _f in (sup_data.state.get(_gw) or {}).items():
+                    _info = (sup_disc.devices(_gw) or {}).get(_dev) or {}
+                    _sid = _info.get('sid')
+                    if _sid is None or not sup_disc.allowed(_gw, _dev):
+                        continue
+                    _caps = {k: v for k, v in _f.items()
+                             if k in TYPE_CAPS.get(_info.get('type', 'sensor'), ())}
+                    _av = dev_avail.get((_gw, _dev), True)
+                    _items.append((_sid, _es(_caps, available=bool(_av), include_avail=True)))
+                return _sh_fn(_items)
+
             _dh = d.get('dh', '--')
             # 2026-08-26: na kafel idzie `sh` (hash stanu, KTÓRY BRAMKA ZNA) — `dh` po restarcie
             # bramki stoi na 0 i wyglądał jak awaria. Zgodność lustra dalej liczymy z `dh`,
             # bo to ono opisuje, co bramka faktycznie dowiozła.
             _sh = d.get('sh') or _dh
+            _status_ok = bool(_sh and _sh != '--' and _sh == _sup_status_hash(gw))
             _data_ok = bool(_dh and _dh != '--' and _dh == sup_data.state_hash(gw))
             _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok and _data_ok
             _zgv = ''.join('1' if f else '0'               # → sup_pong ORAZ push przy zmianie
@@ -2521,6 +2540,7 @@ def run_supervisor(log):
                 'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
                 'data': _sh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash STANU bramki (sh) + zgodność (dh)
                 'data_sent': _dh,                          # co bramka dowiozła (diagnostyka rozjazdu)
+                'status_ok': _mark(_status_ok),            # 2026-08-26: czy STATUS (z dostępnością) zsynchronizowany
                 'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
                 separators=(',', ':')), retain=True)
     dispatcher.register('hb', on_hb)

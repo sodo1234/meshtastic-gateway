@@ -10,10 +10,10 @@ from .batcher import Batcher
 from .gateway_data import GatewayData
 from .supervisor_data import SupervisorData
 from .z2m_reader import (compute_delta, encode_short, decode_short, state_hash,
-                         CAP_SHORT, SHORT_CAP, TYPE_CAPS)
+                         CAP_SHORT, SHORT_CAP, TYPE_CAPS, status_hash)
 
 __all__ = [
     "Batcher", "GatewayData", "SupervisorData",
-    "compute_delta", "encode_short", "decode_short", "state_hash",
+    "compute_delta", "encode_short", "decode_short", "state_hash", "status_hash",
     "CAP_SHORT", "SHORT_CAP", "TYPE_CAPS",
 ]

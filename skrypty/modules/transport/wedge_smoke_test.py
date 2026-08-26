@@ -187,6 +187,58 @@ def test_hb_jitter_lamie_zbieznosc_faz():
     print(f'✅ 6. HB jitter: {zderzenia}/200 zbiegnieć (bez jittera: {bez}/20)')
 
 
+def test_status_hash_niesie_dostepnosc():
+    """7. Bramka nocna W DZIEŃ: zero wartości capów, ale 78 urządzeń NIEDOSTĘPNYCH.
+    `sh` musi to opisywać (≠ hash stanu „wszystko OK") — inaczej kafel pokazuje `0`,
+    jakby bramka nic nie wiedziała, a ona wie doskonale."""
+    from modules.data.gateway_data import GatewayData
+
+    class _Disc:
+        devices = {f"RA{i}_2": {'type': 'switch'} for i in range(1, 6)}
+        short_ids = {d: i for i, d in enumerate(devices)}
+        def is_monitored(self, dev): return True
+
+    gd = GatewayData.__new__(GatewayData)
+    gd.disc, gd.log = _Disc(), None
+    gd.states, gd.sent_states = {}, {}
+    gd._alive, gd._z2m_avail = {}, {}
+
+    gd._z2m_avail = {d: True for d in _Disc.devices}
+    h_online = gd.status_hash()
+    gd._z2m_avail = {d: False for d in _Disc.devices}
+    h_offline = gd.status_hash()
+
+    assert h_online and h_online != '0', 'hash statusu nie może być pusty przy znanych urządzeniach'
+    assert h_offline and h_offline != '0',         'BEZ WARTOŚCI, ale z niedostępnością — hash MUSI być niezerowy (to był bug kafla „0")'
+    assert h_online != h_offline, 'masowa zmiana dostępności MUSI zmienić hash statusu'
+    print('  ✓ 7. status_hash niesie dostępność (online≠offline, żaden nie jest 0)')
+
+
+def test_kaskada_tylko_w_dol():
+    """8. Powrót bramki NIE MOŻE hurtem ustawiać urządzeń jako dostępne — to była przyczyna
+    tego, że supervisor w dzień pokazywał 78/78 przekaźników G1 online, choć z2m mówił offline."""
+    from modules.protocol.heartbeat import SupervisorHeartbeat
+
+    pub = []
+
+    class _HA:
+        def pub_device_avail(self, gw, dev, online): pub.append((gw, dev, online))
+        def reg_gateway(self, gw): pass
+
+    sh = SupervisorHeartbeat.__new__(SupervisorHeartbeat)
+    sh.ha, sh.log = _HA(), None
+    sh.devices_provider = lambda gw: {'RA1_2': {}, 'RA2_2': {}}
+
+    sh._cascade_devices('G1', online=False)
+    assert pub and all(p[2] is False for p in pub), 'kaskada w DÓŁ ma działać (bramka milczy)'
+    n_down = len(pub)
+
+    import modules.protocol.heartbeat as _hb_mod
+    src = open(_hb_mod.__file__, encoding='utf-8').read()
+    assert 'self._cascade_devices(gw, online=True)' not in src,         'kaskada W GÓRĘ wróciła — supervisor znów będzie zmyślał dostępność urządzeń'
+    print(f'  ✓ 8. kaskada tylko w dół ({n_down} urządzeń zgaszonych, w górę brak)')
+
+
 if __name__ == '__main__':
     test_startup_seed_nie_zalewa_lora()
     test_wiszacy_sendtext_nie_mnozy_watkow()
@@ -194,4 +246,6 @@ if __name__ == '__main__':
     test_wykluczenie_z_anomalii()
     test_dsnap_zbiega_hash()
     test_hb_jitter_lamie_zbieznosc_faz()
-    print("\n🎯 wedge_smoke_test: 6/6 — regresje G1 z 2026-08-24 zabezpieczone")
+    test_status_hash_niesie_dostepnosc()
+    test_kaskada_tylko_w_dol()
+    print("\n🎯 wedge_smoke_test: 8/8 — regresje G1 (2026-08-24 + 2026-08-26) zabezpieczone")

@@ -16,7 +16,7 @@ import time
 from collections import deque
 
 from .batcher import Batcher
-from .z2m_reader import compute_delta, encode_short, state_hash, TYPE_CAPS
+from .z2m_reader import compute_delta, encode_short, state_hash, status_hash, TYPE_CAPS
 
 
 def _now_str():
@@ -509,9 +509,14 @@ class GatewayData:
                 continue
             st = self.states.get(dev, {})
             caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
-            if caps:
-                items.append((sid, encode_short(caps)))
-        return state_hash(items)
+            # DOSTĘPNOŚĆ JEST CZĘŚCIĄ STATUSU (2026-08-26). Bez niej `sh` bramki nocnej stoi w
+            # dzień na `0`: przekaźniki są bez zasilania, więc nie mają ŻADNEJ wartości capów —
+            # a to nie znaczy, że bramka nic nie wie. Wie, że 78 urządzeń jest niedostępnych, i
+            # to jest pełnoprawny status. Dzięki `a:` hash zmienia się przy MASOWEJ zmianie
+            # stanu (zmierzch/świt, harmonogram) i jest porównywalny z lustrem supervisora.
+            alive = self._z2m_avail.get(dev, self._alive.get(dev, True))
+            items.append((sid, encode_short(caps, available=bool(alive), include_avail=True)))
+        return status_hash(items)
 
     def ack_pri(self, pid):
         """`{t:back,g,p}` z supervisora → potwierdź pakiet priorytetowy (koniec retransmisji)."""

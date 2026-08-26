@@ -139,6 +139,27 @@ def _hash_val(v):
     return str(v)
 
 
+def status_hash(items):
+    """items: (sid, short_fields) → 8-hex skrót STATUSU. Jak `state_hash`, ale **liczy `a`**.
+
+    `state_hash` (czyli `dh`) świadomie wycina availability — ma opisywać WARTOŚCI, a dostępność
+    ma własny kanał. Dla kafla to jednak za mało: bramka nocna w dzień nie ma ŻADNYCH wartości
+    (przekaźniki bez zasilania), więc `dh` = '0' i wygląda to jak awaria, choć bramka doskonale
+    wie, że 78 urządzeń jest niedostępnych. `status_hash` opisuje pełny status — zmienia się przy
+    MASOWEJ zmianie stanu (zmierzch/świt, harmonogram) i po obu stronach liczy się tak samo.
+    `q` (LQI) dalej wycinamy: skacze przy każdym pakiecie i nie niesie informacji o stanie.
+    """
+    import hashlib
+    parts = []
+    for sid, fields in sorted(items, key=lambda kv: int(kv[0])):
+        kv = sorted((k, _hash_val(v)) for k, v in (fields or {}).items() if k != 'q')
+        if kv:
+            parts.append(f"{sid}:" + ",".join(f"{k}={v}" for k, v in kv))
+    if not parts:
+        return '0'
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:8]
+
+
 def state_hash(items):
     """items: iterable (sid, short_fields_dict) → 8-hex skrót stanu. Puste = '0'."""
     import hashlib

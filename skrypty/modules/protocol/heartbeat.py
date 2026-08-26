@@ -162,9 +162,15 @@ class SupervisorHeartbeat:
         self.ha.reg_gateway(gw)
         self._publish_status(gw)
         if was_offline:
-            self._cascade_devices(gw, online=True)
+            # KASKADA TYLKO W DÓŁ (2026-08-26). Wcześniej powrót bramki hurtem ustawiał
+            # WSZYSTKIM jej urządzeniom `available=ON` — i to była główna przyczyna tego, że
+            # supervisor w dzień pokazywał 78/78 przekaźników G1 jako dostępne, choć z2m na
+            # bramce mówił `offline` (carport ma zasilanie tylko nocą). Kaskada w dół jest
+            # uprawniona (bramka milczy ⇒ NIE WIEMY nic o urządzeniach), w górę NIE JEST:
+            # „bramka żyje" nie znaczy „urządzenia żyją". Prawdę o dostępności dowozi blob
+            # `avail` z pełnego sweepu — bramka jest źródłem prawdy, nie domysł supervisora.
             if self.log:
-                self.log.info('HB', f'💚 {gw} ONLINE ponownie')
+                self.log.info('HB', f'💚 {gw} ONLINE ponownie (dostępność urządzeń — z blobu bramki)')
         pkt = data.get('t', 'hb')
         icon = '💓' if pkt == 'hb' else '🏓'
         if self.log:
