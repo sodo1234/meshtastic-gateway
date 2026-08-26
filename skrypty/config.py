@@ -167,6 +167,11 @@ SUPERVISOR_CONFIG = {
     "control": {
         "timeout": 45,
         "retries": 2,             # łącznie do 3 wysyłek, potem urządzenie → OFFLINE
+        # RAMKA ZBIORCZA (2026-08-26): kliknięcia z dashboardu z tego okna [s] lecą JEDNĄ
+        # ramką `cmdm` na kilkanaście urządzeń zamiast `cmd` na każde. Podnieść = mniej
+        # ramek, wolniejsza reakcja na pojedynczy klik (UI i tak jest optimistic).
+        "bulk_window_cmd": 1.5,
+        "bulk_max_bytes": 200,    # sufit ramki; Meshtastic >220 B ucina PO CICHU
     },
 }
 
@@ -353,6 +358,10 @@ GATEWAY_CONFIG = {
         # False = czekaj na potwierdzenie Z2M zanim odeślesz `st` (dokładniej, wolniej). Domyślnie False.
         # Uwaga: dashboard supervisora i tak pokazuje klik optymistycznie; to dotyczy źródła `st` z bramki.
         "optimistic_status": False,
+        # RAMKA ZBIORCZA (2026-08-26): statusy z tego okna [s] lecą jedną ramką `stm`.
+        # Dłuższe niż po stronie cmd, bo potwierdzenia z z2m sączą się kilka sekund.
+        "bulk_window_st": 3.0,
+        "bulk_max_bytes": 200,
         # UWAGA: `timeout`/`retries` (retry komendy po braku `st`) czyta ROLA SUPERVISORA
         # (run_supervisor), więc mieszkają w SUPERVISOR_CONFIG["control"] — nie tutaj. Tu zostaje
         # tylko to, co czyta bramka. Trzymanie ich w tym bloku było przyczyną buga z 2026-07-30:
