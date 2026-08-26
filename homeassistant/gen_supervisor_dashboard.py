@@ -18,6 +18,8 @@ nietknięta. Szablony button-card mergowane przez setdefault.
 import asyncio, json, os, sys
 import websockets
 
+from gen_supervisor_devices import device_section_cards
+
 HA = "ws://100.79.111.24:8123/api/websocket"
 VIEW_PREFIX = "lora-sup-"          # +gw.lower() → path per bramka (idempotentne czyszczenie)
 
@@ -303,6 +305,7 @@ def gw_view(gw, have):
 
     cards = [hdr(f"BRAMKA {gw}"), status_card(gw)]
     cards += control_rows(gw)
+    cards += device_section_cards(gw, have)
     cards += [hdr("CZAS & PORA DNIA"),
               {"type": "horizontal-stack", "cards": [day_night_card(), clock_card(gw)]},
               hdr("STATYSTYKI URZĄDZEŃ")]
