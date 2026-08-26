@@ -28,9 +28,11 @@ TARGETS = {
     "sup-g2": ("100.79.111.24", "lora-scada", "live_sup_lora-scada_G2.json"),
     "sup-g1": ("100.79.111.24", "lora-scada-g1", "live_sup_lora-scada-g1.json"),
     "gw-g2": ("100.98.155.78", "lora-scada", "live_gw_g2_lora-scada.json"),
+    # G1 carport wróciła do sieci 2026-08-24 pod adresem 100.68.79.100 (100.104.38.14 MARTWY).
+    # Ma DWA dashboardy: `lora-scada` (SCADA) i `carport-dashboard` (widok obiektowy).
+    "gw-g1": ("100.68.79.100", "lora-scada", "live_gw_g1_lora-scada.json"),
+    "gw-g1-carport": ("100.68.79.100", "carport-dashboard", "live_gw_g1_carport-dashboard.json"),
 }
-# G1 (carport, 100.104.38.14) świadomie POMINIĘTA: host bez sieci od 2026-07-29 (Tailscale rx 0),
-# jego lokalny dashboard nieosiągalny. Dopisz wpis, gdy łącze wróci.
 
 
 def token(host):

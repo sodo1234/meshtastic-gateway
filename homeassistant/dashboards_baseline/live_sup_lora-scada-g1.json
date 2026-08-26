@@ -230,7 +230,7 @@
    },
    "icon": "[[[ return entity.state==='on'?'mdi:lightbulb-on':'mdi:lightbulb-off-outline'; ]]]",
    "custom_fields": {
-    "info": "[[[ var e=entity;var slug=e?e.entity_id.replace(/^switch\\./,''):'';var av=states['binary_sensor.'+slug+'_available'];var lqe=states['sensor.'+slug+'_link_quality'];var lq=(lqe&&lqe.state!=='unknown'&&lqe.state!=='unavailable')?parseInt(lqe.state):null;var off=(!e||!av||av.state==='off');var lc=e?new Date(e.last_changed):null;var t=lc?(('0'+lc.getDate()).slice(-2)+'.'+('0'+(lc.getMonth()+1)).slice(-2)+' '+('0'+lc.getHours()).slice(-2)+':'+('0'+lc.getMinutes()).slice(-2)):'--';var lqs=(lq!=null)?lq:'--';var dot=off?'<span style=\"color:#f87171;font-weight:800;\">● OFFLINE</span>':'<span style=\"color:#4ade80;\">● online</span>';return '<div style=\"display:flex;flex-direction:column;gap:2px;font-size:9px;color:#737373;line-height:1.3;white-space:nowrap;\">'+'<span>🕐 '+t+'   📶 '+lqs+'</span>'+'<span>'+dot+'</span></div>'; ]]]"
+    "info": "[[[ var e=entity;var slug=e?e.entity_id.replace(/^switch\\./,''):'';var av=states['binary_sensor.'+slug+'_available'];var lqe=states['sensor.'+slug+'_link_quality'];var lq=(lqe&&lqe.state!=='unknown'&&lqe.state!=='unavailable')?parseInt(lqe.state):null;var off=(!e||!av||av.state==='off');var lc=e?new Date(e.last_changed):null;var t=lc?(('0'+lc.getDate()).slice(-2)+'.'+('0'+(lc.getMonth()+1)).slice(-2)+' '+('0'+lc.getHours()).slice(-2)+':'+('0'+lc.getMinutes()).slice(-2)):'--';var lqs=(lq!=null)?lq:'--';var dot=off?'<span style=\"color:#f87171;font-weight:800;\">● OFFLINE</span>':'<span style=\"color:#4ade80;\">● online</span>';return '<div style=\"display:flex;flex-direction:column;gap:2px;font-size:9px;color:#737373;line-height:1.3;white-space:nowrap;\">'+'<span>🕐 '+t+'</span>'+'<span>📶 '+lqs+'</span>'+'<span>'+dot+'</span></div>'; ]]]"
    },
    "styles": {
     "card": [
@@ -9249,6 +9249,22 @@
        ]
       },
       {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.lora_g1_hash_danych_bramka",
+         "name": "HASH DANYCH",
+         "icon": "mdi:database-check",
+         "tap_action": {
+          "action": "more-info"
+         },
+         "state_display": "[[[ var s=String(entity.state||''); return s.length>8 ? s.slice(0,8) : s; ]]]"
+        }
+       ]
+      },
+      {
        "type": "custom:button-card",
        "template": "lora_base",
        "entity": "sensor.lora_g1_zgodnosc_ogolna",
@@ -9259,7 +9275,7 @@
         "action": "more-info"
        },
        "custom_fields": {
-        "content": "[[[ var f=function(id,lbl){var s=states[id];var v=s?s.state:'';var ok=/zgod|✅/i.test(v)&&!/niezg/i.test(v);var col=ok?'#4ade80':'#f87171';var ic=ok?'✅':'❌';return '<span style=\"display:inline-flex;align-items:center;gap:5px;margin-right:20px;\"><span style=\"font-size:10px;color:#737373;letter-spacing:1px;font-weight:700;\">'+lbl+'</span><span style=\"color:'+col+';font-size:15px;\">'+ic+'</span></span>';}; return '<div style=\"display:flex;flex-wrap:wrap;align-items:center;width:100%;\">'+f('sensor.lora_g1_disc_zgodnosc','DISC')+f('sensor.lora_g1_param_zgodnosc','PARAM')+f('sensor.lora_g1_kalendarz_zgodnosc','KALENDARZ')+f('sensor.lora_g1_anomalie_zgodnosc','ANOMALIE')+'</div>'; ]]]"
+        "content": "[[[ var f=function(id,lbl){var s=states[id];var v=s?s.state:'';var ok=/zgod|✅/i.test(v)&&!/niezg/i.test(v);var col=ok?'#4ade80':'#f87171';var ic=ok?'✅':'❌';return '<span style=\"display:inline-flex;align-items:center;gap:5px;margin-right:20px;\"><span style=\"font-size:10px;color:#737373;letter-spacing:1px;font-weight:700;\">'+lbl+'</span><span style=\"color:'+col+';font-size:15px;\">'+ic+'</span></span>';}; return '<div style=\"display:flex;flex-wrap:wrap;align-items:center;width:100%;\">'+f('sensor.lora_g1_disc_zgodnosc','DISC')+f('sensor.lora_g1_param_zgodnosc','PARAM')+f('sensor.lora_g1_kalendarz_zgodnosc','KALENDARZ')+f('sensor.lora_g1_anomalie_zgodnosc','ANOMALIE')+f('sensor.lora_g1_dane_zgodnosc','DANE')+'</div>'; ]]]"
        },
        "styles": {
         "card": [
@@ -10323,7 +10339,7 @@
             "action": "more-info"
            },
            "custom_fields": {
-            "content": "[[[ var p=states['sensor.lora_g1_pora_dnia'];var st=p?p.state:'--';var day=/Dzie/i.test(st);var sr=states['sensor.lora_g1_swit'];var ss=states['sensor.lora_g1_zmierzch'];var srT=sr?sr.state:'--';var ssT=ss?ss.state:'--';var icon=day?'☀️':'🌙';var col=day?'#fbbf24':'#c084fc';var lbl=day?'DZIEŃ':'NOC';return `<div style=\\\"display:flex;align-items:center;gap:18px;width:100%;\\\"><div style=\\\"font-size:44px;line-height:1;filter:drop-shadow(0 0 12px ${col}55);\\\">${icon}</div><div style=\\\"display:flex;flex-direction:column;gap:5px;\\\"><span style=\\\"font-size:18px;font-weight:800;color:${col};letter-spacing:3px;\\\">${lbl}</span><span style=\\\"font-size:11px;color:#525252;\\\">🌅 świt <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${srT}</span>  🌇 zmierzch <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${ssT}</span></span></div></div>`; ]]]"
+            "content": "[[[ var p=states['sensor.lora_g2_pora_dnia'];var st=p?p.state:'--';var day=/Dzie/i.test(st);var sr=states['sensor.lora_g2_swit'];var ss=states['sensor.lora_g2_zmierzch'];var srT=sr?sr.state:'--';var ssT=ss?ss.state:'--';var icon=day?'☀️':'🌙';var col=day?'#fbbf24':'#c084fc';var lbl=day?'DZIEŃ':'NOC';return `<div style=\\\"display:flex;align-items:center;gap:18px;width:100%;\\\"><div style=\\\"font-size:44px;line-height:1;filter:drop-shadow(0 0 12px ${col}55);\\\">${icon}</div><div style=\\\"display:flex;flex-direction:column;gap:5px;\\\"><span style=\\\"font-size:18px;font-weight:800;color:${col};letter-spacing:3px;\\\">${lbl}</span><div style=\\\"display:flex;flex-direction:column;gap:3px;font-size:11px;color:#525252;\\\"><span >🌅 świt <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${srT}</span></span><span >🌇 zmierzch <span style=\\\"color:#e5e5e5;font-weight:700;\\\">${ssT}</span></span></div></div></div>`; ]]]"
            },
            "styles": {
             "card": [
@@ -10414,16 +10430,6 @@
          "entity": "select.lora_g1_gw_g1_tryb_bramki",
          "name": "Tryb bramki (sterowanie)",
          "icon": "mdi:theme-light-dark"
-        },
-        {
-         "entity": "sensor.lora_g1_hash_kalendarza_bramka",
-         "name": "Hash kalendarza (bramka)",
-         "icon": "mdi:fingerprint"
-        },
-        {
-         "entity": "sensor.lora_g1_kalendarz_zgodnosc",
-         "name": "Kalendarz — zgodność",
-         "icon": "mdi:calendar-check"
         }
        ],
        "card_mod": {
@@ -10505,56 +10511,30 @@
            }
           ]
          }
-        },
-        {
-         "type": "custom:button-card",
-         "template": "lora_btn",
-         "name": "PUSH ALL",
-         "icon": "mdi:calendar-multiple",
-         "tap_action": {
-          "action": "call-service",
-          "service": "button.press",
-          "service_data": {
-           "entity_id": "button.sync_calendar_all"
-          },
-          "confirmation": {
-           "text": "Wypchnąć kalendarz do WSZYSTKICH bramek?"
-          }
-         },
-         "styles": {
-          "card": [
-           {
-            "border": "1px solid #fbbf2455"
-           },
-           {
-            "height": "88px"
-           }
-          ],
-          "icon": [
-           {
-            "color": "#fbbf24"
-           }
-          ],
-          "name": [
-           {
-            "color": "#fbbf24"
-           }
-          ]
-         }
         }
        ]
       }
      ]
     },
     {
-     "type": "calendar",
-     "initial_view": "listWeek",
-     "entities": [
-      "calendar.lora_g1"
-     ],
-     "card_mod": {
-      "style": "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:12px;box-shadow:none;overflow:hidden;}"
-     }
+     "type": "vertical-stack",
+     "cards": [
+      {
+       "type": "custom:button-card",
+       "template": "lora_hdr",
+       "name": "HARMONOGRAM"
+      },
+      {
+       "type": "calendar",
+       "initial_view": "listWeek",
+       "entities": [
+        "calendar.lora_g1"
+       ],
+       "card_mod": {
+        "style": "ha-card{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:12px;box-shadow:none;overflow:hidden;}"
+       }
+      }
+     ]
     }
    ]
   },

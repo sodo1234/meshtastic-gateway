@@ -9031,6 +9031,22 @@
        ]
       },
       {
+       "type": "horizontal-stack",
+       "cards": [
+        {
+         "type": "custom:button-card",
+         "template": "lora_stat",
+         "entity": "sensor.gw_g2_hash_danych",
+         "name": "HASH DANYCH",
+         "icon": "mdi:database-check",
+         "tap_action": {
+          "action": "more-info"
+         },
+         "state_display": "[[[ var s=String(entity.state||''); return s.length>8 ? s.slice(0,8) : s; ]]]"
+        }
+       ]
+      },
+      {
        "type": "custom:button-card",
        "template": "lora_base",
        "entity": "sensor.gw_g2_zgodnosc_ogolna",
@@ -9041,7 +9057,7 @@
         "action": "more-info"
        },
        "custom_fields": {
-        "content": "[[[ var f=function(id,lbl){var s=states[id];var v=s?s.state:'';var ok=/zgod|✅/i.test(v)&&!/niezg/i.test(v);var col=ok?'#4ade80':'#f87171';var ic=ok?'✅':'❌';return '<span style=\"display:inline-flex;align-items:center;gap:5px;margin-right:20px;\"><span style=\"font-size:10px;color:#737373;letter-spacing:1px;font-weight:700;\">'+lbl+'</span><span style=\"color:'+col+';font-size:15px;\">'+ic+'</span></span>';}; return '<div style=\"display:flex;flex-wrap:wrap;align-items:center;width:100%;\">'+f('sensor.gw_g2_disc_zgodnosc','DISC')+f('sensor.gw_g2_param_zgodnosc','PARAM')+f('sensor.gw_g2_kalendarz_zgodnosc','KALENDARZ')+f('sensor.gw_g2_anomalie_zgodnosc','ANOMALIE')+'</div>'; ]]]"
+        "content": "[[[ var f=function(id,lbl){var s=states[id];var v=s?s.state:'';var ok=/zgod|✅/i.test(v)&&!/niezg/i.test(v);var col=ok?'#4ade80':'#f87171';var ic=ok?'✅':'❌';return '<span style=\"display:inline-flex;align-items:center;gap:5px;margin-right:20px;\"><span style=\"font-size:10px;color:#737373;letter-spacing:1px;font-weight:700;\">'+lbl+'</span><span style=\"color:'+col+';font-size:15px;\">'+ic+'</span></span>';}; return '<div style=\"display:flex;flex-wrap:wrap;align-items:center;width:100%;\">'+f('sensor.gw_g2_disc_zgodnosc','DISC')+f('sensor.gw_g2_param_zgodnosc','PARAM')+f('sensor.gw_g2_kalendarz_zgodnosc','KALENDARZ')+f('sensor.gw_g2_anomalie_zgodnosc','ANOMALIE')+f('sensor.gw_g2_dane_zgodnosc','DANE')+'</div>'; ]]]"
        },
        "styles": {
         "card": [
