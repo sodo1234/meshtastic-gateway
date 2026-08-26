@@ -368,7 +368,14 @@ def run_gateway(log):
             lora_send(fr)
         if len(items) > 1:
             log.info('CTRL', f'📦 st zbiorczo: {len(items)} urządzeń → mniej ramek LoRa')
-    st_bulk = Coalescer(_flush_st, window=_bulk_cfg.get('bulk_window_st', 3.0),
+    # OKNO ZMIERZONE NA ŻYWO (harmonogram 22:15 na G1, 2026-08-26): 65 potwierdzeń `st`
+    # przyszło w 44 s, ODSTĘPY 1-3 s (mediana 2 s). Przy oknie 3 s większość flushów miała
+    # JEDEN element → leciała stara ramka `st` i z 65 zrobiły się 63 `st` + 2 `stm`. Okno musi
+    # być WIELOKROTNIE dłuższe od odstępu, żeby cokolwiek zgrupować. 20 s przy odstępie 2 s
+    # zbiera ~10 urządzeń na ramkę. `max_items` = zawór w drugą stronę: gdy potwierdzenia lecą
+    # gęściej, wypuść od razu po zapełnieniu ramki, nie czekaj do końca okna.
+    st_bulk = Coalescer(_flush_st, window=_bulk_cfg.get('bulk_window_st', 20.0),
+                        max_items=_bulk_cfg.get('bulk_max_items_st', 12),
                         logger=log, name='st')
 
     def st_send(dev, cap, val):
