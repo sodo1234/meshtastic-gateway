@@ -263,6 +263,41 @@ def test_heartbeat_miesci_sie_w_ramce():
     assert m_ <= 220
     print(f'  ✓ 9. heartbeat {m_} B (hashe zgodne) / {n} B (sh≠dh) — limit 220, zapas {220 - n} B')
 
+def test_wyjatek_nie_zabija_heartbeatu():
+    """10. Jeden nieudany HB nie moze skasowac wszystkich nastepnych.
+
+    Regresja 2026-08-26 na G1: ostatni heartbeat 19:48:10, potem 9 h ciszy przy zywej bramce
+    (`b`, bloby, `an_d`, `sup_ping` lecialy caly czas). Petla HB nie miala `try`, wiec jeden
+    wyjatek zabil watek NA STALE. Supervisor dalej pokazywal bramke ONLINE, bo reaguje na
+    dowolna ramke — zamarzly tylko hashe i liczniki. Ten test pilnuje bariery."""
+    from modules.protocol.heartbeat import GatewayHeartbeat
+
+    wyslane = []
+
+    class _Lora:
+        def send(self, text): wyslane.append(text)
+
+    licznik = {'n': 0}
+
+    def _devices_fn():
+        licznik['n'] += 1
+        if licznik['n'] in (2, 3):                 # dwa cykle z rzedu rzucaja
+            raise RuntimeError('dictionary changed size during iteration')
+        return {'RA1_2': {'monitored': True}}
+
+    hb = GatewayHeartbeat.__new__(GatewayHeartbeat)
+    hb.gw_id, hb.lora, hb.log = 'G1', _Lora(), None
+    hb.start_time, hb._last_hb, hb._gap = 0, 0, 1
+    hb.devices_fn, hb.diag_fn, hb.running = _devices_fn, None, True
+
+    for _ in range(4):
+        hb._safe_hb()
+
+    assert len(wyslane) >= 3, (f'po wyjatku heartbeat MUSI isc dalej — wyslano {len(wyslane)} '
+                               f'ramek z 4 prob (regresja G1: watek umieral na pierwszym bledzie)')
+    assert '"t":"hb"' in wyslane[-1], 'ostatnia ramka ma byc poprawnym heartbeatem'
+    print(f'  ✓ 10. wyjatek nie zabija petli HB ({len(wyslane)}/4 ramek mimo 2 bledow)')
+
 
 if __name__ == '__main__':
     test_startup_seed_nie_zalewa_lora()
@@ -274,4 +309,5 @@ if __name__ == '__main__':
     test_status_hash_niesie_dostepnosc()
     test_kaskada_tylko_w_dol()
     test_heartbeat_miesci_sie_w_ramce()
-    print("\n🎯 wedge_smoke_test: 9/9 — regresje G1 (2026-08-24 + 2026-08-26) zabezpieczone")
+    test_wyjatek_nie_zabija_heartbeatu()
+    print("\n🎯 wedge_smoke_test: 10/10 — regresje G1 (2026-08-24 + 2026-08-26) zabezpieczone")
