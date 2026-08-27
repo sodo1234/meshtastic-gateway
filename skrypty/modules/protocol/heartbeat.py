@@ -47,18 +47,25 @@ class GatewayHeartbeat:
         return self.interval + random.uniform(-self.jitter, self.jitter)
 
     def build_payload(self, pkt_type='hb'):
-        devs = self.devices_fn()
-        monitored = [d for d, info in devs.items()
-                     if info.get('monitored', True)]
-        priority = [d for d, info in devs.items()
-                    if info.get('priority', False)]
+        # devices_fn iteruje po slowniku, ktory discovery aktualizuje w INNYM watku —
+        # `dictionary changed size during iteration` jest tu realne. Bez tej bariery wyjatek
+        # leci wyzej i (patrz `_loop`) kasuje CALY heartbeat, nie jedna ramke.
+        try:
+            devs = self.devices_fn()
+            monitored = [d for d, info in devs.items() if info.get('monitored', True)]
+            priority = [d for d, info in devs.items() if info.get('priority', False)]
+            self._last_counts = (len(devs), len(monitored), len(priority))
+        except Exception as e:
+            if self.log:
+                self.log.warn('HB', f'devices_fn padlo ({e}) — licznik z poprzedniego cyklu')
+            devs, monitored, priority = (), (), ()
         payload = {
             't': pkt_type,
             'g': self.gw_id,
             'up': int(time.time() - self.start_time),
-            'dev': len(devs),
-            'mon': len(monitored),
-            'pri': len(priority),
+            'dev': len(devs) or getattr(self, '_last_counts', (0, 0, 0))[0],
+            'mon': len(monitored) or getattr(self, '_last_counts', (0, 0, 0))[1],
+            'pri': len(priority) or getattr(self, '_last_counts', (0, 0, 0))[2],
             'ts': int(time.time()),
         }
         if self.diag_fn:
@@ -93,12 +100,31 @@ class GatewayHeartbeat:
 
     def _loop(self):
         time.sleep(5)
-        self.send_heartbeat()
+        self._safe_hb()
         while self.running:
             time.sleep(10)
             if time.time() - self._last_hb >= self._gap:
-                self.send_heartbeat()
+                self._safe_hb()
                 self._gap = self._next_gap()      # kazdy cykl inny -> brak zbieznosci faz
+
+    def _safe_hb(self):
+        """Jeden nieudany heartbeat NIE MOZE skasowac wszystkich nastepnych.
+
+        REGRESJA 2026-08-26 (G1): ostatni HB o 19:48:10, potem **9 h ciszy** przy calkowicie
+        zywej bramce — `b`, bloby `avail`, `an_d` i `sup_ping` szly caly czas. Petla nie miala
+        zadnego `try`, wiec pojedynczy wyjatek (najpewniej z `devices_fn`, ktore iteruje po
+        slowniku aktualizowanym przez discovery w innym watku) zabil watek NA STALE.
+        Objaw byl podstepny: supervisor dalej widzial bramke ONLINE, bo `note_gw_activity`
+        reaguje na DOWOLNA ramke — zamarzly tylko hashe, liczniki i jakosc czasu.
+        To ta sama rodzina co bugi z 2026-08-24 (petle, ktore po cichu przestaja isc).
+        Znaczymy `_last_hb` TAKZE przy bledzie: inaczej po awarii lecielibysmy w kolko
+        co 10 s, zamieniajac cisze w zalew."""
+        try:
+            self.send_heartbeat()
+        except Exception as e:
+            self._last_hb = time.time()
+            if self.log:
+                self.log.error('HB', f'heartbeat nieudany ({e}) — nastepny za ~{int(self._gap)}s')
 
 
 class SupervisorHeartbeat:
