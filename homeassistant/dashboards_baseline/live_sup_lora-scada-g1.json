@@ -228,9 +228,9 @@
    "tap_action": {
     "action": "toggle"
    },
-   "icon": "[[[ return entity.state==='on'?'mdi:lightbulb-on':'mdi:lightbulb-off-outline'; ]]]",
+   "icon": "[[[ /*GW_SUSPEND_FIX*/var e=entity;var slug=e?e.entity_id.replace(/^switch[.]/,''):'';var av=states['binary_sensor.'+slug+'_available'];var gs=states['sensor.lora_gateway_g1_gw_g1_tryb_stan'];var susp=(gs&&String(gs.state).indexOf('wstrzyman')===0);var off=(!e||e.state==='unavailable'||e.state==='unknown'||!av||av.state==='off'||susp); return off?'mdi:power-plug-off':(e.state==='on'?'mdi:lightbulb-on':'mdi:lightbulb-off-outline'); ]]]",
    "custom_fields": {
-    "info": "[[[ var e=entity;var slug=e?e.entity_id.replace(/^switch\\./,''):'';var av=states['binary_sensor.'+slug+'_available'];var lqe=states['sensor.'+slug+'_link_quality'];var lq=(lqe&&lqe.state!=='unknown'&&lqe.state!=='unavailable')?parseInt(lqe.state):null;var off=(!e||!av||av.state==='off');var lc=e?new Date(e.last_changed):null;var t=lc?(('0'+lc.getDate()).slice(-2)+'.'+('0'+(lc.getMonth()+1)).slice(-2)+' '+('0'+lc.getHours()).slice(-2)+':'+('0'+lc.getMinutes()).slice(-2)):'--';var lqs=(lq!=null)?lq:'--';var dot=off?'<span style=\"color:#f87171;font-weight:800;\">● OFFLINE</span>':'<span style=\"color:#4ade80;\">● online</span>';return '<div style=\"display:flex;flex-direction:column;gap:2px;font-size:9px;color:#737373;line-height:1.3;white-space:nowrap;\">'+'<span>🕐 '+t+'</span>'+'<span>📶 '+lqs+'</span>'+'<span>'+dot+'</span></div>'; ]]]"
+    "info": "[[[ var e=entity;var slug=e?e.entity_id.replace(/^switch\\./,''):'';var av=states['binary_sensor.'+slug+'_available'];var lqe=states['sensor.'+slug+'_link_quality'];var lq=(lqe&&lqe.state!=='unknown'&&lqe.state!=='unavailable')?parseInt(lqe.state):null;var gs=states['sensor.lora_gateway_g1_gw_g1_tryb_stan'];var susp=(gs&&String(gs.state).indexOf('wstrzyman')===0);var off=(!e||!av||av.state==='off'||susp);var lc=e?new Date(e.last_changed):null;var t=lc?(('0'+lc.getDate()).slice(-2)+'.'+('0'+(lc.getMonth()+1)).slice(-2)+' '+('0'+lc.getHours()).slice(-2)+':'+('0'+lc.getMinutes()).slice(-2)):'--';var lqs=(lq!=null)?lq:'--';var dot=off?'<span style=\"color:#f87171;font-weight:800;\">● OFFLINE</span>':'<span style=\"color:#4ade80;\">● online</span>';return '<div style=\"display:flex;flex-direction:column;gap:2px;font-size:9px;color:#737373;line-height:1.3;white-space:nowrap;\">'+'<span>🕐 '+t+'</span>'+'<span>📶 '+lqs+'</span>'+'<span>'+dot+'</span></div>'; ]]]"
    },
    "styles": {
     "card": [
@@ -241,7 +241,10 @@
       "padding": "9px 12px"
      },
      {
-      "border": "[[[ var e=entity; if(!e||e.state==='unavailable'||e.state==='unknown')return '1px solid #f87171'; return e.state==='on'?'1px solid #facc15':'1px solid #1f1f1f'; ]]]"
+      "border": "[[[ /*GW_SUSPEND_FIX*/var e=entity;var slug=e?e.entity_id.replace(/^switch[.]/,''):'';var av=states['binary_sensor.'+slug+'_available'];var gs=states['sensor.lora_gateway_g1_gw_g1_tryb_stan'];var susp=(gs&&String(gs.state).indexOf('wstrzyman')===0);var off=(!e||e.state==='unavailable'||e.state==='unknown'||!av||av.state==='off'||susp); return off?'1px solid #1f1f1f':(e.state==='on'?'1px solid #facc15':'1px solid #1f1f1f'); ]]]"
+     },
+     {
+      "opacity": "[[[ /*GW_SUSPEND_FIX*/var e=entity;var slug=e?e.entity_id.replace(/^switch[.]/,''):'';var av=states['binary_sensor.'+slug+'_available'];var gs=states['sensor.lora_gateway_g1_gw_g1_tryb_stan'];var susp=(gs&&String(gs.state).indexOf('wstrzyman')===0);var off=(!e||e.state==='unavailable'||e.state==='unknown'||!av||av.state==='off'||susp); return off?'0.55':'1'; ]]]"
      }
     ],
     "grid": [
@@ -272,7 +275,7 @@
       "height": "22px"
      },
      {
-      "color": "[[[ var e=entity; if(!e||e.state==='unavailable'||e.state==='unknown')return '#f87171'; return e.state==='on'?'#facc15':'#525252'; ]]]"
+      "color": "[[[ /*GW_SUSPEND_FIX*/var e=entity;var slug=e?e.entity_id.replace(/^switch[.]/,''):'';var av=states['binary_sensor.'+slug+'_available'];var gs=states['sensor.lora_gateway_g1_gw_g1_tryb_stan'];var susp=(gs&&String(gs.state).indexOf('wstrzyman')===0);var off=(!e||e.state==='unavailable'||e.state==='unknown'||!av||av.state==='off'||susp); return off?'#525252':(e.state==='on'?'#facc15':'#525252'); ]]]"
      }
     ],
     "name": [
