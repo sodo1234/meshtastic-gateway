@@ -23,6 +23,12 @@ def _now_str():
     return time.strftime('%d.%m %H:%M:%S')      # data + godzina
 
 
+# Ile kolejnych IDENTYCZNYCH sweepow availability wolno pominac, zanim i tak pojdzie pelny blob.
+# 4 x report_full_every(3) x report_interval(900 s) = ~3 h gornej granicy zestarzenia lustra —
+# bezpiecznik na wypadek transferu zgubionego na RF (wtedy `_avail_hash` klamie o stanie supa).
+AVAIL_KEEPALIVE_SWEEPS = 4
+
+
 class GatewayData:
     def __init__(self, gw_id, discovery, lora, logger=None,
                  mon_interval=30, pri_interval=10, max_payload=150,
@@ -80,6 +86,23 @@ class GatewayData:
         # WSZYSTKICH 199 → 1 transfer. DELTA (zmiany availability) nadal małymi `b` natychmiast
         # (event-driven z2m) — responsywność bez zmian. None = stare zachowanie (per-device `b`).
         self.avail_blob_fn = avail_blob_fn
+        # DEDUP BLOBU `avail` (2026-09-17). Zmierzone na G1 przez 88 h: `avail` = 71 transferow
+        # i 1115 chunkow = 79% CALEGO ruchu transferowego bramki i ~40% jej pasma TX — a tresc
+        # zmienia sie realnie dwa razy na dobe (swit/zmierzch odcinaja obwod przekaznikow).
+        # Reszta to bit-w-bit ten sam sweep. Dedupujemy po hashu SAMEJ mapy `a` (bez `ts`, ktory
+        # zawsze rosnie, i bez `q`/LQI, ktore skacze przy kazdym pakiecie — dokladnie ta sama
+        # zasada, co w `status_hash`). Zeby pominiecie nie moglo utrwalic rozjazdu po zgubionym
+        # transferze, co AVAIL_KEEPALIVE_SWEEPS pominiec i tak idzie pelny blob.
+        self._avail_hash = None
+        self._avail_skips = 0
+        # BURST `b` → PLIK (2026-09-11). Wpinane z harnessu PO konstruktorze — dokladnie tak
+        # jak `avail_blob_fn`:
+        #     data.mon_batch.blob_fn = lambda p: rt.start_send(gw_id, 'bdata', p)
+        # TYLKO batcher MONITORED (wolumen). Batcher PRIORITY (leak/smoke/door) zostaje na
+        # ramkach `b`: ma wlasny ACK, omija arbiter i ma byc natychmiastowy — transfer dolozylby
+        # mu handshake, czyli dokladnie to opoznienie, ktorego alarm miec nie moze.
+        # Wpiecie przez atrybut (nie przez konstruktor) jest SWIADOME: gdyby blob_fn bylo ustawione
+        # na zaslepke zwracajaca None, Batcher uznalby wysylke za udana i ZGUBIL flush.
         self.states = {}               # {dev: last full Z2M state dict}
         self.sent_states = {}          # {dev: capy WYSŁANE w `b`} — źródło `dh` (B6), patrz _enqueue
         self.last_seen = {}            # {dev: "date HH:MM:SS"}
@@ -401,11 +424,23 @@ class GatewayData:
                 self._alive[dev] = False
         # (d) pełny sweep availability → JEDEN skompresowany transfer (ts w blobie RAZ, nie per-pakiet)
         if use_blob and blob:
+            import hashlib
+            ah = hashlib.md5(
+                "|".join(f"{k}={blob[k]}" for k in sorted(blob, key=int)).encode()).hexdigest()[:8]
+            if ah == self._avail_hash and self._avail_skips < AVAIL_KEEPALIVE_SWEEPS:
+                self._avail_skips += 1
+                if self.log:
+                    self.log.info('DATA', f'⏭️ avail bez zmian (hash={ah}) → pomijam transfer '
+                                          f'[{self._avail_skips}/{AVAIL_KEEPALIVE_SWEEPS} do keepalive]')
+                use_blob = False
+        if use_blob and blob:
             try:
                 payload = {'ts': int(now), 'a': blob}
                 if lq_blob:
                     payload['q'] = lq_blob                # B1: LQI ride-along blobu, nie ramek `b`
                 self.avail_blob_fn(payload)
+                self._avail_hash = ah
+                self._avail_skips = 0
                 if self.log:
                     self.log.info('DATA', f'📤 avail blob: {len(blob)} sid → ReliableTransfer (1 transfer, zamiast ~{-(-len(blob)//6)} pkt `b`)')
             except Exception as e:

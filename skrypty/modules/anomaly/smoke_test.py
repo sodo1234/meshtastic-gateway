@@ -133,6 +133,32 @@ def test_stagnation_recovery():
     print("✅ stagnation recovery → sc")
 
 
+def test_stagnation_survives_restart():
+    """REGRESJA 2026-09-17: po restarcie bramki wpis `sg` w trwalym store bywal NIESMIERTELNY.
+
+    Silnik startowal z pustym `self.stagnant`, wiec wracajace urzadzenie nie trafialo w galaz
+    `not stagnant and dev in self.stagnant` i `sc` nigdy nie szlo. Zmierzone na G1: 5 martwych
+    wpisow (RB10_R1..R5) trzymajacych sie hasha `ah` i obu dashboardow mimo restartow."""
+    from modules.anomaly import StagnationEngine, AnomalyStore
+    disc, data, sent = FakeGwDisc(), FakeGwData(), []
+    store = AnomalyStore(lambda gw, sid: "Temp 1")
+    store.handle_ab({"t": "ab", "g": "G1", "ts": int(time.time()),
+                     "d": [[1, "sg", 24]]})
+    assert store.cat_devs("G1", "stagnation") == {"Temp 1"}, store.cat_devs("G1", "stagnation")
+    assert store.cat_devs("G1", "offline") == set(), "kategoria != kubelek"
+
+    # restart: NOWY silnik, ale store przezyl → zbior ma sie odtworzyc
+    eng = StagnationEngine("G1", disc, data, lambda d: sent.append(d),
+                           get_thresholds=lambda: (48, 24),
+                           restore=lambda: store.cat_devs("G1", "stagnation"))
+    assert "Temp 1" in eng.stagnant_devices(), "stan nie przezyl restartu"
+    data.last_msg_ts["Temp 1"] = time.time()       # urzadzenie WRACA
+    eng.check()
+    assert "Temp 1" not in eng.stagnant_devices()
+    assert sent and sent[-1]["d"][0][1] == "sc", f"clear po restarcie nie poszedl: {sent}"
+    print("✅ stagnacja przezywa restart bramki → wracajace urzadzenie emituje `sc`")
+
+
 def test_stagnation_skips_unseen():
     from modules.anomaly import StagnationEngine
     disc, data, sent = FakeGwDisc(), FakeGwData(), []
@@ -215,13 +241,22 @@ def test_gateway_offline_anomaly_and_suppression():
     data._alive["Temp 1"] = False                  # availability=offline → anomalia `do`
     eng.check()
     assert emitted[-1] == (0, "do")
-    # supresja: bramka nieaktywna → wyczyść offline (`dn`), brak dalszych `do`
+    # supresja: bramka nieaktywna → gaśnie ALARM (wkład do hasha), ale ZERO ramek.
+    # ZMIANA KONTRAKTU 2026-09-10: dawniej leciało tu `dn`. To było kłamstwo — `dn` znaczy
+    # „urządzenie WRÓCIŁO online", a bramka nieaktywna nic takiego nie wie. Na produkcji (carport,
+    # 78 przekaźników bez zasilania w dzień) supervisor brał to za powrót i przestawiał
+    # 78 encji `_available` na `on`, przez co kafle pokazywały stan sprzed nocy zamiast OFFLINE.
+    # Prawdę o dostępności niesie flaga `a:` / blob `avail`; tryb wycisza wyłącznie ALARM.
     active["v"] = False; emitted.clear()
     eng.check()
-    assert emitted == [(0, "dn")] and eng.offline_devices() == set()
+    assert emitted == [] and eng.offline_devices() == set()
     eng.check()                                    # dalej nieaktywna → cisza
-    assert emitted == [(0, "dn")]
-    print("✅ gateway offline anomaly: do/dn + supresja trybu (night w dzień)")
+    assert emitted == []
+    # powrót do aktywnej przy wciąż nieosiągalnym urządzeniu → alarm wraca (bez zgubienia stanu)
+    active["v"] = True
+    eng.check()
+    assert emitted == [(0, "do")], emitted
+    print("✅ gateway offline anomaly: do + supresja trybu bez fałszywego dn (night w dzień)")
 
 
 def test_anomaly_store_handle_dedup_clear_alert():
@@ -317,6 +352,47 @@ def test_reconciler_rearm_mute_and_snapshot():
     print("✅ reconciler: re-arm(mute→hold→re-emit) + blob on-change + force_send")
 
 
+def test_reconciler_nie_kasuje_wyciszonej_kategorii():
+    """REGRESJA 2026-09-17: urzadzenie martwe od DNI bylo w dzien NIEWIDOCZNE.
+
+    O swicie caly obwod przekaznikow carportu traci zasilanie, wiec `GatewayOfflineAnomaly`
+    gasi alarm dla wszystkich (inaczej co rano byloby 78 falszywych alarmow). Reconciler
+    interpretowal brak potwierdzenia jako „anomalia ustala" i po `stale_grace` KASOWAL wpis —
+    takze dla urzadzen realnie martwych. Zmierzone na G1: `RB6_2` i `RA6_2` nie wstaly ani razu
+    przez 5 dni (sasiednie fazy tych samych szyn wstawaly), a ich anomalia powstawala co wieczor
+    o 18:58 i znikala co rano o 06:31.
+    `muted_cat(cat)` mowi: „ta kategoria jest wyciszona — brak potwierdzenia NIE znaczy ustania"."""
+    from modules.anomaly import AnomalyStore, AnomalyReconciler
+    sid2dev = {0: "RB6_2"}
+    st = AnomalyStore(resolve_dev=lambda gw, sid: sid2dev.get(sid))
+    st.handle_ab({"g": "G1", "d": [[0, "do"]]})           # wieczorem: realna anomalia offline
+    assert st.counts("G1")["offline"] == 1
+
+    wyciszone = {"v": True}                              # bramka nieaktywna (dzien) → alarm zgaszony
+    rec = AnomalyReconciler(
+        "G1", st, probes=[lambda: []],                   # silnik NIC nie potwierdza
+        resolve_dev=lambda sid: sid2dev.get(sid),
+        dev_to_sid=lambda dev: 0,
+        readd_fn=lambda sid, code, val=None: None,
+        interval=999, stale_grace=0,                     # karencja 0 = kasowanie od razu, gdyby mialo nastapic
+        muted_cat=lambda cat: cat == "offline" and wyciszone["v"])
+
+    for _ in range(3):
+        rec.run_once()
+    assert st.counts("G1")["offline"] == 1, "anomalia znikla mimo wyciszenia kategorii!"
+
+    wyciszone["v"] = False                               # zmierzch: bramka aktywna, alarm znow moze dzialac
+    rec.run_once()
+    assert st.counts("G1")["offline"] == 0, "po zdjeciu wyciszenia niepotwierdzony wpis ma zniknac"
+
+    # INNE kategorie NIE sa chronione — wyciszenie dotyczy wylacznie `offline`
+    st.handle_ab({"g": "G1", "d": [[0, "lb", 20]]})
+    wyciszone["v"] = True
+    rec.run_once()
+    assert st.counts("G1")["battery"] == 0, "wyciszenie offline nie moze chronic baterii"
+    print("✅ reconciler: wyciszona kategoria NIE jest kasowana (martwy przekaznik widoczny w dzien)")
+
+
 def test_reconciler_offline_unack_and_diag():
     """Offline re-arm cofa ACK w silniku; raport diagnostyki wykazuje stale (zgubione recovery)."""
     from modules.anomaly import AnomalyStore, AnomalyReconciler
@@ -370,13 +446,15 @@ def test_delta_and_snapshot_share_gateway_clock():
 if __name__ == "__main__":
     tests = [test_imports, test_delta_and_snapshot_share_gateway_clock,
              test_stagnation_battery_vs_mains, test_stagnation_recovery,
-             test_stagnation_skips_unseen, test_offline_by_type, test_offline_recovery_and_grace,
+             test_stagnation_skips_unseen, test_stagnation_survives_restart,
+             test_offline_by_type, test_offline_recovery_and_grace,
              test_battery_low_critical_recovery, test_anomaly_batcher_dedup_and_flush,
              test_anomaly_batcher_split, test_stagnation_all_devices_and_emit,
              test_gateway_offline_anomaly_and_suppression,
              test_anomaly_store_handle_dedup_clear_alert,
              test_anomaly_store_prune_stale_and_snapshot, test_anomaly_store_ghost_prune,
-             test_reconciler_rearm_mute_and_snapshot, test_reconciler_offline_unack_and_diag]
+             test_reconciler_rearm_mute_and_snapshot, test_reconciler_offline_unack_and_diag,
+             test_reconciler_nie_kasuje_wyciszonej_kategorii]
     failed = 0
     for t in tests:
         try:

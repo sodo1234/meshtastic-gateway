@@ -13,7 +13,7 @@ import time
 class StagnationEngine:
     def __init__(self, gw_id, discovery, data, lora_send=None, get_thresholds=None,
                  logger=None, check_interval=300, emit=None, all_devices=False,
-                 skip_dev=None):
+                 skip_dev=None, restore=None):
         self.gw_id = gw_id
         self.disc = discovery            # GatewayDiscovery (devices, short_ids, is_monitored)
         self.data = data                 # GatewayData (last_msg_ts)
@@ -30,7 +30,15 @@ class StagnationEngine:
         # U ŹRÓDŁA, nie w batcherze: inaczej dev zostaje w self.stagnant i dalej zanieczyszcza
         # snapshot()/dump_anom oraz hash anomalii, mimo że ramka `ab` nie poszła.
         self.skip_dev = skip_dev         # callable(dev) → True = pomiń całkowicie
-        self.stagnant = set()            # dev names currently reported stagnant
+        # ODTWORZENIE PO RESTARCIE (2026-09-17). Store anomalii jest TRWALY
+        # (/tmp/lora_anomaly_gw.json), a ten zbior nie byl. Skutek: po restarcie bramki
+        # `self.stagnant` startowal PUSTY, wiec gdy urzadzenie WRACALO, warunek
+        # `dev in self.stagnant` nie zachodzil i `sc` (clear) NIGDY nie lecial — wpis `sg`
+        # zostawal w store na zawsze i wchodzil do hasha `ah`, do `ansnap` i na oba dashboardy.
+        # OfflineMonitor tego nie ma, bo odbudowuje sie sam z retained availability (30 s);
+        # stagnacja sie NIE odbuduje, bo z definicji czeka na wiadomosc, ktorej nie ma.
+        # Zmierzone na G1 2026-09-17: 5 martwych wpisow sg (RB10_R1..R5) po restartach.
+        self.stagnant = set(restore() if restore else ())
         self.running = True
 
     def start(self):

@@ -44,7 +44,18 @@ class AnomalyReconciler:
     def __init__(self, gw_id, store, probes, resolve_dev, dev_to_sid, readd_fn,
                  snapshot_send_fn=None, offline_unack=None, on_report=None,
                  logger=None, interval=180, mute_window=300,
-                 delta_send_fn=None, delta_max=6, stale_grace=360):
+                 delta_send_fn=None, delta_max=6, stale_grace=360, muted_cat=None):
+        # WYCISZENIE KATEGORII (2026-09-17). Silnik moze PRZESTAC potwierdzac anomalie z powodu,
+        # ktory NIE JEST jej ustaniem — offline gasi alarm o swicie, bo caly obwod przekaznikow
+        # traci zasilanie (`GatewayMode.offline_active()` = False dla bramki nocnej w dzien).
+        # Bez tego gate'u `self-clear stale` kasowal wtedy PRAWDZIWE anomalie: zmierzone na G1
+        # 2026-09-17 — `RB6_2` i `RA6_2` nie wstaly ANI RAZU przez 5 dni (sasiednie fazy tych
+        # samych szyn wstawaly), anomalia powstawala co wieczor o 18:58 i byla kasowana co rano
+        # o 06:31. Efekt: urzadzenie martwe od tygodnia jest w dzien NIEWIDOCZNE, a to dokladnie
+        # ten przypadek, dla ktorego istnieje BMS. `muted_cat(cat) -> bool` = „ta kategoria jest
+        # teraz wyciszona, brak potwierdzenia NIE znaczy, ze anomalia ustala".
+        # RE-ARM zostaje bez zmian: gdy warunek znow jest widoczny, wpis i tak wraca.
+        self.muted_cat = muted_cat
         self.gw_id = gw_id
         self.store = store
         self.probes = probes
@@ -278,10 +289,16 @@ class AnomalyReconciler:
         # 6b. SELF-CLEAR STALE: store ma wpis, truth go nie potwierdza → po karencji usuń
         #     (store kurczy się → _transmit wyśle deltę `r` → sup usuwa; koniec zombie-churn).
         stale_cleared = []
+        muted = []
         for (dev, cat) in list(store_active):
             if (dev, cat) in truth:
                 with self._lock:
                     self._stale_since.pop((dev, cat), None)
+                continue
+            if self.muted_cat is not None and self.muted_cat(cat):
+                with self._lock:
+                    self._stale_since.pop((dev, cat), None)   # zegar stale NIE biegnie w wyciszeniu
+                muted.append((dev, cat))
                 continue
             with self._lock:
                 first = self._stale_since.setdefault((dev, cat), now)
@@ -293,6 +310,11 @@ class AnomalyReconciler:
         if stale_cleared and self.log:
             self.log.info('ANOM', '🧹 self-clear stale (silniki nie potwierdzają): '
                           + ", ".join(f"{d}/{c}" for d, c in stale_cleared))
+        if muted and self.log:
+            self.log.debug('ANOM', f'🔇 {len(muted)} anomalii ZOSTAJE (kategoria wyciszona, '
+                                   f'brak potwierdzenia ≠ ustanie): '
+                                   + ", ".join(f"{d}/{c}" for d, c in muted[:6])
+                                   + ('...' if len(muted) > 6 else ''))
 
         # 4. AUTORYTATYWNY stan → supervisor: mała zmiana = delta an_d (1 pakiet), inaczej pełny
         #    blob; tylko przy zmianie zbioru, chyba że force_send (dump → zawsze pełny snapshot).

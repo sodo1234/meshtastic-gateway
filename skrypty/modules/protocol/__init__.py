@@ -9,11 +9,12 @@ Modules:
   - SupervisorLinkProbe — F2: aktywny ping/pong bramka↔supervisor, wskaźnik jakości łącza
 """
 from .ha_entities import HAEntities
-from .heartbeat import GatewayHeartbeat, SupervisorHeartbeat
+from .heartbeat import merge_hb_hashes, GatewayHeartbeat, SupervisorHeartbeat
 from .discovery import GatewayDiscovery, SupervisorDiscovery
 from .supervisor_link import SupervisorLinkProbe
 
 __all__ = [
+    "merge_hb_hashes",
     "HAEntities",
     "GatewayHeartbeat", "SupervisorHeartbeat",
     "GatewayDiscovery", "SupervisorDiscovery",

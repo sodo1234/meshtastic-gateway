@@ -108,6 +108,7 @@ class GatewayDiscovery:
             devs = json.loads(payload)
         except Exception:
             return
+        widziane = set()
         for dev in devs:
             name = dev.get('friendly_name')
             if not name or name == 'Coordinator':
@@ -116,6 +117,24 @@ class GatewayDiscovery:
             info['monitored'] = self.is_monitored(name)
             info['priority'] = name in self.priority_names
             self.devices[name] = info
+            widziane.add(name)
+        # PRUNE (2026-09-17). `bridge/devices` to ZAWSZE pelna lista, wiec brak urzadzenia
+        # w payloadzie znaczy „usuniete z sieci". Wczesniej petla tylko DODAWALA: po skasowaniu
+        # urzadzenia z z2m zostawalo ono w `devices` (a wiec w `dev`, w `disc_hash` i w lustrze
+        # supervisora) az do restartu procesu. Zmierzone na G2 2026-09-17: po usunieciu 30 duchow
+        # carportowych z2m mial 9 urzadzen, a bramka nadal raportowala `dev=39`.
+        # ZABEZPIECZENIE: pusta lista NIE czysci mapy — z2m potrafi chwilowo opublikowac pustke
+        # przy restarcie mostka, a to skasowaloby cala bramke.
+        # sidy zostaja w `_sid_persist` (rezerwowane, nie reuzywane), wiec urzadzenie, ktore
+        # wroci pod ta sama nazwa, odzyska swoj stary sid.
+        if widziane:
+            znikly = [d for d in self.devices if d not in widziane]
+            for d in znikly:
+                self.devices.pop(d, None)
+            if znikly and self.log:
+                self.log.info('DISC', f'🧹 usuniete z z2m: {len(znikly)} urzadzen '
+                                      + ", ".join(sorted(znikly)[:8])
+                                      + ('...' if len(znikly) > 8 else ''))
         self._assign_short_ids()
         self._compute_hash()
         if self.log:

@@ -499,6 +499,41 @@ def test_dsnap_recovers_mirror_after_lost_frames():
     print("✅ dsnap: po zgubionych ramkach hash wykrywa rozjazd, blob domyka lustro")
 
 
+def test_avail_blob_dedup_and_keepalive():
+    """`avail` bez zmian NIE ma isc na kanal — a po N pominieciach i tak musi pojsc keepalive.
+
+    Zmierzone na G1 (88 h): `avail` = 71 transferow / 1115 chunkow = 79% ruchu transferowego
+    bramki, przy realnej zmianie tresci dwa razy na dobe. Keepalive jest bezpiecznikiem: gdyby
+    transfer zginal na RF, sam dedup utrwalilby rozjazd lustra supervisora na zawsze."""
+    from modules.data import GatewayData
+    from modules.data.gateway_data import AVAIL_KEEPALIVE_SWEEPS
+    disc, lora = FakeGwDiscovery(), FakeLora()
+    blobs = []
+    gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, send_spacing=0,
+                     report_interval=1, offline_after=3600)
+    gd.avail_blob_fn = blobs.append
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 22.0, "battery": 95}))
+    gd.on_z2m("zigbee2mqtt/Test 1", json.dumps({"state": "ON"}))
+    gd.mon_batch.flush()
+
+    gd.report_liveness()
+    assert len(blobs) == 1, f"pierwszy sweep musi wyslac blob: {len(blobs)}"
+
+    for i in range(AVAIL_KEEPALIVE_SWEEPS):         # identyczna tresc → pomijane
+        gd.report_liveness()
+        assert len(blobs) == 1, f"sweep {i+1} bez zmian poszedl mimo dedupu: {len(blobs)}"
+
+    gd.report_liveness()                            # przekroczony limit → keepalive
+    assert len(blobs) == 2, f"keepalive po {AVAIL_KEEPALIVE_SWEEPS} pominieciach nie poszedl"
+
+    # REALNA zmiana dostepnosci musi przebic dedup NATYCHMIAST, bez czekania na keepalive
+    gd.on_z2m_availability("zigbee2mqtt/Test 1/availability", "offline")
+    gd.report_liveness()
+    assert len(blobs) == 3, f"zmiana dostepnosci MUSI isc od razu: {len(blobs)}"
+    assert blobs[-1]['a'] != blobs[-2]['a'], "blob po zmianie ma inna mape `a`"
+    print("✅ avail: dedup identycznych sweepow + keepalive + zmiana przebija natychmiast")
+
+
 def test_reporting_policy_binary_event_sensor_cyclic():
     """POLITYKA (user 2026-07-31 / doprecyzowanie 2026-08-01): binarne (przekaźniki, door/leak/ruch)
     WYŁĄCZNIE zdarzeniowo — stan binarny się nie starzeje; pomiarowe (`sensor`) CYKLICZNIE co P3 —
@@ -609,7 +644,8 @@ def test_b1_b2_slim_entries():
 
 if __name__ == "__main__":
     tests = [test_imports, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
-             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
+             test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic,
+             test_avail_blob_dedup_and_keepalive, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
              test_batcher_merge_split, test_gateway_on_z2m_routing,
              test_gateway_handle_req, test_gateway_send_pacing,
