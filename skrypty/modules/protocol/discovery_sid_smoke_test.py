@@ -80,8 +80,45 @@ def test_no_persist_path_falls_back():
     print("✅ brak persist_path → fallback in-memory OK")
 
 
+def _payload(names):
+    import json
+    return json.dumps([{"friendly_name": n, "ieee_address": f"0x{i:016x}",
+                        "type": "EndDevice", "definition": {"model": "SNZB-02P",
+                        "exposes": [{"property": "temperature", "type": "numeric"}]}}
+                       for i, n in enumerate(names)])
+
+
+def test_prune_usuniete_z_z2m():
+    """REGRESJA 2026-09-17: `parse_z2m` tylko DODAWALO — usuniete urzadzenie zostawalo w mapie.
+
+    Objaw na G2: po skasowaniu 30 duchow carportowych z2m mial 9 urzadzen, a bramka nadal
+    raportowala `dev=39` (i taki sam `disc_hash`) az do restartu procesu."""
+    tmp = os.path.join(tempfile.gettempdir(), "test_sid_prune.json")
+    if os.path.exists(tmp): os.remove(tmp)
+    d = GatewayDiscovery("G2", [], [], [], lora=None, sid_persist_path=tmp)
+    d.parse_z2m(_payload(["Test 1", "Test 2", "RA4_2", "RB6_R5"]))
+    assert len(d.devices) == 4, d.devices.keys()
+    sid_test1 = d.short_ids["Test 1"]
+    h_przed = d.disc_hash
+
+    d.parse_z2m(_payload(["Test 1", "Test 2"]))            # duchy skasowane w z2m
+    assert set(d.devices) == {"Test 1", "Test 2"}, d.devices.keys()
+    assert d.disc_hash != h_przed, "hash disc MUSI sie zmienic po usunieciu urzadzen"
+    assert d.short_ids["Test 1"] == sid_test1, "prune nie moze przesunac sidow pozostalych"
+
+    # PUSTA lista NIE czysci mapy (z2m potrafi mrugnac pustka przy restarcie mostka)
+    d.parse_z2m("[]")
+    assert set(d.devices) == {"Test 1", "Test 2"}, "pusty payload skasowal cala bramke!"
+
+    # powrot urzadzenia pod ta sama nazwa odzyskuje STARY sid (rezerwacja w persist)
+    d.parse_z2m(_payload(["Test 1", "Test 2", "RA4_2", "RB6_R5"]))
+    assert d.short_ids["Test 1"] == sid_test1
+    os.remove(tmp)
+    print("✅ prune: usuniete z z2m znikaja z mapy, pusty payload nie czysci, sidy stabilne")
+
+
 if __name__ == "__main__":
-    tests = [test_lock_in_equals_sorted, test_add_does_not_shift,
+    tests = [test_lock_in_equals_sorted, test_add_does_not_shift, test_prune_usuniete_z_z2m,
              test_remove_reserves_and_returns_same, test_persist_survives_reload,
              test_no_persist_path_falls_back]
     failed = 0

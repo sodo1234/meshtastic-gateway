@@ -47,8 +47,9 @@ sys.path.insert(0, SCRIPT_DIR)
 from config import CONFIG, ROLE
 from modules.transport import Dispatcher, MqttTransport, LoraTransport
 from modules.transport.tx_queue import PriorityTxQueue
-from modules.protocol.bulk import Coalescer, cmd_frames, st_frames  # ramki ZBIORCZE cmdm/stm
-from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat,
+from modules.protocol.bulk import (Coalescer, cmd_frames, st_frames,  # ramki ZBIORCZE cmdm/stm
+                                   retry_action)                   # gate ponowien cmd
+from modules.protocol import (HAEntities, GatewayHeartbeat, SupervisorHeartbeat, merge_hb_hashes,
                                GatewayDiscovery, SupervisorDiscovery, SupervisorLinkProbe)
 from modules.data import GatewayData, SupervisorData, encode_short, TYPE_CAPS
 from modules.params import ParamSync
@@ -63,7 +64,8 @@ from modules.calendar import (ScheduleManager, CalendarTransfer, build_ics,
 from modules.transport.reliable_transfer import ReliableTransfer  # bulk (mass_offline z2m-down)
 from modules.transport.channel import ChannelArbiter  # arbitraż półdupleksu: transfer-plik > wolumen
 from modules.slotting import SlotScheduler, SafeWindow
-from modules.gateway_mode import GatewayMode
+from modules.gateway_mode import GatewayMode, mode_active, fmt_uptime
+from modules.control import GroupCaster       # masowe ON/OFF: groupcast Zigbee + weryfikacja
 
 STATE_PREFIX = CONFIG.get('state_prefix', 'lora')
 HA_PREFIX = CONFIG.get('ha_prefix', 'homeassistant')
@@ -635,7 +637,10 @@ def run_gateway(log):
         gw_id, discovery, data, get_thresholds=lambda: (param_sync.get('P1'), param_sync.get('P2')),
         logger=log, check_interval=an_cfg.get('stagnation_check', 300),
         emit=anomaly_batcher.add, all_devices=True,
-        skip_dev=_skip_anom)                             # nieużywany sprzęt nie zgłasza stagnacji
+        skip_dev=_skip_anom,                             # nieużywany sprzęt nie zgłasza stagnacji
+        # store anomalii przeżywa restart, a zbiór stagnujących nie — bez tego odtworzenia
+        # wracające urządzenie nie emitowało `sc` i wpis `sg` zostawał w store na zawsze.
+        restore=lambda: gw_anom_store.cat_devs(gw_id, 'stagnation'))
 
     def handle_dump_anom(d):                              # STEP 5: live re-check → pełny zrzut anomalii
         if d.get('g') not in (gw_id, None):
@@ -743,6 +748,16 @@ def run_gateway(log):
         rt.start_send(gw_id, 'avail', blob)
     data.avail_blob_fn = _send_avail_blob
 
+    # ── BURST `b` → PLIK (2026-09-11, polecenie usera: „burst stanów w pakietach jak
+    #    harmonogram"). Zmierzone na G1 przez 56 h: `b` = 443 pojedyncze ramki = 17% CAŁEGO
+    #    pasma TX bramki — jedyny duży strumień, którego rebase „wszystko-jako-plik" nie objął
+    #    (kalendarz, devmap, `ansnap`, `avail` już nim jadą). Duży flush płacił nagłówek
+    #    `{t,g,ts,p}` razy liczba ramek i tyleż razy wchodził na kanał z cooldownem 3 s.
+    #    Próg z Batcher.blob_min_packets (3): 1-2 ramki zostają po staremu, bo transfer ma
+    #    własny narzut (`rt_begin`/`rt_end` + cack na chunk) i poniżej progu byłby droższy.
+    #    TYLKO batcher MONITORED — PRIORITY (leak/smoke/door) musi być natychmiastowy.
+    data.mon_batch.blob_fn = lambda payload: rt.start_send(gw_id, 'bdata', payload)
+
     # ── FAZA 1 (2026-07-03): ANOMALIE JAKO PLIK (ansnap). Bramka = ŹRÓDŁO PRAWDY. Reconciler buduje
     #    autorytatywny blob aktywnych anomalii z LOKALNEGO store → JEDEN skompresowany transfer
     #    rt kind='ansnap' TYLKO przy zmianie hasha (steady-state = 0 uplinku). Supervisor reconciluje
@@ -759,6 +774,12 @@ def run_gateway(log):
             {'g': gw_id, 'd': [[sid, code] if val is None else [sid, code, val]]}),
         snapshot_send_fn=lambda payload: rt.start_send(gw_id, 'ansnap', payload),
         offline_unack=offline_anom.unack,
+        # WYCISZENIE offline PRZY NIEAKTYWNEJ BRAMCE (2026-09-17). O swicie caly obwod
+        # przekaznikow carportu traci zasilanie, wiec `GatewayOfflineAnomaly` gasi alarm dla
+        # WSZYSTKICH — i reconciler kasowal wtedy takze anomalie urzadzen REALNIE martwych.
+        # Zmierzone: `RB6_2`/`RA6_2` nie wstaly ani razu przez 5 dni, a ich anomalia znikala
+        # co rano o 06:31 i wracala co wieczor o 18:58 — w dzien byly niewidoczne.
+        muted_cat=lambda cat: cat == 'offline' and not gw_mode.offline_active(),
         delta_send_fn=lora_send,                 # DELTA (2026-07-07): 1 zmiana = 1 pakiet an_d, nie cały blob
         on_report=lambda rep: log.info('ANOM', f"🔬 ansnap diag {rep.get('gw')}: "
                                        f"truth={rep.get('truth_n')} store={rep.get('store_n')} "
@@ -854,12 +875,61 @@ def run_gateway(log):
         _apply_cmd(d.get('d'), d.get('c', 'state'), str(d.get('v', '')).upper())
     dispatcher.register('cmd', handle_cmd)
 
+    # ── MASOWE ON/OFF PRZEZ GRUPY ZIGBEE (2026-09-17, polecenie usera) ──────────────────
+    # Bylo: `cmdm` z 78 urzadzeniami = 78 pojedynczych `zigbee2mqtt/<dev>/set` w ciasnej petli.
+    # Ramki LoRa dochodzily, ale Zigbee tego nie unosilo — czesc przekaznikow sie nie przelaczala,
+    # a potwierdzenia `st` przy 78 sztukach naraz czesciowo ginely. Teraz: 6 groupcastow
+    # sekwencyjnie, po kazdym weryfikacja czlonkow i doslanie TYLKO brakujacych — LOKALNIE
+    # na bramce, zero ruchu LoRa na krok posredni. Szczegoly: modules/control/group_cast.py.
+    z2m_ieee = {}                                        # ieee_address → friendly_name
+    gw_ctrl_cfg = CONFIG.get('control', {})              # `ctrl_cfg` istnieje tylko w run_supervisor
+
+    group_caster = GroupCaster(
+        lambda topic, payload: mqtt.publish(topic, payload),
+        lambda dev: (data.states.get(dev) or {}).get('state'),
+        logger=log,
+        settle=gw_ctrl_cfg.get('group_settle', 2.0),
+        verify_wait=gw_ctrl_cfg.get('group_verify_wait', 8.0),
+        retries=gw_ctrl_cfg.get('group_retries', 2))
+
+    def on_z2m_groups(payload):
+        """Czlonkostwo czytamy z z2m (`bridge/groups`), NIE z configu — jedno zrodlo prawdy.
+        z2m podaje czlonkow po `ieee_address`, wiec tlumaczymy przez mape z `bridge/devices`."""
+        try:
+            gl = json.loads(payload)
+        except Exception:
+            return
+        grupy = {}
+        for g in gl if isinstance(gl, list) else []:
+            nazwa = g.get('friendly_name')
+            if not nazwa:
+                continue
+            czlonkowie = []
+            for m in g.get('members') or []:
+                dev = z2m_ieee.get(m.get('ieee_address'))
+                if dev:
+                    czlonkowie.append(dev)
+            grupy[nazwa] = czlonkowie
+        group_caster.set_groups(grupy)
+        log.info('GRP', '👥 grupy z2m: ' + (", ".join(f"{k}={len(v)}" for k, v in sorted(grupy.items()))
+                                            or 'brak'))
+
     def handle_cmdm(d):
         """Ramka ZBIORCZA: jedna komenda, lista urządzeń (masowe ON/OFF z dashboardu)."""
         if not for_me(d): return
         cap = d.get('c', 'state'); val = str(d.get('v', '')).upper()
         devs = d.get('d') or []
         log.info('CTRL', f'📦 cmdm {len(devs)} urządzeń {cap}={val}')
+        for dev in devs:                                 # pending_st = zrodlo `st` w gore (bez zmian)
+            if dev in discovery.devices:
+                pending_st[dev] = (cap, val, time.time())
+        prog = gw_ctrl_cfg.get('group_min_devices', 6)
+        if len(devs) >= prog and group_caster.plan(devs)[0]:
+            # apply() spi miedzy grupami i podczas weryfikacji → osobny watek, zeby nie blokowac
+            # dispatchera (kolejne ramki LoRa musza byc obslugiwane w trakcie).
+            threading.Thread(target=lambda: group_caster.apply(devs, cap, val),
+                             daemon=True, name='groupcast').start()
+            return
         for dev in devs:
             _apply_cmd(dev, cap, val)
     dispatcher.register('cmdm', handle_cmdm)
@@ -1091,6 +1161,12 @@ def run_gateway(log):
     def on_mqtt(topic, payload):
         if topic == 'zigbee2mqtt/bridge/devices':
             discovery.parse_z2m(payload)
+            try:                                         # mapa ieee→nazwa dla `bridge/groups`
+                for _d in json.loads(payload):
+                    if _d.get('ieee_address') and _d.get('friendly_name'):
+                        z2m_ieee[_d['ieee_address']] = _d['friendly_name']
+            except Exception:
+                pass
             for dev in discovery.devices:                # STEP 3: lokalne encje LQI
                 reg_gw_lqi(dev)
             # Fix 2026-07-22 (wgrany live 2026-07-30): retained zigbee2mqtt/<dev> może dojść
@@ -1099,6 +1175,8 @@ def run_gateway(log):
             # Re-subskrypcja każe brokerowi dosłać retained teraz. Lokalny broker, 0 ruchu LoRa.
             mqtt.client.unsubscribe('zigbee2mqtt/+')
             mqtt.client.subscribe('zigbee2mqtt/+')
+        elif topic == 'zigbee2mqtt/bridge/groups':       # czlonkostwo grup → GroupCaster
+            on_z2m_groups(payload)
         elif topic == 'zigbee2mqtt/bridge/state':        # BULK: z2m up/down → mass_offline transfer
             on_bridge_state(payload)
         elif topic.endswith('/availability'):           # FAZA 2: z2m native availability (autorytet)
@@ -1221,6 +1299,7 @@ def run_gateway(log):
     mqtt._on_message_cb = on_mqtt
     lora.on_receive = on_lora
     mqtt.subscribe('zigbee2mqtt/bridge/devices')
+    mqtt.subscribe('zigbee2mqtt/bridge/groups')          # masowe ON/OFF przez groupcast
     mqtt.subscribe('zigbee2mqtt/bridge/state')           # BULK: z2m bridge up/down (LWT) → mass_offline
     mqtt.subscribe('zigbee2mqtt/+')                      # STEP 3: device states
     mqtt.subscribe('zigbee2mqtt/+/availability')         # FAZA 2: z2m native availability
@@ -1542,6 +1621,9 @@ def run_supervisor(log):
     # ack-owalny). Fix: clear realnie-offline urządzenia działa (wcześniej reconcile re-dodawał).
     ack_offline = set()                  # {(gw,dev)}
 
+    # STEP 5: aktywność bramek (z HB ga) — bramka nieaktywna (np. nocna w dzień) → supresja offline
+    gw_active = {}                                        # gw → bool (domyślnie aktywna)
+
     def _set_avail(gw, dev, on):         # availability = ZAWSZE live truth; anomalia = na transition (chyba że ack)
         prev = dev_avail.get((gw, dev))
         dev_avail[(gw, dev)] = on
@@ -1551,7 +1633,14 @@ def run_supervisor(log):
                 ack_offline.discard((gw, dev))           # recovery → kasuj ack (re-alert gdy znów padnie)
                 anomaly_store.remove_one(gw, dev, 'offline')
             elif (gw, dev) not in ack_offline:           # offline transition → anomalia (jeśli nie ack)
-                anomaly_store.add_offline(gw, dev)
+                # BRAMKA NIEAKTYWNA (HB `ga:0`, np. nocna w dzień) → availability leci dalej jako
+                # PRAWDA (kafel ma pokazać OFFLINE, nie stan sprzed nocy), ale to nie jest awaria:
+                # carport w dzień świadomie odcina zasilanie obwodu przekaźników. Bez tego gate'u
+                # blob `avail` odtwarzał 78 anomalii, które bramka właśnie zgasiła trybem —
+                # i store'y rozjeżdżały się co sweep (flapping `ah` + dump_anom w kółko).
+                # `gw_active` karmi HB (linia ~2455); domyślnie brak wpisu = aktywna.
+                if gw_active.get(gw, True):
+                    anomaly_store.add_offline(gw, dev)
 
     # on_avail (batch `a:`) ROUTOWANE przez _set_avail → trafia też do listy offline (kluczowy fix
     # spójności: wcześniej batch pomijał _set_avail i lista nie zgadzała się z licznikiem).
@@ -1592,7 +1681,18 @@ def run_supervisor(log):
     # BULK: odbiór ReliableTransfer (mass_offline z bramki = z2m-down → cała bramka niedostępna).
     # _set_avail to JEDNO źródło prawdy availability (idempotentne) → licznik+lista offline spójne.
     def on_rt_received(gw, kind, payload):
-        if kind == 'mass_offline' and isinstance(payload, list):
+        if kind == 'bdata' and isinstance(payload, dict):
+            # BURST `b` JAKO PLIK (2026-09-11) — duży flush monitored przyjechał JEDNYM
+            # transferem zamiast kilkoma ramkami `b`. Treść jest identyczna z ramką `b`
+            # (`{ts, d:[[sid, fields], ...]}`), więc oddajemy ją TEJ SAMEJ ścieżce — zero
+            # rozjazdu semantyki między transportem ramkowym a plikowym. Bez `p`:
+            # ReliableTransfer ma własny CRC+ACK, drugi ACK (`back`) byłby podwójny.
+            n = len(payload.get('d') or [])
+            sup_data.handle_b({'t': 'b', 'g': gw, 'ts': payload.get('ts'),
+                               'd': payload.get('d') or []})
+            log.info('XFER', f'📥 bdata [{gw}] {n} urządzeń → handle_b (1 transfer zamiast ~'
+                             f'{max(1, -(-n // 6))} ramek `b`)')
+        elif kind == 'mass_offline' and isinstance(payload, list):
             for dev in payload:
                 _set_avail(gw, dev, False)
             log.warn('XFER', f'📥 mass_offline [{gw}] {len(payload)} dev → availability OFF (z2m-down)')
@@ -1792,8 +1892,6 @@ def run_supervisor(log):
             ps.request()
         return ps
 
-    # STEP 5: aktywność bramek (z HB ga) — bramka nieaktywna (np. nocna w dzień) → supresja offline
-    gw_active = {}                                        # gw → bool (domyślnie aktywna)
 
     # UNIFIKACJA 2026-06-20: USUNIĘTO supervisorowy OfflineMonitor (liczył offline z CISZY LoRa
     # = false-positive, bo bramka minimalizuje LoRa → ciche-online urządzenie wyglądało offline;
@@ -2059,6 +2157,22 @@ def run_supervisor(log):
     off_sync_guard = {}                                   # gw → ts (debounce reconcile po drift offline-hash)
     ah_guard = {}                                         # AH-GATE: gw → ts dump po rozjeździe ah (debounce)
     gw_ah_sync = {}                                       # AH-GATE: gw → True gdy HB.ah == lokalny hash anomalii
+    # OSTATNI ZNANY HASH per bramka (2026-09-17). `GatewayHeartbeat._fit` przycina ramke do
+    # sufitu 200 B, porzucajac rotacyjnie pola diagnostyczne — na G1 zdarza sie to przy
+    # niemal KAZDYM beacie (zmierzone: 357 przycietych ramek). Kontrakt z heartbeat.py brzmi
+    # „brak pola znaczy BEZ ZDANIA, nie rozjazd", ale odbiorca go nie honorowal: `d.get('ah','--')`
+    # nadpisywalo kafel wartoscia `--`, a `_data_ok`/`_disc_ok`/`_param_ok`/`_cal_ok` przy braku
+    # pola dawaly False, czyli FALSZYWY „ROZJAZD ⚠️". Stad tez migotanie flag `zg` (11110 →
+    # 10111 → 01111) i push `zg` przy kazdej zmianie = niepotrzebny ruch LoRa.
+    # Uwaga: rozrozniamy BRAK pola od wartosci falsy — `dh` rowne '0' (bramka nic nie wyslala)
+    # jest PELNOPRAWNA wartoscia i musi trafic do porownania.
+    gw_hb_hash = {}                                       # gw → {pole: ostatnia znana wartosc}
+
+    _HB_HASH_KEYS = ('hash', 'ph', 'cal', 'ah', 'dh', 'sh')
+
+    def _hb_val(gw, d, key):
+        """Wartosc pola z HB, a przy BRAKU — ostatnia znana (patrz `merge_hb_hashes`)."""
+        return merge_hb_hashes(gw_hb_hash.setdefault(gw, {}), d, _HB_HASH_KEYS)[key]
 
     def reconcile_availability(gw):
         """Reconcile listy offline z dev_avail (łapie zgubione `do`/`dn`). Recovery → usuń+kasuj ack.
@@ -2119,8 +2233,10 @@ def run_supervisor(log):
 
     # ── RAMKA ZBIORCZA `cmdm` (2026-08-26) — „wszystkie ON" z dashboardu szło 1 ramka `cmd`
     #    na urządzenie (pomiar: 104× cmd w 7 min). Krótkie okno zbiorcze grupuje kliknięcia
-    #    per (bramka, cap, wartość) i tnie na ramki ≤220 B. RETRY zostaje PER URZĄDZENIE
-    #    (pending_cmd trzyma pojedynczy `cmd`) — powtórki są rzadkie, nie ma czego grupować. ──
+    #    per (bramka, cap, wartość) i tnie na ramki ≤220 B.
+    #    2026-09-10: RETRY TEŻ tędy (patrz control_loop). Założenie „powtórki są rzadkie, nie ma
+    #    czego grupować" upadło przy kaflu „WSZYSTKIE ON/OFF": 78 nieodpowiadających urządzeń
+    #    = 78 pojedynczych ramek retry × 2 tury. ──
     def _flush_cmd(items):
         for fr in cmd_frames(items, max_bytes=ctrl_cfg.get('bulk_max_bytes', 200)):
             send_to_all(fr)
@@ -2346,7 +2462,11 @@ def run_supervisor(log):
                 ('day_night', 'Pora dnia', 'mdi:weather-sunny', 'pora'),
                 ('sun_dawn', 'Świt', 'mdi:weather-sunset-up', 'swit'),
                 ('sun_dusk', 'Zmierzch', 'mdi:weather-sunset-down', 'zmierzch'),
-                ('last_rx', 'Ostatni RX', 'mdi:clock-in', 'ost_rx')]:
+                ('last_rx', 'Ostatni RX', 'mdi:clock-in', 'ost_rx'),
+                # 2026-09-11: uptime BRAMKI w d/h/m. Surowy `sensor.lora_gw_<gl>_uptime`
+                # (sekundy, z pub_gw_status) ZOSTAJE — trzyma historię i wykresy; ten jest
+                # do czytania przez człowieka i biegnie co 30 s z refresh_gw_time.
+                ('uptime_hm', 'Uptime bramki', 'mdi:timer-outline', 'uptime')]:
             uid = f"lora_gw_{gl}_{eid}"
             mqtt.publish(f"{HA_PREFIX}/sensor/{uid}/config", json.dumps({
                 "name": f"{nm}", "object_id": uid, "unique_id": uid,
@@ -2364,6 +2484,8 @@ def run_supervisor(log):
             "device_class": "connectivity", "device": di}, separators=(',', ':')), retain=True)
         gwtime_regd.add(gw)
 
+    _GM_R = {v: k for k, v in _GM_L.items()}              # etykieta → surowy tryb (seed z retained)
+    gw_time_cache = {}                                    # gw → (payload timestat, surowy tryb) z ost. HB
     def publish_gw_time(gw, d):
         tq = d.get('tq'); gm = d.get('gm'); ga_v = d.get('ga')
         # F9: czas bramki + offset vs zegar supervisora — z HB `ts` (epoch bramki) w chwili
@@ -2378,7 +2500,7 @@ def run_supervisor(log):
         _di = sup_day.day_info()
         _hhmm = lambda m: '%02d:%02d' % (int(m) // 60, int(m) % 60)
         _gd = sup_hb.gateways.get(gw, {})
-        mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/timestat", json.dumps({
+        payload = {
             'tq': tq or '--', 'tq_label': _TQ_L.get(tq, tq or '--'),
             'mode': _GM_L.get(gm, gm or '--'),
             'czas': czas, 'offset': off,
@@ -2387,7 +2509,45 @@ def run_supervisor(log):
             'swit': _hhmm(_di.get('sunrise_min', 0)),
             'zmierzch': _hhmm(_di.get('sunset_min', 0)),
             'ost_rx': _gd.get('last_seen', '--'),
-            'lacze': 'ON' if _gd.get('online') else 'OFF'}, separators=(',', ':')), retain=True)
+            'lacze': 'ON' if _gd.get('online') else 'OFF',
+            # UPTIME BRAMKI (2026-09-11): `up` z HB to surowe sekundy — supervisor pokazywał
+            # goły licznik („99571 s"). Format d/h/m robimy w JEDNYM miejscu (fmt_uptime).
+            # `up_base`/`up_ts` to kotwica dla refresh_gw_time: uptime rośnie liniowo, więc
+            # między HB doliczamy upływ czasu — to ekstrapolacja ŚCISŁA, nie zgadywanie
+            # (inaczej niż `czas`/`offset`, które celowo zostają z HB).
+            'uptime': fmt_uptime(d.get('up')),
+            'up_base': int(d.get('up') or 0),
+            'up_ts': int(time.time())}
+        gw_time_cache[gw] = (payload, gm)                 # baza dla refresh_gw_time (HB bywa raz na dobę)
+        mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/timestat",
+                     json.dumps(payload, separators=(',', ':')), retain=True)
+
+    def refresh_gw_time():
+        """Odśwież kafle czasu/trybu BEZ czekania na HB.
+
+        Bramka nocna potrafi nie nadać HB przez całą noc (głodzenie kanału przez transfery), a
+        `publish_gw_time` chodzi wyłącznie z HB — kafle „Pora dnia"/„Tryb — stan" zamarzały wtedy na
+        wartościach sprzed zmierzchu (G1: „Dzień"/„wstrzymana" od 2026-08-30). Odświeżamy to, co
+        supervisor wie SAM: porę dnia, aktywność trybu i stan łącza. Dla day/night aktywność to czysta
+        funkcja wschodu/zachodu — ta sama, którą liczy `GatewayMode._is_daytime` na bramce, więc to nie
+        zgadywanie tylko ten sam wzór. `czas`/`offset` zostają z HB — przeliczone „teraz" kłamałyby
+        o kilka godzin na wskaźniku synchronizacji."""
+        _di = sup_day.day_info(); is_day = bool(_di.get('is_day'))
+        for gw, (payload, gm) in list(gw_time_cache.items()):
+            act = mode_active(gm, is_day, last=payload.get('active') == 'aktywna')
+            _gd = sup_hb.gateways.get(gw, {})
+            upd = {'active': 'aktywna' if act else 'wstrzymana',
+                   'pora': 'Dzień' if is_day else 'Noc',
+                   'ost_rx': _gd.get('last_seen', '--'),
+                   'lacze': 'ON' if _gd.get('online') else 'OFF'}
+            # uptime BRAMKI biegnie dalej mimo braku HB: liczymy od kotwicy z ostatniego HB.
+            # Bez tego kafel zamarzał — zmierzone 2026-09-11: HB sprzed 29 min, bo ramka zginęła
+            # w zapchanym kanale, a kafel pokazywał uptime sprzed tych 29 min.
+            if payload.get('up_ts'):
+                upd['uptime'] = fmt_uptime(payload['up_base'] + int(time.time() - payload['up_ts']))
+            payload.update(upd)
+            mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/timestat",
+                         json.dumps(payload, separators=(',', ':')), retain=True)
 
     wd = CONFIG.get('watchdog', {})
     sup_hb = SupervisorHeartbeat(
@@ -2509,14 +2669,24 @@ def run_supervisor(log):
         if gw:
             def _mark(ok):
                 return 'zgodny ✅' if ok else 'ROZJAZD ⚠️'
-            _disc = d.get('hash', '--'); _param = d.get('ph', '--')
-            _cal = d.get('cal', '--'); _ah = d.get('ah', '--')
+            _disc = _hb_val(gw, d, 'hash'); _param = _hb_val(gw, d, 'ph')
+            _cal = _hb_val(gw, d, 'cal'); _ah = _hb_val(gw, d, 'ah')
             # RE-SYNC GUARD (C): sam hash kłamał — kafel pokazywał „zgodny ✅" przy mirrorze
             # 78/194. Zgodność = hash ORAZ komplet urządzeń.
-            _disc_ok = bool(_disc and _disc != '--' and _disc == sup_disc.gw_synced.get(gw)
-                            and sup_disc.is_complete(gw))
-            _param_ok = bool(psync is not None and _param != '--' and _param == psync.params_hash())
-            _cal_ok = bool(_cal and _cal != '--' and _cal == expected_cal_hash.get(gw))
+            # NIEZNANE POLE = BEZ ZDANIA, NIE ROZJAZD (2026-09-17). `_fit` przycina ramke, a cache
+            # `merge_hb_hashes` startuje pusty po restarcie SUPERVISORA — przy HB co 900 s
+            # skompletowanie wszystkich szesciu hashy trwa kilkadziesiat minut. Wczesniej kazde
+            # jeszcze-nieznane pole dawalo False, czyli kafel swiecil sie na czerwono bez powodu.
+            # `_ah_ok` mial te obrone od dawna; tu wyrownujemy reszte do tej samej zasady.
+            # WYJATEK — RE-SYNC GUARD przy disc: sam hash potrafil klamac (kafel „zgodny ✅"
+            # przy mirrorze 78/194), wiec kompletnosc mapy sprawdzamy ZAWSZE, takze gdy hasha
+            # jeszcze nie znamy. Inaczej ta poprawka cofnelaby tamten fix.
+            _disc_ok = (bool(sup_disc.is_complete(gw)) if _disc == '--' else
+                        bool(_disc and _disc == sup_disc.gw_synced.get(gw)
+                             and sup_disc.is_complete(gw)))
+            _param_ok = True if _param == '--' else bool(psync is not None
+                                                         and _param == psync.params_hash())
+            _cal_ok = True if _cal == '--' else bool(_cal and _cal == expected_cal_hash.get(gw))
             _ah_ok = bool(gw_ah_sync.get(gw)) if _ah != '--' else True
             # 5. FLAGA — DANE (2026-08-03, decyzja usera). Hash stanu urządzeń (`dh`, B6) jest
             # równorzędny z disc/param/cal/anom: odkąd binarne raportują tylko zdarzeniowo, to on
@@ -2540,13 +2710,27 @@ def run_supervisor(log):
                     _items.append((_sid, _es(_caps, available=bool(_av), include_avail=True)))
                 return _sh_fn(_items)
 
-            _dh = d.get('dh', '--')
+            _dh = _hb_val(gw, d, 'dh')
             # 2026-08-26: na kafel idzie `sh` (hash stanu, KTÓRY BRAMKA ZNA) — `dh` po restarcie
             # bramki stoi na 0 i wyglądał jak awaria. Zgodność lustra dalej liczymy z `dh`,
             # bo to ono opisuje, co bramka faktycznie dowiozła.
-            _sh = d.get('sh') or _dh
+            _sh_raw = _hb_val(gw, d, 'sh')
+            _sh = _sh_raw if _sh_raw != '--' else _dh
             _status_ok = bool(_sh and _sh != '--' and _sh == _sup_status_hash(gw))
-            _data_ok = bool(_dh and _dh != '--' and _dh == sup_data.state_hash(gw))
+            # `dh` = hash tego, co bramka DOWIOZLA. Wartosc '0' znaczy „nie dowiozlem jeszcze
+            # NICZEGO" — po restarcie bramki, albo gdy bramka nocna stoi w dzien i przekazniki
+            # sa bez napiecia (G1 carport: 0/78 online w dzien). To NIE jest rozjazd lustra,
+            # tylko brak dostaw, a mimo to flaga szla na ROZJAZD i zostawala tam CALY DZIEN
+            # (zgloszone 2026-09-17). Tak samo '--' = pole nigdy nie przyszlo.
+            # Wtedy o zgodnosci decyduje `sh` (co bramka WIE) vs lustro supervisora, czyli
+            # policzone juz obok `_status_ok`. To nie jest zluzowanie kryterium: `_status_ok`
+            # porownuje pelny status z dostepnoscia, wiec realny rozjazd nadal wychodzi.
+            if _dh == '--' and _sh == '--':
+                _data_ok = True                # nic jeszcze nie wiemy — bez zdania, nie rozjazd
+            elif _dh in ('0', '--'):
+                _data_ok = _status_ok
+            else:
+                _data_ok = bool(_dh == sup_data.state_hash(gw))
             _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok and _data_ok
             _zgv = ''.join('1' if f else '0'               # → sup_pong ORAZ push przy zmianie
                            for f in (_disc_ok, _param_ok, _cal_ok, _ah_ok, _data_ok))
@@ -2645,6 +2829,16 @@ def run_supervisor(log):
     # ── HA → LoRa bridge ──
     def on_mqtt(topic, payload):
         segs = topic.split('/')
+        # SEED kafli czasu: po restarcie cache jest pusty, a HB bramki nocnej potrafi nie przyjść do
+        # rana — retained timestat z brokera odtwarza go natychmiast (potem nadpisuje go HB).
+        if len(segs) == 4 and segs[1] == 'gw' and segs[3] == 'timestat':
+            if segs[2].upper() not in gw_time_cache:
+                try:
+                    _p = json.loads(payload)
+                    gw_time_cache[segs[2].upper()] = (_p, _GM_R.get(_p.get('mode')))
+                except Exception:
+                    pass
+            return
         # hydratacja: retained stan urządzenia lora/<gl>/<safe>/state → bufor (seed po db)
         if len(segs) == 4 and segs[3] == 'state' and segs[2] != 'vio':
             try:
@@ -2868,6 +3062,7 @@ def run_supervisor(log):
     mqtt._on_message_cb = on_mqtt
     lora.on_receive = on_lora
     mqtt.subscribe(f'{STATE_PREFIX}/supervisor/cmd/#')
+    mqtt.subscribe(f'{STATE_PREFIX}/gw/+/timestat')        # seed kafli czasu po restarcie
     mqtt.subscribe(f'{STATE_PREFIX}/anomaly/+/clear')      # v10: clear per-anomalia (button.lora_an_*_clear)
     mqtt.subscribe(f'{STATE_PREFIX}/supervisor/req/+/+')   # STEP 3: refresh buttons
     mqtt.subscribe(f'{STATE_PREFIX}/params/supervisor/#')   # STEP 17→F3: per-bramka <gl>/set|cmd (+instancje same subskrybują)
@@ -2941,6 +3136,10 @@ def run_supervisor(log):
                 'now': datetime.now().strftime('%H:%M:%S'),
                 'date': datetime.now().strftime('%Y-%m-%d'),
                 'role': 'źródło czasu (UTC sec w sync)'}, separators=(',', ':')), retain=True)
+            try:
+                refresh_gw_time()                         # kafle pory dnia/trybu nie czekają na HB
+            except Exception as e:
+                log.warn('TIME', 'refresh_gw_time: %s' % e)
             time.sleep(30)
     threading.Thread(target=sup_clock_loop, daemon=True, name='sup-clock').start()
     # STEP 17: bez pre-instancji — sync wyzwala porównanie `ph` w on_hb (HB/pong)
@@ -2999,10 +3198,14 @@ def run_supervisor(log):
             with cmd_lock: items = list(pending_cmd.items())
             for (gw, dev), p in items:
                 if now - p['since'] < ctrl_timeout: continue
-                if p['retries_left'] > 0:
+                # RETRY BEZ FLOODU (2026-09-10) — reguła w modules.protocol.bulk.retry_action
+                # (jedno źródło + test `test_cmd_retry.py`). Ponowienia idą tym samym Coalescerem
+                # co pierwsza tura, więc 78 nieodpowiadających = znów `cmdm`, nie 78 ramek `cmd`.
+                if retry_action(p['retries_left'], dev_avail.get((gw, dev))) == 'retry':
                     p['retries_left'] -= 1; p['since'] = now
                     log.warn('CTRL', f'🔁 brak st {gw}/{dev} — retry (zostało {p["retries_left"]})')
-                    send_to_all(p['msg'])
+                    m = p['msg']
+                    cmd_bulk.add((gw, dev, m.get('c', 'state'), m.get('v')))
                 else:
                     with cmd_lock: pending_cmd.pop((gw, dev), None)
                     cmd_failed.add((gw, dev))            # sticky: round-trip nie potwierdził → offline

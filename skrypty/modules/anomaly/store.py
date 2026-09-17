@@ -127,6 +127,12 @@ class AnomalyStore:
         return {dev for (g, dev, cat) in self.anomalies
                 if g == gw and self._bucket(cat) == "offline"}
 
+    def cat_devs(self, gw, cat):
+        """Zbior urzadzen z aktywna anomalia danej KATEGORII — do ODTWORZENIA stanu silnika
+        po restarcie. `offline_devs` patrzy na KUBELEK, a tu potrzebna jest dokladna kategoria:
+        'stagnation' siedzi w kubelku 'other' razem z temp/hum, wiec kubelek by ich nie rozroznil."""
+        return {dev for (g, dev, c) in self.anomalies if g == gw and c == cat}
+
     def offline_hash(self, gw):
         """Hash zbioru offline (md5[:8] z posortowanych nazw, '0' = pusty). MUSI być
         identyczny z _offline_hash bramki (porównanie driftu w HB)."""

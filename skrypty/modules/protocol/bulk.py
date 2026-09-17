@@ -93,6 +93,20 @@ def st_frames(gw, items, max_bytes=200):
     return out
 
 
+def retry_action(retries_left, available):
+    """Co zrobić z niepotwierdzonym `cmd` po timeoucie: 'retry' | 'fail'.
+
+    2026-09-10, ujawnione klikiem „WSZYSTKIE OFF" na 78 przekaźnikach bez zasilania:
+    pierwsza tura poszła 5 ramkami `cmdm`, a ponowienia per-urządzenie zrobiły z tego
+    78 ramek `cmd` × 2 tury. Urządzenie, o którym supervisor JUŻ WIE, że jest niedostępne
+    (`available is False`), nie ma czego potwierdzać — ponawianie do niego to czysta strata
+    pasma. `available is None` = jeszcze nie wiadomo → ponawiamy normalnie.
+    """
+    if retries_left <= 0:
+        return 'fail'
+    return 'fail' if available is False else 'retry'
+
+
 class Coalescer:
     """Zbiera zdarzenia przez `window` s od PIERWSZEGO, potem woła `flush(items)`.
 

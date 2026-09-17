@@ -19,6 +19,43 @@ import math
 import time
 
 
+def fmt_uptime(seconds):
+    """Sekundy → „Xd Yh Zm" (albo „Yh Zm" / „Zm" gdy krótsze). '--' dla braku danych.
+
+    Uptime BRAMKI jedzie w HB jako surowe `up`, a supervisor pokazywał je jako goły licznik
+    sekund (2026-09-11: `99571 s`). Jedno źródło formatu dla supervisora i testu.
+    """
+    try:
+        s = int(seconds)
+    except (TypeError, ValueError):
+        return '--'
+    if s < 0:
+        return '--'
+    d, rem = divmod(s, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f'{d}d {h}h {m}m'
+    if h:
+        return f'{h}h {m}m'
+    return f'{m}m'
+
+
+def mode_active(mode, is_day, last=None):
+    """Czy bramka w danym trybie jest AKTYWNA przy zadanej porze dnia.
+
+    Ta sama reguła co `GatewayMode.is_active`, ale bez instancji — supervisor liczy nią
+    aktywność bramki, gdy nie ma świeżego HB (bramka nocna nie nadaje HB przez całą noc,
+    więc kafle „Pora dnia"/„Tryb — stan" zamarzały na wartościach sprzed zmierzchu).
+    Dla trybu 'calendar' aktywność zna wyłącznie bramka → oddajemy ostatnią znaną (`last`).
+    """
+    if mode in ('day', 'night'):
+        return bool(is_day) if mode == 'day' else not bool(is_day)
+    if mode == 'all-time':
+        return True
+    return bool(last)
+
+
 class GatewayMode:
     def __init__(self, operating_mode="all-time", day_start="06:00", day_end="20:00",
                  lat=None, lon=None, clock=time.time, logger=None):

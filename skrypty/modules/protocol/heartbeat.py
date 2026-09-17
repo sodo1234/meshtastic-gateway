@@ -10,6 +10,30 @@ import threading
 from datetime import datetime
 
 
+def merge_hb_hashes(cache, payload, keys):
+    """ODBIORCZA polowa kontraktu `_fit`: brak pola = BEZ ZDANIA, nie rozjazd.
+
+    `GatewayHeartbeat._fit` porzuca rotacyjnie pola diagnostyczne, gdy ramka nie miesci sie
+    w sufit 200 B — na bramce z duza liczba urzadzen dzieje sie to przy niemal kazdym beacie
+    (G1, 2026-09-17: 357 przycietych ramek). Odbiorca, ktory czyta `payload.get(k, '--')`,
+    zamienia takie pominiecie w FALSZYWY rozjazd i wyczyszczony kafel. Ta funkcja podstawia
+    ostatnia znana wartosc.
+
+    Rozroznia BRAK pola od wartosci falsy: `dh` rowne '0' (bramka jeszcze nic nie dowiozla)
+    jest pelnoprawna odpowiedzia i musi trafic do porownania, a nie zostac uznane za brak.
+
+    Zwraca {klucz: wartosc}, gdzie '--' znaczy „to pole nie przyszlo ANI RAZU".
+    """
+    out = {}
+    for k in keys:
+        if k in payload:
+            cache[k] = payload[k]
+            out[k] = payload[k]
+        else:
+            out[k] = cache.get(k, '--')
+    return out
+
+
 class GatewayHeartbeat:
     """Gateway side: sends HB, responds to ping with pong."""
 
@@ -73,7 +97,51 @@ class GatewayHeartbeat:
                 payload.update(self.diag_fn() or {})
             except Exception:
                 pass
+        return self._fit(payload)
+
+    # ── TWARDY SUFIT RAMKI ───────────────────────────────────────────────────
+    # Meshtastic tnie/odrzuca pakiet >220 B i NIE chunkuje go — to cicha awaria: bramka
+    # „nadaje", supervisor nie dostaje nic. Zmierzone na G1 2026-09-11: 106 ostrzeżeń
+    # OVERSIZE w logu, HB 218-240 B, `pong` 219-220 B → G1 odpowiadała na 26% pingów,
+    # a G2 (mniej urządzeń = krótsze liczby) na 100%. To NAWRÓT regresji z 2026-08-26,
+    # kiedy bezwarunkowe `sh` wypchnęło HB na 228 B; wrócił, bo `mon` urosło 78→82.
+    # Zamiast łatać pole po polu: ramka sama pilnuje rozmiaru.
+    #
+    # Pola porzucamy od NAJWOLNIEJ ZMIENNYCH — `hash` (mapa urządzeń) i `cal` (harmonogram)
+    # potrafią nie zmienić się tygodniami, więc ich nieobecność w jednym beacie nic nie kosztuje.
+    # Każdy odbiorca po stronie supervisora jest na to odporny (`if ah:`, `if dh and`,
+    # `if cal is not None`, `note_hash` ignoruje puste, `_sh = d.get('sh') or _dh`) — brak pola
+    # znaczy „bez zdania", nie „rozjazd". ROTACJA startu gwarantuje, że żadne pole nie jest
+    # głodzone w nieskończoność: kolejne beaty porzucają kolejne pola.
+    FRAME_LIMIT = 220          # twardy limit Meshtastic
+    FRAME_SAFE = 200           # margines na wahania szerokości pól (tq: synced→holdover = +3 B)
+    _DROP_ORDER = ('hash', 'cal', 'ph', 'sh', 'ah', 'dh')
+
+    def _fit(self, payload):
+        """Przytnij payload do FRAME_SAFE, porzucając opcjonalne pola diagnostyczne."""
+        if self._size(payload) <= self.FRAME_SAFE:
+            return payload
+        n = len(self._DROP_ORDER)
+        start = getattr(self, '_drop_rot', 0)
+        order = [self._DROP_ORDER[(start + i) % n] for i in range(n)]
+        self._drop_rot = (start + 1) % n
+        dropped = []
+        for key in order:
+            if key not in payload:
+                continue
+            payload.pop(key)
+            dropped.append(key)
+            if self._size(payload) <= self.FRAME_SAFE:
+                break
+        if self.log:
+            self.log.warn('HB', f'✂️ ramka {payload.get("t")} nad limitem — pominięto '
+                                f'{",".join(dropped)} (teraz {self._size(payload)} B '
+                                f'≤ {self.FRAME_SAFE} B, limit {self.FRAME_LIMIT} B)')
         return payload
+
+    @staticmethod
+    def _size(payload):
+        return len(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
 
     def send_heartbeat(self):
         msg = self.build_payload('hb')

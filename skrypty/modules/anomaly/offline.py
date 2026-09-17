@@ -150,9 +150,15 @@ class GatewayOfflineAnomaly:
                 self.offline.discard(dev)        # gdyby wpadł przed wykluczeniem — wyczyść hash
                 continue
             if not active:               # bramka nieaktywna → wyczyść offline, nie zgłaszaj
-                if dev in self.offline:
-                    self.offline.discard(dev)
-                    self.emit(sid, "dn")
+                # 2026-09-10: NIE emitujemy już `dn`. `dn` znaczy „urządzenie WRÓCIŁO online",
+                # a bramka nieaktywna nic takiego nie wie — carport w dzień ma obwód przekaźników
+                # beznapięciowy, więc 78 modułów jest realnie nieosiągalnych. Stary `dn` przestawiał
+                # na supie availability na ON (zmierzone: 78 encji `_available` skoczyło na `on`
+                # przy braku zasilania) i kafle pokazywały stan sprzed nocy zamiast OFFLINE.
+                # Teraz: gasimy tylko ALARM (self.offline = wkład do hasha `ah`), a prawdę
+                # o dostępności niesie dalej flaga `a:` / blob `avail` z report_liveness.
+                # Supervisor nie robi z niej anomalii, dopóki HB mówi `ga:0` (patrz `_set_avail`).
+                self.offline.discard(dev)
                 continue
             state = alive_map.get(dev)
             if state is None:            # dostępność jeszcze nieokreślona (grace) → pomiń
