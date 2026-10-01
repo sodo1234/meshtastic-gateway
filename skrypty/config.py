@@ -179,7 +179,7 @@ SUPERVISOR_CONFIG = {
 # GATEWAY (G1) — Zigbee→LoRa, lokalne Z2M+HA, autonomiczna
 # ═══════════════════════════════════════════════════════════
 # FAZA 1 — DWIE BRAMKI NA JEDNEJ MASZYNIE (test slotowania bez osobnych boxów):
-#   LORA_GW_ID=G2 LORA_MESH_PORT=<by-id-Helteca-B> python3 test_step5_anomaly.py
+#   LORA_GW_ID=G2 LORA_MESH_PORT=<by-id-Helteca-B> python3 Meshtastic_SCADA.py
 # Env nadpisuje id + port; pliki stanu /tmp dostają suffix _g2 (G1 = ścieżki BEZ zmian,
 # pełna wsteczna zgodność). Docelowo każda bramka = osobny box (env nieużywane).
 _GW_ID = os.environ.get("LORA_GW_ID", "G1").strip() or "G1"

@@ -178,12 +178,12 @@ txt(s, 0.62, 2.15, 12.1, 0.5,
     [[('Teraz: ', 14, GREY, False), ('kod jest podzielony na moduły, a konfiguracja siedzi w osobnym pliku.', 14, WHITE, False)]])
 warn(s, 0.62, 2.72, 12.1,
      'Co to zmienia dla Ciebie w praktyce — właściwie nic',
-     'Nadal uruchamiasz JEDEN plik: test_step5_anomaly.py. Reszta to biblioteki, które ten plik sam sobie wczytuje. '
+     'Nadal uruchamiasz JEDEN plik: Meshtastic_SCADA.py. Reszta to biblioteki, które ten plik sam sobie wczytuje. '
      'Musisz tylko skopiować CAŁY katalog, a nie pojedynczy plik — i raz uzupełnić config.py.')
 txt(s, 0.62, 3.95, 12.1, 0.4, [[('Tak wygląda katalog na maszynie po wdrożeniu:', 13, CYAN, True)]])
 mono(s, 0.62, 4.35, 8.2, [
     '~/meshtastic/',
-    '   test_step5_anomaly.py    <-- TEN plik uruchamiasz (gateway I supervisor)',
+    '   Meshtastic_SCADA.py    <-- TEN plik uruchamiasz (gateway I supervisor)',
     '   config.py                <-- ustawienia TEJ maszyny (tokeny, lista urzadzen)',
     '   .role                    <-- jedno slowo: gateway albo supervisor',
     '   modules/                 <-- 55 plikow biblioteki, NIE ruszasz',
@@ -193,7 +193,7 @@ mono(s, 0.62, 4.35, 8.2, [
 box(s, 9.1, 4.35, 3.62, 1.95, fill=CARD, line=CYAN)
 txt(s, 9.35, 4.55, 3.2, 1.6,
     [[('Ten sam plik', 12, CYAN, True)],
-     [('test_step5_anomaly.py', 12, GREEN, True)],
+     [('Meshtastic_SCADA.py', 12, GREEN, True)],
      [('działa i jako bramka,', 12, WHITE, False)],
      [('i jako supervisor.', 12, WHITE, False)],
      [('O roli decyduje plik', 12, GREY, False)],
@@ -359,7 +359,7 @@ s = slide(); header(s, 'po instalacji', 'Uruchomienie')
 txt(s, 0.62, 1.7, 12.1, 0.4, [[('Po restarcie maszyny program wstaje SAM. Ręcznie uruchamiasz tak:', 13, WHITE, False)]])
 y = mono(s, 0.62, 2.15, 12.1, [
     'cd ~/meshtastic',
-    'venv/bin/python -u test_step5_anomaly.py',
+    'venv/bin/python -u Meshtastic_SCADA.py',
 ], fs=13)
 txt(s, 0.62, y + 0.3, 12.1, 0.4, [[('Co powinieneś zobaczyć w pierwszych sekundach:', 13, CYAN, True)]])
 mono(s, 0.62, y + 0.72, 12.1, [

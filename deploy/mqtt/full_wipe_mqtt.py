@@ -2,7 +2,7 @@
 """FULL wipe of platform=mqtt entities from this host's local HA (localhost:8123).
 No keep-list — everything auto-discovered via MQTT gets removed so it can be rebuilt clean
 by the next fresh autodiscovery cycle (z2m native + custom lora_* harness). Run only while
-the lora python harness (test_step5_anomaly.py) is STOPPED on this host, to avoid the
+the lora python harness (Meshtastic_SCADA.py) is STOPPED on this host, to avoid the
 harness racing the wipe with its own retained re-publishes mid-run.
 
 Uses config/entity_registry/remove per entity — the same WS call already proven on this
@@ -40,7 +40,7 @@ FORCE = "--force" in sys.argv
 def harness_running():
     """Czy lora harness żyje na tym hoście (wyścig o retained configi)."""
     try:
-        out = subprocess.run(["pgrep", "-af", "test_step5.*py"],
+        out = subprocess.run(["pgrep", "-af", "(test_step5|Meshtastic_SCADA).*py"],
                              capture_output=True, text=True, timeout=10).stdout
         return [l for l in out.splitlines() if "pgrep" not in l]
     except Exception:

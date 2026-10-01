@@ -489,7 +489,9 @@ def run_gateway(log):
     gw_mode = GatewayMode(operating_mode=gm_cfg.get('operating_mode', 'all-time'),
                           day_start=gm_cfg.get('day_start', '06:00'),
                           day_end=gm_cfg.get('day_end', '20:00'),
-                          lat=gm_cfg.get('lat'), lon=gm_cfg.get('lon'), logger=log)
+                          lat=gm_cfg.get('lat'), lon=gm_cfg.get('lon'), logger=log,
+                          dusk_margin=gm_cfg.get('offline_dusk_margin', 0),
+                          dawn_margin=gm_cfg.get('offline_dawn_margin', 0))
     # 2026-07-18: gating raportowania trybem — nieaktywna bramka nie wysyla stanow do sup.
     data.active_fn = gw_mode.is_active
     try:
@@ -2586,6 +2588,14 @@ def run_supervisor(log):
 
     def on_hb(d):
         gw = d.get('g'); sup_hb.handle_hb(d)
+        # SPOZNIONY HB (2026-10-01): kanal LoRa z transferami potrafi dostarczyc HB z OPOZNIENIEM
+        # rzedu 10 min (zmierzone G1: nadany 13:15, odebrany 13:25). Taki HB niesie hashe SPRZED
+        # ostatniej zmiany, wiec wszystkie „rozjazdy" z niego sa falszywe i wywoluja zbedne re-synce
+        # (kalendarz 3x, dsnap, dump_anom). Decyzje o rozjezdzie podejmujemy tylko z SWIEZEGO HB.
+        _hb_ts = d.get('ts')
+        hb_stale = bool(_hb_ts) and (time.time() - float(_hb_ts)) > 180
+        if hb_stale:
+            log.info('HB', f'⏳ {gw}: HB sprzed {int(time.time() - float(_hb_ts))}s — pomijam decyzje o rozjezdzie hashy')
         if gw:
             ha.reg_gw_controls(gw)
             reg_gw_hashes(gw)                             # STEP 17: encje hash bramki
@@ -2597,7 +2607,7 @@ def run_supervisor(log):
             if ah:
                 local_ah = AnomalyReconciler.blob_hash(_sup_anom_rows(gw))
                 gw_ah_sync[gw] = (local_ah == ah)
-                if local_ah != ah and time.time() - ah_guard.get(gw, 0) > 120:
+                if local_ah != ah and not hb_stale and time.time() - ah_guard.get(gw, 0) > 120:
                     ah_guard[gw] = time.time()
                     log.warn('ANOM', f'⚠️ HB [{gw}]: ah rozjazd {local_ah}≠{ah} → dump_anom (reconcile)')
                     send_to_all({"t": "dump_anom", "g": gw})
@@ -2610,7 +2620,7 @@ def run_supervisor(log):
         sup_disc.note_devn(gw, d.get('dev'))
         sup_disc.note_hash(gw, d.get('hash', ''))
         cal = d.get('cal')                               # STEP 4: hash kalendarza bramki → drift
-        if cal is not None and gw and cal != expected_cal_hash.get(gw):
+        if cal is not None and gw and not hb_stale and cal != expected_cal_hash.get(gw):
             now = time.time()
             _inf = gw_push_inflight.get(gw, 0)
             if _inf and now - _inf < 600:                 # push-up tej bramki w drodze (~2-3 min po
@@ -2627,7 +2637,7 @@ def run_supervisor(log):
         # zalewu. Debounce 300 s: transfer trwa, a hash bramki zmienia się przy KAŻDEJ zmianie
         # stanu — bez tego prośby leciałyby seriami w trakcie normalnego ruchu.
         dh = d.get('dh')
-        if dh and gw and dh != sup_data.state_hash(gw):
+        if dh and gw and not hb_stale and dh != sup_data.state_hash(gw):
             _now = time.time()
             # C (2026-08-05): bez MAPY urządzeń dsnap jest bezużyteczny — sid nie mają nazw,
             # więc `handle_b` odrzuci wpisy jako „nieznane sid" (zaobserwowane 15:40:40, sekundę
@@ -2737,6 +2747,18 @@ def run_supervisor(log):
             _sh_raw = _hb_val(gw, d, 'sh')
             _sh = _sh_raw if _sh_raw != '--' else _dh
             _status_ok = bool(_sh and _sh != '--' and _sh == _sup_status_hash(gw))
+            # NAPRAWA ROZJAZDU STATUSU (2026-10-01). HB ma sufit 200 B i rotacyjnie gubi pola, wiec
+            # `dh` bywa nieobecny albo '0', a `sh` jedzie. Wtedy rozjazd lustra (np. dostepnosc po
+            # anulowanym transferze `avail`) NIE wywolywal zadnej naprawy — flaga Dane stala na
+            # ROZJAZD, bo jedyny wyzwalacz dsnap siedzial na `dh`. Teraz `sh` ≠ lustro tez prosi
+            # o dsnap (te same bramki: swiezy HB, kompletna mapa, brak transferu, debounce 300 s).
+            if (gw and not hb_stale and not _status_ok and _sh and _sh != '--'
+                    and _dh in ('0', '--', None, '')
+                    and sup_disc.is_complete(gw) and not sup_disc._xfer_busy(gw)
+                    and time.time() - dsnap_guard.get(gw, 0) > 300):
+                dsnap_guard[gw] = time.time()
+                log.info('DATA', f'🔄 {gw} rozjazd hasha statusu (sh {_sh}≠{_sup_status_hash(gw)}) → proszę o dsnap')
+                send_to_all({"t": "dsnap_req", "g": gw})
             # `dh` = hash tego, co bramka DOWIOZLA. Wartosc '0' znaczy „nie dowiozlem jeszcze
             # NICZEGO" — po restarcie bramki, albo gdy bramka nocna stoi w dzien i przekazniki
             # sa bez napiecia (G1 carport: 0/78 online w dzien). To NIE jest rozjazd lustra,

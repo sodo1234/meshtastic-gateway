@@ -58,7 +58,15 @@ def mode_active(mode, is_day, last=None):
 
 class GatewayMode:
     def __init__(self, operating_mode="all-time", day_start="06:00", day_end="20:00",
-                 lat=None, lon=None, clock=time.time, logger=None):
+                 lat=None, lon=None, clock=time.time, logger=None,
+                 dusk_margin=0, dawn_margin=0):
+        # MARGINESY OKNA OFFLINE (2026-10-01), tylko dla offline_active(), NIE dla gatingu danych.
+        # Zasilanie przekaznikow carportu nie zalatwia sie ze swit/zmierzchem 1:1: wraca ~20-60 min
+        # PO zmierzchu (57 falszywych offline o 18:49, zbiega do 8 dopiero ok. 19:20) i znika ~20 min
+        # PRZED switem (o 06:25 → 36 falszywych offline, ktore potem przezywaly caly dzien).
+        # Noc „dla offline" = [zmierzch+dusk_margin, swit-dawn_margin).
+        self.dusk_margin = int(dusk_margin or 0)
+        self.dawn_margin = int(dawn_margin or 0)
         self.mode = (operating_mode or "all-time").lower()
         self.cal_active = None    # 2026-07-19 (#9): tryb "calendar" — active wg harmonogramu (ustawia harness calendar_loop)
         self.day_start = self._parse_hm(day_start, 6 * 60)
@@ -141,6 +149,12 @@ class GatewayMode:
         # zasilania -> offline wstrzymany. Leak/temp nie sa bramkowane trybem (zawsze leca).
         if self.mode == "calendar":
             return True
+        if self.mode == "night" and (self.dusk_margin or self.dawn_margin):
+            now = self.clock() if now is None else now
+            lt = time.localtime(now)
+            mins = lt.tm_hour * 60 + lt.tm_min
+            s, e = self._day_window(lt)
+            return mins >= e + self.dusk_margin or mins < s - self.dawn_margin
         return self.is_active(now)
 
     def set_mode(self, mode):

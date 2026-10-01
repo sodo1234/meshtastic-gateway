@@ -88,6 +88,7 @@ class GatewayDiscovery:
         # kind='devmap') zamiast pętli `db` 2-dev/pakiet (199 dev: 94 pkt → ~10 chunków). Wpięcie:
         # discovery.map_send_fn = lambda payload: rt.start_send(gw_id,'devmap',payload). None = stary db.
         self.map_send_fn = None
+        self.devmap_v2 = True         # kompaktowy format mapy (patrz build_devmap)
         self._devmap_hash = None      # anti-spam: nie re-wysyłaj devmap dla tego samego hash w oknie
         self._devmap_ts = 0.0
         # F7 (cichy start): to samo dla pary disc_meta+disc_vio — obserwowany spam ×3/40s przy
@@ -271,7 +272,7 @@ class GatewayDiscovery:
             self._devmap_hash = self.disc_hash
             self._devmap_ts = now
             if self.log:
-                self.log.info('DISC', f'📤 devmap: {len(payload.get("devs", {}))} urządzeń → ReliableTransfer (1 blob)')
+                self.log.info('DISC', f'📤 devmap: {len(payload.get("devs") or payload.get("n", []))} urządzeń → ReliableTransfer (1 blob)')
             return
 
         items = []
@@ -318,6 +319,15 @@ class GatewayDiscovery:
             sid = self.short_ids.get(dev, -1)
             devs[str(sid)] = [dev, TYPE_MAP.get(info['type'], '?'),
                               encode_caps(info.get('caps', []))]
+        # FORMAT v2 (2026-10-01): 190 urzadzen = 23 chunki; po zmianie 12 (-48%). Typ+caps powtarzaja
+        # sie (4 unikalne pary na 190 urzadzen), a klucz-sid to po prostu POZYCJA na liscie.
+        # Odbiorca (handle_devmap) rozumie oba formaty, wiec kolejnosc wdrozenia nie ma znaczenia.
+        if self.devmap_v2 and devs and all(int(k) >= 0 for k in devs):
+            uniq, n = {}, [0] * (max(int(k) for k in devs) + 1)
+            for k, (name, tc, caps) in devs.items():
+                n[int(k)] = [name, uniq.setdefault((tc, caps), len(uniq))]
+            return {'hash': self.disc_hash, 'dev_n': len(self.devices), 'v': 2,
+                    'u': [list(k) for k in uniq], 'n': n}
         return {'hash': self.disc_hash, 'dev_n': len(self.devices), 'devs': devs}
 
     # ── (b) AUTODISCOVERY monitored+priority — OSOBNA funkcja (oddzielona od pełnej mapy) ──
@@ -554,8 +564,19 @@ class SupervisorDiscovery:
         payload = {'hash','dev_n','devs':{sid:[name,type_char,caps]}}. Rejestruje encje
         identycznie jak handle_db (jedna ścieżka rejestracji), po czym oznacza synced."""
         devs = (payload or {}).get('devs', {})
+        if (payload or {}).get('v') == 2:          # format kompaktowy → rozwin do {sid:[name,typ,caps]}
+            u, devs = payload.get('u', []), {}
+            for sid, e in enumerate(payload.get('n', [])):
+                if isinstance(e, (list, tuple)) and len(e) == 2 and 0 <= e[1] < len(u):
+                    devs[str(sid)] = [e[0], u[e[1]][0], u[e[1]][1]]
         if gw not in self.gw_devices:
             self.gw_devices[gw] = {}
+        elif devs:
+            # devmap to PELNA migawka — urzadzenia, ktorych w niej nie ma, zniknely z bramki (np. duchy
+            # z2m odciete filtrem). Bez tego lustro trzymalo 194 przy 190 (kafel „Mapa urzadzen 194/190").
+            nowe = {i[0] for i in devs.values() if isinstance(i, (list, tuple)) and i}
+            for stare in [n for n in self.gw_devices[gw] if n not in nowe]:
+                self.gw_devices[gw].pop(stare, None)
         for sid, item in devs.items():
             if not isinstance(item, (list, tuple)) or len(item) < 3:
                 continue

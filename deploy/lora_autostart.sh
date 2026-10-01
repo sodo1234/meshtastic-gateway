@@ -21,7 +21,7 @@
 set -u
 
 DIR="$HOME/meshtastic"
-SCRIPT="test_step5_anomaly.py"
+SCRIPT="Meshtastic_SCADA.py"
 STDERR="/tmp/test_transport.stderr.log"
 HA_URL="http://localhost:8123"
 

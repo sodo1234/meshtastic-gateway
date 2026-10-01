@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Sprawdzian gate'u ponowien `cmd` (test_step5_anomaly.py, run_supervisor.control_loop).
+"""Sprawdzian gate'u ponowien `cmd` (Meshtastic_SCADA.py, run_supervisor.control_loop).
 
 Pilnuje jednej rzeczy: klik „WSZYSTKIE ON/OFF" na 78 przekaznikach NIE moze zamienic sie
 w 78 pojedynczych ramek retry. Zmierzone 2026-09-10 na zywym supie: pierwsza tura poszla

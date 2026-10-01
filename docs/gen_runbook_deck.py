@@ -94,7 +94,7 @@ txt(s, 1.28, 2.75, 11.5, 1.5, [[("Instrukcja obsługi", 46, WHITE, True)],
                                [("Uruchamianie skryptów · obsługa dashboardu", 20, GREY, False)]])
 txt(s, 1.3, 4.9, 11, 0.9, [[("Runbook operacyjny — rozproszony BMS Zigbee → LoRa → Supervisor → Home Assistant", 15, WHITE, False)],
                            [("Bramka = źródło prawdy · supervisor agreguje · każda bramka autonomiczna", 13, DGREY, False)]])
-txt(s, 1.3, 6.7, 11, 0.4, [[("2026-07-21  ·  kod step-by-step (test_step5_anomaly.py + modules/*)  ·  NIE legacy v38", 11, DGREY, True)]])
+txt(s, 1.3, 6.7, 11, 0.4, [[("2026-07-21  ·  kod step-by-step (Meshtastic_SCADA.py + modules/*)  ·  NIE legacy v38", 11, DGREY, True)]])
 
 # ══════════════════ 2. AGENDA ══════════════════
 s = slide(); header(s, "PRZEGLĄD", "Zakres instrukcji")
@@ -134,7 +134,7 @@ box(s, 0.75, 1.6, 6.0, 5.0, fill=CARD, line=LINE)
 txt(s, 1.0, 1.75, 5.5, 0.4, [[("WEB UI  ·  http://localhost:8765", 13, CYAN, True)]])
 bullets(s, 1.0, 2.35, 5.5, [
     ("1. Host", "carport-g2 / supervisor / …"),
-    ("2. Skrypt", "test_step5_anomaly.py"),
+    ("2. Skrypt", "Meshtastic_SCADA.py"),
     ("3. Start", "rola gw (bramka) / sup (supervisor)"),
     ("4. tail", "podgląd logu na żywo (nowa karta)"),
 ], fs=12, sp=1.5)
@@ -146,7 +146,7 @@ code = ["# start bramki G2",
         "curl -X POST :8765/api/start \\",
         "  -d '{\"host\":\"carport-g2\",",
         "       \"role\":\"gw\",",
-        "       \"script\":\"test_step5_anomaly.py\"}'",
+        "       \"script\":\"Meshtastic_SCADA.py\"}'",
         "",
         "# status operacji (async → poll)",
         "curl :8765/api/op?host=carport-g2&role=gw",
@@ -162,12 +162,12 @@ s = slide(); header(s, "URUCHAMIANIE", "Fallback — SSH + tmux (gdy launcher pa
 box(s, 0.75, 1.6, 11.85, 3.5, fill=CARD, line=LINE)
 sshc = ["ssh td@100.98.155.78                 # carport-g2  (user td, klucz)",
         "cd ~/meshtastic",
-        "tmux new -d -s gw 'venv/bin/python -u test_step5_anomaly.py 2>>/tmp/test_transport.stderr.log'",
+        "tmux new -d -s gw 'venv/bin/python -u Meshtastic_SCADA.py 2>>/tmp/test_transport.stderr.log'",
         "tmux has-session -t gw && echo UP     # weryfikacja startu",
         "tail -f /tmp/test_transport.log       # log runtime",
         "",
         "# STOP:",
-        "tmux kill-session -t gw ; pkill -f 'python -u test_step5_anomaly.py'"]
+        "tmux kill-session -t gw ; pkill -f 'python -u Meshtastic_SCADA.py'"]
 txt(s, 1.0, 1.8, 11.4, 3.2, [[(l if l else " ", 12, (GREEN if l.strip().startswith("#") else WHITE), False)] for l in sshc], sp=1.25)
 txt(s, 0.75, 5.35, 11.85, 1.4, [
     [("Sesje tmux:  gw  (bramka)  ·  sup  (supervisor).   Log skryptów test_*: /tmp/test_transport.log", 12, CYAN, True)],
@@ -270,7 +270,7 @@ table(s, 0.7, 1.6, [3.6, 4.2, 4.1],
 s = slide(); header(s, "EKSPLOATACJA", "Health-check + pliki stanu")
 box(s, 0.75, 1.6, 6.0, 5.0, fill=CARD, line=LINE)
 txt(s, 1.0, 1.75, 5.5, 0.4, [[("SZYBKIE KOMENDY", 13, CYAN, True)]])
-hc = ["# proces żyje?", "pgrep -af 'python -u test_step5_anomaly.py'", "",
+hc = ["# proces żyje?", "pgrep -af 'python -u Meshtastic_SCADA.py'", "",
       "# ostatni HB (tryb gm, aktywność ga):", "grep '\"t\":\"hb\"' /tmp/test_transport.log | tail -1", "",
       "# HA API odpowiada?", "curl -H 'Authorization: Bearer $TOKEN' \\", "     localhost:8123/api/"]
 txt(s, 1.0, 2.35, 5.5, 4.1, [[(l if l else " ", 10.5, (GREEN if l.startswith("#") else WHITE), False)] for l in hc], sp=1.25)

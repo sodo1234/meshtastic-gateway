@@ -369,6 +369,31 @@ def test_avail_preserves_last_seen():
     print("✅ pub_device_avail merguje (nie kasuje) last_seen/capy + seed z hydratacji")
 
 
+def test_stale_last_seen_means_offline():
+    """2026-10-01: z2m po restarcie oznacza bateryjne jako online i republikuje stary stan z
+    `last_seen` sprzed miesiecy. Taki „online" ma byc offline; swiezy last_seen go ozywia."""
+    import json as _json, time as _t
+    from modules.data import GatewayData
+    gd = GatewayData("G1", FakeGwDiscovery(), FakeLora(), mon_interval=999, pri_interval=999)
+    old = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - 90 * 86400))
+    new = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - 60))
+    gd.on_z2m_availability("zigbee2mqtt/Temp 1/availability", "online")
+    assert gd._z2m_avail["Temp 1"] is True
+    gd.on_z2m("zigbee2mqtt/Temp 1", _json.dumps({"temperature": 20, "last_seen": old}))
+    assert gd._z2m_avail["Temp 1"] is False, "stary last_seen musi dac offline"
+    gd.on_z2m_availability("zigbee2mqtt/Temp 1/availability", "online")      # z2m dalej klamie
+    assert gd._z2m_avail["Temp 1"] is False
+    gd.on_z2m("zigbee2mqtt/Temp 1", _json.dumps({"temperature": 21, "last_seen": new}))
+    gd.on_z2m_availability("zigbee2mqtt/Temp 1/availability", "online")
+    assert gd._z2m_avail["Temp 1"] is True, "swiezy last_seen = zywe"
+    disc = gd.disc
+    disc.devices["Test 1"]["mains_powered"] = True       # przekaznik: z2m orzeka sam
+    gd.on_z2m_availability("zigbee2mqtt/Test 1/availability", "online")
+    gd.on_z2m("zigbee2mqtt/Test 1", _json.dumps({"state": "ON", "last_seen": old}))
+    assert gd._z2m_avail["Test 1"] is True, "mains: stary last_seen NIE gasi dostepnosci"
+    print("✅ stary last_seen → offline (bateryjne), swiezy → online, mains nietkniete")
+
+
 def test_batcher_ack_retransmit_and_drop():
     """P1 z ACK: pakiet dostaje id `p`, brak `back` → retransmisja, ACK → cisza,
     a po wyczerpaniu prób pakiet jest PORZUCANY z licznikiem `lost` (widoczna utrata danych)."""
@@ -652,7 +677,7 @@ if __name__ == "__main__":
              test_gateway_periodic_liveness, test_report_interval_live_p3,
              test_patch4_inactive_gating_per_device, test_gateway_per_type_offline,
              test_supervisor_handle_b_merge, test_supervisor_apply_st, test_end_to_end,
-             test_avail_preserves_last_seen]
+             test_avail_preserves_last_seen, test_stale_last_seen_means_offline]
     failed = 0
     for t in tests:
         try:

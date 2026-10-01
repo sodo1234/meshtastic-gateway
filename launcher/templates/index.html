@@ -238,10 +238,10 @@ async function onHostChange(r){
   // 1) scripts
   const j = await fetch(`/api/scripts?host=${host}`).then(x=>x.json());
   const sel = document.getElementById(`script-${r}`);
-  // Domyślny skrypt: NAJPIERW test_step5_anomaly.py (aktualny harness → log /tmp/test_transport.log,
+  // Domyślny skrypt: NAJPIERW Meshtastic_SCADA.py (aktualny harness → log /tmp/test_transport.log,
   // świeży). Bez tego launcher brał 'gateway.py' → /tmp/gateway.log = STARY log v38 (mylące „dane z 22").
   const prefs = r==='test' ? ['test_step1_transport.py']
-              : ['test_step5_anomaly.py', r==='sup' ? 'supervisor.py' : 'gateway.py'];
+              : ['Meshtastic_SCADA.py', r==='sup' ? 'supervisor.py' : 'gateway.py'];
   const defaultName = prefs.find(n => (j.scripts||[]).includes(n)) || (j.scripts||[])[0] || '';
   sel.innerHTML = (j.scripts||[]).map(s =>
     `<option ${s===defaultName?'selected':''} value="${s}">${s}</option>`).join('');

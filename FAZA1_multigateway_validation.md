@@ -47,7 +47,7 @@ Helteca na supervisorze G2 nie ma jak słuchać → test niemożliwy. To sprzęt
 ## C. Test slotowania / anti-collision (rdzeń Fazy 1)
 
 **Procedura:**
-1. Uruchom G1 + G2 + supervisor (Launcher / test_step5_anomaly.py).
+1. Uruchom G1 + G2 + supervisor (Launcher / Meshtastic_SCADA.py).
 2. Obserwuj logi TX obu bramek przez 3-4 cykle (60s każdy):
    - G1 batch `b` wychodzi TYLKO w `[0,20)s` okna cyklu
    - G2 batch `b` wychodzi TYLKO w `[20,40)s`
@@ -189,13 +189,13 @@ ls -l /dev/serial/by-path/    # np. pci-...-usb-0:3:...-port0 (G1), pci-...-usb-
 
 **2. Terminal 1 — G1 (jak dotąd, domyślnie, swój Heltec):**
 ```bash
-cd ~/meshtastic && python3 test_step5_anomaly.py
+cd ~/meshtastic && python3 Meshtastic_SCADA.py
 ```
 
 **3. Terminal 2 — G2 (env-override, DRUGI Heltec po by-path):**
 ```bash
 cd ~/meshtastic
-LORA_GW_ID=G2 LORA_MESH_PORT=/dev/serial/by-path/<HELTEC-B-by-path> python3 test_step5_anomaly.py
+LORA_GW_ID=G2 LORA_MESH_PORT=/dev/serial/by-path/<HELTEC-B-by-path> python3 Meshtastic_SCADA.py
 ```
 
 **4. Obserwuj (pass/fail).** Trik: pozycja w cyklu = `epoch%60` = sekundy znacznika logu (HH:MM:**SS**),
