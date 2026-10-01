@@ -7,6 +7,7 @@ Usage:
     cd skrypty
     python3 -m modules.protocol.discovery_sid_smoke_test
 """
+import json
 import os
 import sys
 import tempfile
@@ -117,8 +118,24 @@ def test_prune_usuniete_z_z2m():
     print("✅ prune: usuniete z z2m znikaja z mapy, pusty payload nie czysci, sidy stabilne")
 
 
+def test_duchy_bez_interview_odfiltrowane():
+    """REGRESJA 2026-10-01: z2m G2 mial 37 duchow (interview_completed:false) z sieci carportu."""
+    tmp = os.path.join(tempfile.gettempdir(), "test_sid_ghost.json")
+    if os.path.exists(tmp): os.remove(tmp)
+    d = GatewayDiscovery("G2", ["Duch Monitorowany"], [], [], lora=None, sid_persist_path=tmp)
+    lst = json.loads(_payload(["Test 1", "RB4_S11", "Duch Monitorowany"]))
+    lst[1]["interview_completed"] = False                  # prawdziwy duch
+    lst[2]["interview_completed"] = False                  # ale nazwany w monitored → zostaje
+    lst[0]["interview_completed"] = True
+    d.parse_z2m(json.dumps(lst))
+    assert set(d.devices) == {"Test 1", "Duch Monitorowany"}, d.devices.keys()
+    os.remove(tmp)
+    print("✅ duchy: interview_completed=false odfiltrowane, monitored zostaje")
+
+
 if __name__ == "__main__":
     tests = [test_lock_in_equals_sorted, test_add_does_not_shift, test_prune_usuniete_z_z2m,
+             test_duchy_bez_interview_odfiltrowane,
              test_remove_reserves_and_returns_same, test_persist_survives_reload,
              test_no_persist_path_falls_back]
     failed = 0
