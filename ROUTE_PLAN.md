@@ -21,7 +21,7 @@ HA MQTT discovery: gdy config zawiera blok `device`, HA włącza `has_entity_nam
 
 ## HARD RULES
 1. Pliki do edycji (TYLKO te): `skrypty/modules/protocol/ha_entities.py`,
-   `skrypty/modules/params/manager.py`, `skrypty/test_step5_anomaly.py`,
+   `skrypty/modules/params/manager.py`, `skrypty/Meshtastic_SCADA.py`,
    `skrypty/modules/params/smoke_test.py`, NOWY `skrypty/modules/protocol/naming_smoke_test.py`.
 2. NIE dotykaj `skrypty/modules/transport/` (verified) ani zagnieżdżonego
    `skrypty/modules/protocol/protocol/` (legacy). NIE dotykaj PLAN.md, `homeassistant/gen_*`
@@ -35,7 +35,7 @@ HA MQTT discovery: gdy config zawiera blok `device`, HA włącza `has_entity_nam
      `reg_refresh_button`, `reg_gw_hashes`, `reg_gw_time_entities`, `reg_anomaly_entities`.
    - GATEWAY (NIE RUSZAĆ): `reg_gw_local_stats`, `reg_gw_buttons_local`,
      `ParamSync(role="gateway")`, encje `calstat`, `reg_gw_lqi`.
-4. `test_step5_anomaly.py` ma 131 KB — edytuj chirurgicznie, nie formatuj całości.
+4. `Meshtastic_SCADA.py` ma 131 KB — edytuj chirurgicznie, nie formatuj całości.
    Po KAŻDEJ edycji: `python -c "import ast; ast.parse(open(FILE,encoding='utf-8').read())"`.
 5. ZERO `git commit`, ZERO deployu, ZERO ruchu do maszyn zdalnych. Edycje lokalne + testy.
 6. Komentarze po polsku, styl otoczenia. JSON wire: `separators=(',',':')`.
@@ -53,7 +53,7 @@ HA MQTT discovery: gdy config zawiera blok `device`, HA włącza `has_entity_nam
   available → `"Available"`; last_seen → `"Last Seen"`.
 - `reg_vswitch`/`reg_vbutton`: device name → `f"LoRa {gw} Virtual I/O"`, encja → `f"{name}"`.
 
-### T2 — inline rejestratory supervisora (test_step5_anomaly.py, sekcja run_supervisor)
+### T2 — inline rejestratory supervisora (Meshtastic_SCADA.py, sekcja run_supervisor)
 Bloki `device` tych funkcji mają `identifiers` bez `name` (dziedziczą nazwę z `reg_sensor`) —
 **nie dodawaj tam `name`**, zmień TYLKO nazwy encji:
 - `reg_linkquality`: `f"{dev} Link Quality"` → `"Link Quality"` (uid `lora_{safe}_{safe}_link_quality`

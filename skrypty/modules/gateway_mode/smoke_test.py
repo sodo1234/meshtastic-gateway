@@ -21,6 +21,18 @@ def test_imports():
     print("✅ imports OK")
 
 
+def test_offline_margins():
+    from modules.gateway_mode import GatewayMode
+    gm = GatewayMode("night", day_start="06:00", day_end="20:00", dusk_margin=60, dawn_margin=45)
+    assert not gm.offline_active(_at(20, 30))      # po zmroku, ale zasilanie jeszcze nie wrocilo
+    assert gm.offline_active(_at(21, 5))
+    assert gm.offline_active(_at(5, 10))
+    assert not gm.offline_active(_at(5, 20))       # zasilanie juz odciete przed switem
+    assert not gm.offline_active(_at(12))
+    assert gm.is_active(_at(5, 20))                # gating danych bez zmian
+    print("✅ offline: margines zmierzch/swit")
+
+
 def test_all_time_always_active():
     from modules.gateway_mode import GatewayMode
     gm = GatewayMode("all-time")
@@ -61,7 +73,7 @@ def test_solar_window_sane():
 
 
 if __name__ == "__main__":
-    tests = [test_imports, test_all_time_always_active, test_day_mode_hours,
+    tests = [test_imports, test_offline_margins, test_all_time_always_active, test_day_mode_hours,
              test_night_mode_hours, test_solar_window_sane]
     failed = 0
     for t in tests:

@@ -1,7 +1,7 @@
 # LoRa Zigbee SCADA — Runbook operacyjny
 
 Dokumentacja techniczna: **uruchamianie skryptów** + **obsługa dashboardu**.
-Dotyczy bieżącego kodu step-by-step (`test_step5_anomaly.py` + `skrypty/modules/*`),
+Dotyczy bieżącego kodu step-by-step (`Meshtastic_SCADA.py` + `skrypty/modules/*`),
 NIE legacy monolitów `*_v38.py`.
 
 > Aktualizacja: 2026-08-05. Skróty: **GW** = bramka, **SUP** = supervisor.
@@ -23,7 +23,7 @@ NIE legacy monolitów `*_v38.py`.
   wykrywa anomalie, steruje. **Bramka = źródło prawdy.**
 - **Supervisor** agreguje bramki i pokazuje zbiorczy dashboard. Nie jest krytyczny
   — jego restart to tylko przerwa w agregacji, bramki działają dalej.
-- Ten sam plik `test_step5_anomaly.py` uruchamiany jest w dwóch rolach; rola wynika
+- Ten sam plik `Meshtastic_SCADA.py` uruchamiany jest w dwóch rolach; rola wynika
   z `ROLE` w `config.py` danej maszyny (`gateway` / `supervisor`).
 
 ### Hosty (Tailscale)
@@ -67,7 +67,7 @@ zdalnych maszynach (SSH → `tmux`). Robi robust-kill + weryfikację (nie kłami
 
 **Przez UI:**
 1. Wybierz **host** (`carport-g2` / `supervisor` / …).
-2. Wybierz **skrypt**: `test_step5_anomaly.py`.
+2. Wybierz **skrypt**: `Meshtastic_SCADA.py`.
 3. **Start** (rola `gw` dla bramki, `sup` dla supervisora).
 4. Podgląd logu: przycisk **tail** (otwiera nową kartę `tail -F` remote logu).
 
@@ -76,12 +76,12 @@ zdalnych maszynach (SSH → `tmux`). Robi robust-kill + weryfikację (nie kłami
 # Start bramki na G2
 curl -s -X POST http://localhost:8765/api/start \
   -H 'Content-Type: application/json' \
-  -d '{"host":"carport-g2","role":"gw","script":"test_step5_anomaly.py"}'
+  -d '{"host":"carport-g2","role":"gw","script":"Meshtastic_SCADA.py"}'
 
 # Start supervisora
 curl -s -X POST http://localhost:8765/api/start \
   -H 'Content-Type: application/json' \
-  -d '{"host":"supervisor","role":"sup","script":"test_step5_anomaly.py"}'
+  -d '{"host":"supervisor","role":"sup","script":"Meshtastic_SCADA.py"}'
 
 # Status operacji (start/stop są asynchroniczne — pollowa­nie)
 curl -s "http://localhost:8765/api/op?host=carport-g2&role=gw"
@@ -107,12 +107,12 @@ Gdy launcher niedostępny (odzwierciedla dokładnie to, co robi launcher):
 ssh td@100.98.155.78         # carport-g2
 cd ~/meshtastic
 # start w tmux (odłączony), log stderr do pliku:
-tmux new -d -s gw 'venv/bin/python -u test_step5_anomaly.py 2>>/tmp/test_transport.stderr.log'
+tmux new -d -s gw 'venv/bin/python -u Meshtastic_SCADA.py 2>>/tmp/test_transport.stderr.log'
 tmux has-session -t gw && echo UP     # weryfikacja
 tail -f /tmp/test_transport.log       # podgląd logu
 
 # stop:
-tmux kill-session -t gw ; pkill -f 'python -u test_step5_anomaly.py'
+tmux kill-session -t gw ; pkill -f 'python -u Meshtastic_SCADA.py'
 ```
 
 Sesje tmux: **`gw`** (bramka) / **`sup`** (supervisor). Log runtime dla skryptów
@@ -281,7 +281,7 @@ gdy chcesz mieć pewność co do zegarów, patrz na `tq` (jakość czasu), nie n
 
 ```bash
 # proces żyje?
-ssh td@100.98.155.78 'pgrep -af "python -u test_step5_anomaly.py" | grep -v tmux'
+ssh td@100.98.155.78 'pgrep -af "python -u Meshtastic_SCADA.py" | grep -v tmux'
 
 # ostatni HB (tryb gm, aktywność ga, hashe):
 ssh td@100.98.155.78 'grep -a "\"t\":\"hb\"" /tmp/test_transport.log | tail -1'

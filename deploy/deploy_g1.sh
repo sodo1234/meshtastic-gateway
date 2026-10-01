@@ -35,18 +35,18 @@ fi
 STAMP="$(date +%Y%m%d_%H%M%S)"
 echo "== backup na maszynie (~/meshtastic_backup_${STAMP}.tgz)"
 ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" \
-  "cd ~/meshtastic && tar czf ~/meshtastic_backup_${STAMP}.tgz test_step5_anomaly.py modules 2>/dev/null; \
+  "cd ~/meshtastic && tar czf ~/meshtastic_backup_${STAMP}.tgz Meshtastic_SCADA.py modules 2>/dev/null; \
    ls -la ~/meshtastic_backup_${STAMP}.tgz" || { echo "❌ backup nieudany — NIE wgrywam"; exit 2; }
 
 echo "== wgrywam harness + całe modules/ (jeden strumień, bez pliku-po-pliku)"
-tar czf - -C "$SRC" --exclude='__pycache__' --exclude='*.pyc' test_step5_anomaly.py modules \
+tar czf - -C "$SRC" --exclude='__pycache__' --exclude='*.pyc' Meshtastic_SCADA.py modules \
   | ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && tar xzf -" \
   || { echo "❌ transfer nieudany"; exit 3; }
 
 echo "== walidacja składni NA MASZYNIE (przed restartem, nie po)"
 ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && python3 - <<'EOF'
 import ast, pathlib, sys
-files = ['test_step5_anomaly.py'] + [str(p) for p in pathlib.Path('modules').rglob('*.py')]
+files = ['Meshtastic_SCADA.py'] + [str(p) for p in pathlib.Path('modules').rglob('*.py')]
 bad = 0
 for f in files:
     try:
@@ -70,8 +70,8 @@ fi
 
 echo "== restart procesu (tmux $SESSION)"
 ssh "${SSH_OPTS[@]}" "$USER_SSH@$HOST" "cd ~/meshtastic && tmux kill-session -t $SESSION 2>/dev/null; sleep 3; \
-  tmux new -d -s $SESSION 'venv/bin/python -u test_step5_anomaly.py 2>>/tmp/test_transport.stderr.log'; sleep 12; \
-  echo -n '-- instancji: '; ps -eo args | grep -c '^venv/bin/python -u test_step5_anomaly.py'; \
+  tmux new -d -s $SESSION 'venv/bin/python -u Meshtastic_SCADA.py 2>>/tmp/test_transport.stderr.log'; sleep 12; \
+  echo -n '-- instancji: '; ps -eo args | grep -c '^venv/bin/python -u Meshtastic_SCADA.py'; \
   echo '-- stderr:'; tail -2 /tmp/test_transport.stderr.log; \
   echo '-- log:'; tail -5 /tmp/test_transport.log"
 

@@ -15,7 +15,7 @@ nazwa encji), parametryzowane po `GW`:
 
 Clear (per-wiersz + all) publikuje na LOKALNY broker bramki:
     lora/supervisor/cmd/clear_anomaly  {gw, dev, bucket}
-Bramka (proces test_step5_anomaly.py na tym samym brokerze) subskrybuje ten topic →
+Bramka (proces Meshtastic_SCADA.py na tym samym brokerze) subskrybuje ten topic →
 remove_one + reconcile (clear z OBU stron: bramka i supervisor). Bramka = źródło, więc
 realnie-trwająca anomalia wróci po oknie wyciszenia (re-arm reconcilera) — poprawne.
 

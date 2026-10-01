@@ -10,6 +10,7 @@ short ids stay consistent with the `db` the supervisor already registered.
 Wiring (app):  mqtt.subscribe("zigbee2mqtt/+")  and route those topics to
 on_z2m(topic, payload); register handle_req on the dispatcher for `req`.
 """
+import datetime
 import json
 import threading
 import time
@@ -55,6 +56,12 @@ class GatewayData:
         # kadencji `b`-heartbeatu z dashboardu bez restartu (dotąd P3 było martwe — sztywne 900s).
         self.report_interval_fn = None
         self._avail_pub = {}           # {dev: bool} ostatnio opublikowana dostępność (dedup)
+        # PRAWDZIWY `last_seen` z z2m (advanced.last_seen: ISO_8601) — 2026-10-01. z2m po STARCIE
+        # oznacza urzadzenia bateryjne jako online i liczy 24 h od startu, ignorujac stary lastSeen
+        # (G1: Button 3/4 nie odezwaly sie od kwietnia/maja, a po restarcie z2m swiecily „zyje").
+        # Online starsze niz `stale_online_s` traktujemy jako offline.
+        self._zls = {}                 # {dev: epoch} ostatnia realna wiadomosc wg z2m
+        self.stale_online_s = 90000    # 25 h (> passive timeout 24 h); nadpisywalne z configu
         self._z2m_avail = {}           # {dev: bool} z2m native availability (autorytet gdy włączone)
         self.thresholds = thresholds
         self.send_spacing = send_spacing   # s between outbound `b` frames (LoRa cooldown).
@@ -177,7 +184,7 @@ class GatewayData:
                 p = json.loads(p).get("state", "")
             except Exception:
                 pass
-        online = (p == "online")
+        online = (p == "online") and not self._is_stale(dev)
         self._z2m_avail[dev] = online              # autorytet dla report_liveness
         if online:                                 # z2m widzi urządzenie żywe → reset zegara
             self.last_msg_ts[dev] = time.time()
@@ -212,6 +219,27 @@ class GatewayData:
         self._alive[dev] = online
 
     # ── ingest ──────────────────────────────────────────
+    @staticmethod
+    def _parse_last_seen(v):
+        """z2m last_seen: ISO_8601 string albo epoch (ms/s) → epoch s, inaczej None."""
+        if v in (None, ""):
+            return None
+        try:
+            if isinstance(v, (int, float)):
+                return v / 1000.0 if v > 1e11 else float(v)
+            return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
+
+    def _is_stale(self, dev):
+        # Tylko urzadzenia BATERYJNE (passive). Zasilane z sieci (przekazniki/repeatery) z2m pinguje
+        # aktywnie i orzeka dostepnosc sam; ich `last_seen` w payloadzie rusza dopiero przy publikacji
+        # stanu, wiec zdrowy, cichy przekaznik wygladalby na „stary" i dostawalby falszywy offline.
+        if (self.disc.devices.get(dev) or {}).get('mains_powered'):
+            return False
+        ts = self._zls.get(dev)
+        return ts is not None and (time.time() - ts) > self.stale_online_s
+
     def on_z2m(self, topic, payload):
         """Handle a `zigbee2mqtt/<device>` retained/live state message."""
         dev = self._device_from_topic(topic)
@@ -231,6 +259,14 @@ class GatewayData:
         old = self.states.get(dev, {})
         delta = compute_delta(old, data, dtype, self.thresholds)
 
+        ls = self._parse_last_seen(data.get('last_seen'))
+        if ls is not None:
+            self._zls[dev] = ls
+            if self._is_stale(dev):
+                # stary, zapamietany stan (republish z cache po restarcie z2m) — to NIE jest zywe urzadzenie
+                if self._z2m_avail.get(dev, True):
+                    self.on_z2m_availability(f"zigbee2mqtt/{dev}/availability", "offline")
+                return
         # any fresh Z2M state ⇒ device online + last_seen refresh
         self.states[dev] = {**old, **{k: data[k] for k in TYPE_CAPS.get(dtype, ()) if k in data}}
         self.last_seen[dev] = _now_str()

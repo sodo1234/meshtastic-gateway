@@ -15,7 +15,7 @@ import tempfile
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
-from modules.protocol.discovery import GatewayDiscovery
+from modules.protocol.discovery import GatewayDiscovery, SupervisorDiscovery
 
 
 def _mk(tmp, names):
@@ -133,9 +133,36 @@ def test_duchy_bez_interview_odfiltrowane():
     print("✅ duchy: interview_completed=false odfiltrowane, monitored zostaje")
 
 
+def test_devmap_v2_roundtrip_i_rozmiar():
+    """Format v2 mapy: ta sama tresc co v1 po rozwinieciu, wyraznie mniej bajtow."""
+    import zlib, base64
+    tmp = os.path.join(tempfile.gettempdir(), "test_sid_devmap.json")
+    if os.path.exists(tmp): os.remove(tmp)
+    names = [f"RB{i // 3}_{i % 3 + 1}" for i in range(60)] + ["Temp 1", "Door 1"]
+    d = GatewayDiscovery("G1", [], [], [], lora=None, sid_persist_path=tmp)
+    d.parse_z2m(_payload(names))
+    d.devmap_v2 = False; v1 = d.build_devmap()
+    d.devmap_v2 = True; v2 = d.build_devmap()
+    assert v2.get('v') == 2 and 'devs' not in v2
+    got = {}
+    class _HA:
+        def __getattr__(self, _n): return lambda *a, **k: None
+    sup = SupervisorDiscovery(_HA())
+    sup.handle_devmap("G1", v2)
+    sup2 = SupervisorDiscovery(_HA()); sup2.handle_devmap("G1", v1)
+    assert sup.gw_devices["G1"] == sup2.gw_devices["G1"] and len(sup.gw_devices["G1"]) == 62
+    sup.gw_devices["G1"]["Duch"] = {"sid": 99, "type": "sensor", "caps": ""}
+    sup.handle_devmap("G1", v2)                          # pelna migawka kasuje nieobecnych
+    assert "Duch" not in sup.gw_devices["G1"] and len(sup.gw_devices["G1"]) == 62
+    size = lambda p: len(base64.b64encode(zlib.compress(json.dumps(p, separators=(',', ':')).encode(), 9)))
+    assert size(v2) < size(v1), (size(v2), size(v1))
+    os.remove(tmp)
+    print(f"✅ devmap v2: identyczna mapa, {size(v2)} B vs {size(v1)} B")
+
+
 if __name__ == "__main__":
     tests = [test_lock_in_equals_sorted, test_add_does_not_shift, test_prune_usuniete_z_z2m,
-             test_duchy_bez_interview_odfiltrowane,
+             test_duchy_bez_interview_odfiltrowane, test_devmap_v2_roundtrip_i_rozmiar,
              test_remove_reserves_and_returns_same, test_persist_survives_reload,
              test_no_persist_path_falls_back]
     failed = 0

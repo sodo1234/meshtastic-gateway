@@ -35,11 +35,11 @@ ROLE_META = {
 def resolve_meta(role, script=""):
     """Return meta for role, overriding log paths when script is a test_* file."""
     base = ROLE_META[role]
-    if script and script.startswith("test_"):
+    if script and (script.startswith("test_") or script.startswith("Meshtastic_SCADA")):
         return {**base,
                 "remote_log": "/tmp/test_transport.log",
                 "stderr_log": "/tmp/test_transport.stderr.log",
-                "pgrep": "test_step[0-9].*\\.py"}
+                "pgrep": "(test_step[0-9]|Meshtastic_SCADA).*\\.py"}
     return base
 
 app = Flask(__name__)
@@ -384,7 +384,7 @@ def robust_kill(host, role, session, tries=4):
     # Trik nawiasowy [p]ython: regex łapie 'python' w realnych procesach, ale NIE łapie
     # literału '[p]ython' w cmdline powłoki sh -c która odpala ten sam pkill/pgrep — bez tego
     # pgrep/pkill matchował SAM SIEBIE → wieczne 'ALIVE' (false positive) i kill własnego shella.
-    pats = [f"[p]ython.*{base['pgrep']}", "[p]ython.*test_step"]
+    pats = [f"[p]ython.*{base['pgrep']}", "[p]ython.*test_step", "[p]ython.*Meshtastic_SCADA"]
     kill_cmd = ("tmux kill-session -t %s 2>/dev/null; " % session
                 + "".join(f"pkill -f '{p}' 2>/dev/null; " for p in pats)
                 + "sleep 0.5; "
@@ -406,7 +406,7 @@ def robust_kill(host, role, session, tries=4):
 
 def start_remote(host, role, script, port=None, extra_args=""):
     meta = resolve_meta(role, script)
-    is_test = script.startswith("test_")
+    is_test = script.startswith("test_") or script.startswith("Meshtastic_SCADA")
     session = meta["tmux"]
     if port and not is_test:
         ok, msg = patch_script_port(host, script, port)

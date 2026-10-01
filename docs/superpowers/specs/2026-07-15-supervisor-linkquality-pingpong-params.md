@@ -1,7 +1,7 @@
 # Spec — Supervisor linkquality mirror + gateway→supervisor ping/pong + per-gateway params
 
 Date: 2026-07-15
-Project: Meshtastic LoRa SCADA (step5 — `test_step5_anomaly.py` + `modules/`)
+Project: Meshtastic LoRa SCADA (step5 — `Meshtastic_SCADA.py` + `modules/`)
 Source of truth: local repo `Documents/Meshtastic Gateway/skrypty/` → deployed to remote `~/meshtastic/` on gateway (100.98.155.78) and supervisor (100.79.111.24).
 Status: APPROVED design, pending implementation plan.
 

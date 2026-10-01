@@ -8,7 +8,7 @@ wołane z harnessu na każdym odbiorze LoRa resetuje probe do ONLINE, więc akty
 strzela tylko wtedy, gdy supervisor faktycznie milczy dłużej niż interwał P4 (rzadkość w praktyce).
 
 Parametry (P4/T4/PR) czytane NA ŻYWO przez `get_params()` z ParamSync — strojenie z dashboardu
-bez restartu (ten sam wzorzec co progi anomalii TH/TL/HH/HL w test_step5_anomaly.py).
+bez restartu (ten sam wzorzec co progi anomalii TH/TL/HH/HL w Meshtastic_SCADA.py).
 """
 import json
 import threading

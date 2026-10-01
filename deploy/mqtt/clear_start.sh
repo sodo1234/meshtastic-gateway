@@ -66,7 +66,7 @@ fi
 echo
 if [ -n "$APPLY" ]; then
   echo "═══ GOTOWE ═══"
-  echo "TERAZ: wystartuj harness z Launchera (:8765 → Start, skrypt test_step5_anomaly.py)."
+  echo "TERAZ: wystartuj harness z Launchera (:8765 → Start, skrypt Meshtastic_SCADA.py)."
   echo "Odbudowa potrwa kilka minut: z2m ogłasza urządzenia, harness rejestruje encje lora_*,"
   echo "supervisor dociąga mapę (devmap) i stan (dsnap). Obserwuj konsolę z logami."
 else

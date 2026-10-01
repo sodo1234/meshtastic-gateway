@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Sprawdzian reguly z `refresh_gw_time` (test_step5_anomaly.py, run_supervisor).
+"""Sprawdzian reguly z `refresh_gw_time` (Meshtastic_SCADA.py, run_supervisor).
 
 Pilnuje jednej rzeczy: kafel „Tryb — stan" ma sie zmieniac o zmierzchu SAM, bez heartbeata,
 bo bramka nocna nie nadaje HB przez cala noc. Reguła dla day/night to czysta funkcja

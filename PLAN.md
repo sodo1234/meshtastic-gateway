@@ -16,7 +16,7 @@ backpressure, aging, listen_gap), zmieniana wyłącznie po testach na fizycznym 
 
 ## Finding #1 (GŁÓWNY, do naprawy) — niespójny chunk_size na kanale `rt`
 
-Plik: `skrypty/test_step5_anomaly.py`
+Plik: `skrypty/Meshtastic_SCADA.py`
 
 - Linia ~500/1168: `CalendarTransfer(chunk_size=cal_cfg.get('chunk_size', 140), ...)` —
   realna wartość z `config.py` (`calendar.chunk_size`) to **60**. Fallback 140 to martwy
@@ -46,7 +46,7 @@ Plik: `skrypty/test_step5_anomaly.py`
        "chunk_size": 60,   # ten sam empirycznie sprawdzony próg co calendar.chunk_size
    },
    ```
-2. W `test_step5_anomaly.py` w OBU miejscach konstrukcji generycznego `rt`
+2. W `Meshtastic_SCADA.py` w OBU miejscach konstrukcji generycznego `rt`
    (gateway ~linia 510 i supervisor ~linia 1206) czytaj `CONFIG.get('transfer', {}).get(
    'chunk_size', 60)` zamiast hardkodowanego `140` / braku parametru.
 3. Popraw fallback w obu `CalendarTransfer(..., chunk_size=cal_cfg.get('chunk_size', 140))`
@@ -54,16 +54,16 @@ Plik: `skrypty/test_step5_anomaly.py`
    się nie zmienia, bo config i tak ją nadpisuje).
 4. NIE zmieniaj `chunk_delay`, `chunk_ack_timeout`, `chunk_retries`, `arbiter`, `accept_gw`
    — te wartości zostają jak są (już dostrojone).
-5. Po zmianie: `python3 -c "import ast; ast.parse(open('skrypty/test_step5_anomaly.py').read())"`
+5. Po zmianie: `python3 -c "import ast; ast.parse(open('skrypty/Meshtastic_SCADA.py').read())"`
    i `python3 -c "import ast; ast.parse(open('skrypty/config.py').read())"` (reguła
    projektu z CLAUDE.md: `ast.parse()` po każdej edycji).
 6. NIE URUCHAMIAJ testów na żywym sprzęcie/porcie LoRa — to sesja offline (kod, nie
-   live radio). Nie wołaj `test_step5_anomaly.py` jako procesu ani nic co otwiera
+   live radio). Nie wołaj `Meshtastic_SCADA.py` jako procesu ani nic co otwiera
    `/dev/serial/...` lub łączy się po SSH/Tailscale do bramki/supervisora.
 
 ## Finding #2 (drugorzędny, config-only, do rozważenia — NIE wdrażaj automatycznie)
 `GatewayData(report_full_every=data_cfg.get('report_full_every', 1))` w
-`test_step5_anomaly.py` czyta `data.report_full_every` z configu, ale `config.py` w
+`Meshtastic_SCADA.py` czyta `data.report_full_every` z configu, ale `config.py` w
 `GATEWAY_CONFIG["data"]` NIE ma tego klucza → efektywnie zawsze `1` (pełny sweep co
 15 min, bez korzyści z już zaimplementowanej redukcji). Kod w `gateway_data.py` sam
 dokumentuje, że `report_full_every=2` przy `report_interval=900` daje pełny sweep co
@@ -75,7 +75,7 @@ jako rekomendację w podsumowaniu.
 ## Zakres dla Sola (GPT-5.6) — WYŁĄCZNIE to:
 - `config.py`: dodaj sekcję `"transfer": {"chunk_size": 60}` do `GATEWAY_CONFIG` i
   `SUPERVISOR_CONFIG`.
-- `skrypty/test_step5_anomaly.py`: podmień 4 miejsca opisane w Finding #1 (2×
+- `skrypty/Meshtastic_SCADA.py`: podmień 4 miejsca opisane w Finding #1 (2×
   `chunk_size=140`→config-driven `60`, 1× brak param→config-driven, 2× fallback
   `140`→`60` w wywołaniach `CalendarTransfer`).
 - Zero innych plików, zero zmian w `lora_transport.py`, `channel.py`, `tx_queue.py`,

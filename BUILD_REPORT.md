@@ -15,8 +15,8 @@ Zakres: lokalna implementacja `ROUTE_PLAN.md`; bez commita, deployu i kontaktu z
 | `skrypty/modules/protocol/ha_entities.py` | 185–220 | Virtual I/O ma format nazwy urządzenia i prefiks encji zależny od roli: domyślnie zachowanie gateway bez zmian, supervisor używa `LoRa <gw> Virtual I/O` bez prefiksu encji `LoRa`. |
 | `skrypty/modules/protocol/ha_entities.py` | 227–315 | Sensory, binary sensory i switche używają krótkich nazw encji; główny switch ma `name=None`. Wszystkie `unique_id`, `object_id` i topiki pozostały bez zmian. |
 | `skrypty/modules/params/manager.py` | 130–140 | `ParamSync._device()` zwraca `LoRa G2` dla roli supervisor i zachowuje `LoRa Gateway G2` dla roli gateway. |
-| `skrypty/test_step5_anomaly.py` | 1180 | Tylko harness supervisora przekazuje formaty nazw gateway i Virtual I/O; harness gateway używa nadal wartości domyślnych. |
-| `skrypty/test_step5_anomaly.py` | 1403–1426, 1652–1748, 1793–1835 | Skrócono wyłącznie nazwy encji w rejestratorach supervisora: anomalie, Refresh, Last Seen, Link Quality, Contact, Stagnation, hashe i czas bramki. Bloki `device` oraz `unique_id` pozostały bez zmian. |
+| `skrypty/Meshtastic_SCADA.py` | 1180 | Tylko harness supervisora przekazuje formaty nazw gateway i Virtual I/O; harness gateway używa nadal wartości domyślnych. |
+| `skrypty/Meshtastic_SCADA.py` | 1403–1426, 1652–1748, 1793–1835 | Skrócono wyłącznie nazwy encji w rejestratorach supervisora: anomalie, Refresh, Last Seen, Link Quality, Contact, Stagnation, hashe i czas bramki. Bloki `device` oraz `unique_id` pozostały bez zmian. |
 | `skrypty/modules/params/smoke_test.py` | 209–230 | Dodano regresję nazw urządzenia per rola oraz niezmienionych identifierów, UID i topiców F3. |
 | `skrypty/modules/protocol/naming_smoke_test.py` | 1–196 | Nowy test `slugify()`, wyliczania entity ID z `device.name` + `entity.name`, braku kolizji multi-gw, domyślnej roli gateway, nazw Virtual I/O per rola i twardych list historycznych `unique_id`. |
 
@@ -120,7 +120,7 @@ Uwaga: wiersze z `#` zachowują nazwę wymaganą przez plan (`f"{nm} #"`), ale k
 Po każdej skutecznej edycji pliku Python uruchomiono `ast.parse`. Końcowa walidacja zbiorcza:
 
 ```text
-AST OK: skrypty/modules/protocol/ha_entities.py, skrypty/modules/params/manager.py, skrypty/test_step5_anomaly.py, skrypty/modules/params/smoke_test.py, skrypty/modules/protocol/naming_smoke_test.py
+AST OK: skrypty/modules/protocol/ha_entities.py, skrypty/modules/params/manager.py, skrypty/Meshtastic_SCADA.py, skrypty/modules/params/smoke_test.py, skrypty/modules/protocol/naming_smoke_test.py
 ```
 
 `git diff --check` dla wszystkich pięciu plików Python zakończył się kodem 0.
