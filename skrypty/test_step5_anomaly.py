@@ -2156,6 +2156,26 @@ def run_supervisor(log):
     cmd_failed = set()                                    # {(gw,dev)} — cmd bez st (sticky offline w OR-merge)
     off_sync_guard = {}                                   # gw → ts (debounce reconcile po drift offline-hash)
     ah_guard = {}                                         # AH-GATE: gw → ts dump po rozjeździe ah (debounce)
+    # POTWIERDZANIE STEROWANIA WIRTUALNEGO (2026-09-17). `vsw`/`vbtn` szly JEDNA ramka
+    # bez sledzenia: `vbtn_ack` trafial wylacznie do logu, `vsw_st` tylko odbijal stan w HA.
+    # ZMIERZONE NA ZYWO (15 nacisniec vbtn G1): do bramki doszlo 13/15, ack wrocil 12/15 —
+    # czyli ~13% komend przepadalo BEZ SLADU. Dla wyzwalacza „zgas wszystko" to dyskwalifikacja.
+    # Bramka odeslala 13 ackow z 13 odebranych, wiec potwierdzenie dziala — brakowalo tylko
+    # strony supervisora. Uzywamy TEGO SAMEGO wzorca co `pending_cmd`: rejestr + timeout + retry
+    # w `control_loop`. Klucz to (gw, rodzaj, id), bo `vsw` i `vbtn` maja osobne potwierdzenia.
+    pending_vio = {}                                      # (gw,'vsw'|'vbtn',vid) → {msg,since,retries_left}
+    vio_lock = threading.Lock()
+
+    def _vio_send(gw, rodzaj, vid, msg):
+        with vio_lock:
+            pending_vio[(gw, rodzaj, vid)] = {'msg': msg, 'since': time.time(),
+                                              'retries_left': ctrl_retries}
+        send_to_all(msg)
+
+    def _vio_ack(gw, rodzaj, vid):
+        with vio_lock:
+            return pending_vio.pop((gw, rodzaj, vid), None) is not None
+
     gw_ah_sync = {}                                       # AH-GATE: gw → True gdy HB.ah == lokalny hash anomalii
     # OSTATNI ZNANY HASH per bramka (2026-09-17). `GatewayHeartbeat._fit` przycina ramke do
     # sufitu 200 B, porzucajac rotacyjnie pola diagnostyczne — na G1 zdarza sie to przy
@@ -2821,9 +2841,15 @@ def run_supervisor(log):
         val = 1 if str(d.get('v')) in ('1', 'ON', 'on', 'True') else 0
         gl, safe = gw.lower(), _safe(vid)
         mqtt.publish(f'{STATE_PREFIX}/{gl}/vio/{safe}/state', 'ON' if val else 'OFF', retain=True)
+        _vio_ack(gw, 'vsw', vid)                     # potwierdzenie → koniec ponowien
         log.info('VIO', f'🔘 VSwitch {gw}/{vid} = {"ON" if val else "OFF"} → odbite w HA')
     dispatcher.register('vsw_st', handle_vsw_st)
-    dispatcher.register('vbtn_ack', lambda d: log.info('RX', f'vbtn_ack {d.get("id")}'))
+
+    def handle_vbtn_ack(d):
+        gw, vid = d.get('g', '?'), d.get('id')
+        potwierdzony = _vio_ack(gw, 'vbtn', vid)
+        log.info('VIO', f'🔘 vbtn_ack {gw}/{vid}' + ('' if potwierdzony else ' (spozniony/nieznany)'))
+    dispatcher.register('vbtn_ack', handle_vbtn_ack)
     dispatcher.set_fallback(lambda d: log.debug('RX', f'passthrough t={d.get("t")}'))
 
     # ── HA → LoRa bridge ──
@@ -2990,11 +3016,11 @@ def run_supervisor(log):
             mqtt.publish(f'{STATE_PREFIX}/{gw.lower()}/vio/{_safe(vid)}/state',
                          'ON' if val else 'OFF', retain=True)
             log.info('CTRL', f'🎛️ dashboard VSwitch {gw}/{vid} → {"ON" if val else "OFF"} (optimistic)')
-            send_to_all({"t": "vsw", "g": gw, "id": vid, "v": val})
+            _vio_send(gw, 'vsw', vid, {"t": "vsw", "g": gw, "id": vid, "v": val})
         elif len(segs) == 5 and segs[2] == 'vio' and segs[4] == 'press':
             gw, vid = segs[1].upper(), segs[3]
             log.info('CTRL', f'🎛️ dashboard VButton {gw}/{vid} pressed')
-            send_to_all({"t": "vbtn", "g": gw, "id": vid})
+            _vio_send(gw, 'vbtn', vid, {"t": "vbtn", "g": gw, "id": vid})
         elif len(segs) == 4 and segs[3] == 'set':
             gw, safe = segs[1].upper(), segs[2]
             dev = sup_disc.find_device(gw, safe) or safe
@@ -3211,6 +3237,22 @@ def run_supervisor(log):
                     cmd_failed.add((gw, dev))            # sticky: round-trip nie potwierdził → offline
                     _set_avail(gw, dev, False)           # spójnie w dev_avail (OR-merge, nie tylko HA)
                     log.warn('CTRL', f'💀 {gw}/{dev} brak st → OFFLINE')
+            # STEROWANIE WIRTUALNE: ta sama zasada co wyżej — bez ACK w oknie `ctrl_timeout`
+            # powtarzamy, po wyczerpaniu prób GŁOŚNO zgłaszamy. Wyzwalacz, który przepadł
+            # po cichu, jest gorszy niż brak wyzwalacza: nikt nie wie, że światło nie zgasło.
+            with vio_lock: vio_items = list(pending_vio.items())
+            for (gw, rodzaj, vid), p in vio_items:
+                if now - p['since'] < ctrl_timeout:
+                    continue
+                if p['retries_left'] > 0:
+                    p['retries_left'] -= 1; p['since'] = now
+                    log.warn('CTRL', f'🔁 brak potwierdzenia {rodzaj} {gw}/{vid} — retry '
+                                     f'(zostało {p["retries_left"]})')
+                    send_to_all(p['msg'])
+                else:
+                    with vio_lock: pending_vio.pop((gw, rodzaj, vid), None)
+                    log.error('CTRL', f'❌ {rodzaj} {gw}/{vid} BEZ POTWIERDZENIA po '
+                                      f'{ctrl_retries + 1} próbach — wyzwalacz NIE dotarł')
     threading.Thread(target=control_loop, daemon=True, name='control').start()
 
     signal.signal(signal.SIGINT, lambda *_: running.clear())

@@ -113,6 +113,15 @@ class GatewayDiscovery:
             name = dev.get('friendly_name')
             if not name or name == 'Coordinator':
                 continue
+            # DUCHY (2026-10-01). Koordynator slyszy cudze urzadzenia tej samej sieci/kanalu i
+            # dopisuje je do bazy z `interview_completed:false`. Zmierzone na G2: 37 duchow
+            # carportu (lastSeen sprzed kilku godzin, wiec zywe, nie resztki) → `dev=46`
+            # w HB i 40 falszywych urzadzen na supervisorze, i to PO czystce z 09-17.
+            # Kasowanie w z2m nic nie daje (wracaja), wiec odcinamy je tu. Brak pola = OK
+            # (starsze z2m), a nazwane w `monitored`/`priority` zostaja zawsze.
+            if (dev.get('interview_completed') is False and name not in self.priority_names
+                    and name not in self.monitored_names):
+                continue
             info = analyze_z2m_device(dev)
             info['monitored'] = self.is_monitored(name)
             info['priority'] = name in self.priority_names
