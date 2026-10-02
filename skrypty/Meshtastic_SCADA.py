@@ -1103,7 +1103,12 @@ def run_gateway(log):
             st = data.states.get(dev, {})
             caps = {k: st[k] for k in TYPE_CAPS.get(info.get('type', 'sensor'), ()) if k in st}
             if caps:
-                snap[str(sid)] = encode_short(caps, available=data._alive.get(dev, True))
+                _e = encode_short(caps, available=data._alive.get(dev, True))
+                _l = data.last_seen_ts.get(dev)
+                _o = -1 if _l is None else max(0, int(time.time() - _l))
+                if _o != 0:
+                    _e['o'] = _o                                  # last_seen razem ze stanem (jak w `b`)
+                snap[str(sid)] = _e
                 data.note_sent(dev, caps)                 # B6: blob to też wysyłka → karmi `dh`
         # PUSTY ZRZUT TEŻ JEST ZRZUTEM (2026-08-24). Wcześniej brak wartości = ciche `return`,
         # co zakleszczało system dokładnie w stanie carportu za dnia: przekaźniki bez zasilania ⇒

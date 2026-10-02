@@ -20,8 +20,8 @@ from .batcher import Batcher
 from .z2m_reader import compute_delta, encode_short, state_hash, status_hash, TYPE_CAPS
 
 
-def _now_str():
-    return time.strftime('%d.%m %H:%M:%S')      # data + godzina
+def _now_str(epoch=None):
+    return time.strftime('%d.%m %H:%M:%S', time.localtime(epoch))      # data + godzina
 
 
 # Ile kolejnych IDENTYCZNYCH sweepow availability wolno pominac, zanim i tak pojdzie pelny blob.
@@ -113,6 +113,7 @@ class GatewayData:
         self.states = {}               # {dev: last full Z2M state dict}
         self.sent_states = {}          # {dev: capy WYSŁANE w `b`} — źródło `dh` (B6), patrz _enqueue
         self.last_seen = {}            # {dev: "date HH:MM:SS"}
+        self.last_seen_ts = {}         # {dev: epoch} — TEN SAM moment co `last_seen`; jedzie z `b` jako `o` (wiek)
         self.last_msg_ts = {}          # {dev: epoch} — dowolna wiadomość z2m (dla stagnation)
         self.linkquality = {}          # {dev: Zigbee LQI 0-255} — jedzie blobem `avail`, nie w `b` (B1)
         self._a_sent = {}              # {dev: bool} — ostatnia dostępność WYSŁANA w `b` (B2)
@@ -269,8 +270,18 @@ class GatewayData:
                 return
         # any fresh Z2M state ⇒ device online + last_seen refresh
         self.states[dev] = {**old, **{k: data[k] for k in TYPE_CAPS.get(dtype, ()) if k in data}}
-        self.last_seen[dev] = _now_str()
-        self.last_msg_ts[dev] = time.time()    # dowolna wiadomość → reset zegara stagnation
+        # PRAWDZIWY czas wiadomosci (2026-10-02): z2m z `advanced.last_seen` podaje go w payloadzie.
+        # Po restarcie z2m republikuje stan z cache — to NIE jest „teraz", a dotad bramka stemplowala
+        # to czasem odbioru. Nie wybiegamy w przyszlosc (zegary).
+        _now = time.time()
+        _ep = min(ls, _now) if ls is not None else _now
+        self.last_seen[dev] = _now_str(_ep)
+        self.last_seen_ts[dev] = _ep
+        self.last_msg_ts[dev] = _ep            # dowolna wiadomość → reset zegara stagnation
+        if self._alive.get(dev) is False and self._z2m_avail.get(dev, True):
+            # SWIEZA wiadomosc = urzadzenie zyje — bez czekania na najblizszy sweep (P3 do 15 min).
+            self._alive[dev] = True
+            self._enqueue(dev, {}, force=False, available=True)
         if 'linkquality' in data:          # Zigbee LQI — track always, ship as ride-along
             self.linkquality[dev] = data['linkquality']
 
@@ -315,6 +326,11 @@ class GatewayData:
         self._a_sent[dev] = available
         short = encode_short(caps_dict, available=available, include_avail=include_a)
         self.note_sent(dev, caps_dict)
+        # LAST_SEEN RAZEM ZE STANEM (2026-10-02, polecenie usera): wpis niesie moment ostatniej
+        # realnej wiadomosci urzadzenia (klucz wewnetrzny `_l`; Batcher zamienia go na wiek `o`
+        # wzgledem `ts` ramki). Wczesniej supervisor stemplowal czasem ODBIORU ramki, wiec
+        # powtorzenie starej wartosci (heartbeat) wygladalo jak swieza wiadomosc.
+        short['_l'] = self.last_seen_ts.get(dev)
         if dev in self.disc.priority_names:
             self.pri_batch.add(sid, short, force_flush=force)
         else:
@@ -343,9 +359,18 @@ class GatewayData:
         iv = self._report_iv()
         first_grace = min(60.0, iv)
         waited = iv - first_grace
+        _tick = 0
         while self._report_running:
             time.sleep(1.0)
             waited += 1.0
+            _tick += 1
+            if _tick >= 30:                              # szybka kontrola ciszy vs T1/T2/T3
+                _tick = 0
+                try:
+                    self.timeout_tick()
+                except Exception as e:
+                    if self.log:
+                        self.log.warn('DATA', f'timeout_tick błąd: {e}')
             iv = self._report_iv()                       # live: zmiana P3 skraca/wydłuża następny tick
             if waited < iv:
                 continue
@@ -367,6 +392,39 @@ class GatewayData:
             except Exception:
                 pass
         return self.offline_after
+
+    def _silent_too_long(self, dev, oa, now):
+        """Cisza urzadzenia dluzsza niz parametr offline T1/T2/T3 [s].
+
+        2026-10-02 (polecenie usera): z2m `availability` orzekala o dostepnosci SAMA, wiec
+        pokretla T1/T2/T3 na dashboardzie byly martwe (G2 z T=1 min dalej swiecil „online"). Teraz
+        offline = z2m mowi offline LUB cisza > T. Mains (przekazniki) z2m pinguje co ~10 min i
+        publikuje stan z `last_seen`, wiec ich cisza nie przekracza ~10-15 min — T1 powyzej tego
+        nie daje falszywych alarmow. Dla baterii liczy sie ich normalna kadencja raportow.
+        Przed pierwsza wiadomoscia: grace = T od startu bramki."""
+        ts = self.last_msg_ts.get(dev)
+        if ts is None:
+            return (now - self._start_ts) >= oa
+        return (now - ts) >= oa
+
+    def timeout_tick(self):
+        """Szybkie wykrycie przejscia online → offline z powodu ciszy (co ~30 s), bez czekania na
+        pelny sweep (P3, do 15 min). Tylko urzadzenia, ktore z2m uwaza za zywe."""
+        now = time.time()
+        inactive = (self.active_fn is not None and not self.active_fn())
+        for dev, info in list(self.disc.devices.items()):
+            if self._alive.get(dev) is not True or not self._z2m_avail.get(dev):
+                continue
+            if inactive and not self.disc.is_monitored(dev):
+                continue
+            oa = self._oa_for(info.get('type', 'sensor'))
+            if self._silent_too_long(dev, oa, now):
+                self._alive[dev] = False
+                ts = self.last_msg_ts.get(dev)
+                if self.log:
+                    self.log.warn('DATA', f'💀 {dev} OFFLINE (cisza {int(now - ts) if ts else -1}s > {oa}s, '
+                                          f'parametr T) → available=0')
+                self._enqueue(dev, {}, force=False, available=False)
 
     def report_liveness(self):
         """Okresowy heartbeat dostępności = JEDYNE źródło offline (bramka autorytetem, CLAUDE.md).
@@ -403,6 +461,8 @@ class GatewayData:
             # które nie raportują bez zmiany stanu, ale z2m pinguje → wie czy żyją. Brak = timeout.
             if dev in self._z2m_avail:
                 alive = self._z2m_avail[dev]
+                if alive and self._silent_too_long(dev, oa, now):
+                    alive = False                        # parametr T1/T2/T3 ma REALNIE dzialac (patrz _silent_too_long)
             else:
                 if not seen and (now - self._start_ts) < oa:
                     continue                             # grace startowy — z2m nie retainuje stanu

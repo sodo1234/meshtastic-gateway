@@ -169,7 +169,8 @@ class Batcher:
         # Maly flush (1-2 ramki) zostaje po staremu — transfer ma wlasny narzut
         # (`rt_begin`/`rt_end` + cack per chunk), wiec oplaca sie dopiero od kilku ramek.
         if self.blob_fn is not None and len(packets) >= self.blob_min_packets:
-            payload = {'ts': int(time.time()), 'd': [[sid, f] for sid, f in items]}
+            _ts = int(time.time())
+            payload = {'ts': _ts, 'd': [[sid, self._wire(f, _ts)] for sid, f in items]}
             try:
                 self.blob_fn(payload)
                 self._stats["blobbed"] += 1
@@ -209,12 +210,27 @@ class Batcher:
             packets.append(self._build_dict(current))
         return packets
 
+    @staticmethod
+    def _wire(fields, ts):
+        """`_l` (epoch ostatniej wiadomosci) → `o` (wiek w s wzgledem `ts` ramki; -1 = brak danych).
+        Pomijamy `o`, gdy wiek 0 (supervisor czyta brak jako „swieze")."""
+        if '_l' not in fields:
+            return fields
+        f = dict(fields)
+        l = f.pop('_l')
+        o = -1 if l is None else max(0, int(ts - l))
+        if o != 0:
+            f['o'] = o
+        return f
+
     def _build_dict(self, items):
-        return {"t": "b", "g": self.gw_id, "ts": int(time.time()),
-                "d": [[sid, fields] for sid, fields in items]}
+        ts = int(time.time())
+        return {"t": "b", "g": self.gw_id, "ts": ts,
+                "d": [[sid, self._wire(fields, ts)] for sid, fields in items]}
 
     def _serialize(self, items):
-        probe = {"t": "b", "g": self.gw_id, "ts": 0, "d": [[s, f] for s, f in items]}
+        _now = int(time.time())
+        probe = {"t": "b", "g": self.gw_id, "ts": 0, "d": [[s, self._wire(f, _now)] for s, f in items]}
         if self.ack_wait > 0:
             probe["p"] = 999          # licz `p` w rozmiarze, inaczej split zaniża o ~8B (limit 150B)
         return json.dumps(probe, separators=(',', ':'))

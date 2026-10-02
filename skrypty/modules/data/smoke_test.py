@@ -334,6 +334,53 @@ def test_end_to_end():
     print("✅ end-to-end: Z2M → delta → `b` → supervisor → merged HA state")
 
 
+def test_last_seen_niesiony_ze_stanem():
+    """2026-10-02: last_seen na supervisorze = moment wiadomosci NA BRAMCE, nie chwila odbioru ramki.
+    Powtorzenie starej wartosci (heartbeat) nie moze wygladac jak swieza wiadomosc."""
+    import time as _t
+    from modules.data import GatewayData, SupervisorData
+    gdisc, lora = FakeGwDiscovery(), FakeLora()
+    gd = GatewayData("G1", gdisc, lora, mon_interval=999, pri_interval=999)
+    ha, sd = FakeHA(), SupervisorData(FakeHA(), FakeSupDiscovery())
+    ha = sd.ha
+    stary = _t.time() - 5400                                   # wiadomosc sprzed 90 min
+    iso = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(stary))
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 21.7, "last_seen": iso}))
+    gd.mon_batch.flush()
+    ramka = json.loads(lora.sent[-1])
+    entry = ramka["d"][0][1]
+    assert entry.get("o", 0) >= 5390, entry                    # wiek niesiony w ramce
+    sd.handle_b(ramka)
+    assert ha.published[("G1", "Temp 1")]["last_seen"] == gd.last_seen["Temp 1"],         (ha.published[("G1", "Temp 1")]["last_seen"], gd.last_seen["Temp 1"])
+    # wiadomosc swieza → brak `o`, last_seen = czas ramki
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 25.0}))
+    gd.mon_batch.flush()
+    r2 = json.loads(lora.sent[-1]); sd.handle_b(r2)
+    assert ha.published[("G1", "Temp 1")]["last_seen"] == gd.last_seen["Temp 1"]
+    print("✅ last_seen niesiony ze stanem: sup == bramka (takze dla starej wiadomosci)")
+
+
+def test_parametr_offline_realnie_dziala():
+    """2026-10-02: T1/T2/T3 maja wplywac na dostepnosc takze gdy z2m `availability` mowi „online"."""
+    import time as _t
+    from modules.data import GatewayData
+    gd = GatewayData("G1", FakeGwDiscovery(), FakeLora(), mon_interval=999, pri_interval=999)
+    gd.offline_after_fn = lambda dtype: 60                   # T = 1 min
+    gd.on_z2m_availability("zigbee2mqtt/Temp 1/availability", "online")
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 20}))
+    gd._alive["Temp 1"] = True
+    gd.last_msg_ts["Temp 1"] = _t.time() - 120               # cisza 2 min > T
+    gd.timeout_tick()
+    assert gd._alive["Temp 1"] is False, "cisza > T musi dac offline mimo z2m online"
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 21}))   # swieza wiadomosc
+    assert gd._alive["Temp 1"] is True, "swieza wiadomosc przywraca online od razu"
+    gd.offline_after_fn = lambda dtype: 7200                 # T = 2 h → cisza 2 min to nie offline
+    gd.last_msg_ts["Temp 1"] = _t.time() - 120
+    gd.timeout_tick()
+    assert gd._alive["Temp 1"] is True
+    print("✅ parametr offline T: cisza > T = offline (mimo z2m online), swieza wiadomosc = online")
+
+
 def test_avail_preserves_last_seen():
     """REGRESSION: pub_device_avail (goły {available}) full-replace kasował last_seen + capy
     na WSPÓŁDZIELONYM retained topicu → dashboard supervisora pokazywał '--' dla wszystkich.
@@ -677,7 +724,7 @@ if __name__ == "__main__":
              test_gateway_periodic_liveness, test_report_interval_live_p3,
              test_patch4_inactive_gating_per_device, test_gateway_per_type_offline,
              test_supervisor_handle_b_merge, test_supervisor_apply_st, test_end_to_end,
-             test_avail_preserves_last_seen, test_stale_last_seen_means_offline]
+             test_avail_preserves_last_seen, test_stale_last_seen_means_offline, test_last_seen_niesiony_ze_stanem, test_parametr_offline_realnie_dziala]
     failed = 0
     for t in tests:
         try:
