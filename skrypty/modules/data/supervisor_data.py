@@ -12,8 +12,8 @@ import time
 from .z2m_reader import decode_short, encode_short, state_hash
 
 
-def _now_str():
-    return time.strftime('%d.%m %H:%M:%S')      # data + godzina dla last_seen
+def _now_str(epoch=None):
+    return time.strftime('%d.%m %H:%M:%S', time.localtime(epoch))      # data + godzina dla last_seen
 
 
 class SupervisorData:
@@ -59,9 +59,16 @@ class SupervisorData:
             if not dev:
                 self._note_unknown(gw, sid)
                 continue
-            fields = decode_short(short if isinstance(short, dict) else {})
+            short = dict(short) if isinstance(short, dict) else {}
+            o = short.pop('o', 0)                     # wiek ostatniej wiadomosci [s] wzgledem `ts` ramki
+            fields = decode_short(short)
             fields.setdefault('available', 'ON')      # online cascade
-            fields['last_seen'] = _now_str()
+            # LAST_SEEN = moment realnej wiadomosci urzadzenia NA BRAMCE (ts - o), nie chwila odbioru
+            # ramki po LoRa (2026-10-02). o=-1: bramka nie ma danych → zostaw poprzednia wartosc.
+            # Brak `o` (stara bramka) = swieze: czas nadania ramki.
+            if o != -1:
+                _ts = data.get('ts')
+                fields['last_seen'] = _now_str((_ts - o) if _ts else None)
             merged = self._merge(gw, dev, fields)
             self.ha.pub_device_state(gw, dev, merged)
             self.last_msg_ts[(gw, dev)] = time.time()    # reset zegara offline
