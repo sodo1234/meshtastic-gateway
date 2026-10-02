@@ -65,7 +65,6 @@ from modules.transport.reliable_transfer import ReliableTransfer  # bulk (mass_o
 from modules.transport.channel import ChannelArbiter  # arbitraż półdupleksu: transfer-plik > wolumen
 from modules.slotting import SlotScheduler, SafeWindow
 from modules.gateway_mode import GatewayMode, mode_active, fmt_uptime
-from modules.control import GroupCaster       # masowe ON/OFF: groupcast Zigbee + weryfikacja
 
 STATE_PREFIX = CONFIG.get('state_prefix', 'lora')
 HA_PREFIX = CONFIG.get('ha_prefix', 'homeassistant')
@@ -877,44 +876,11 @@ def run_gateway(log):
         _apply_cmd(d.get('d'), d.get('c', 'state'), str(d.get('v', '')).upper())
     dispatcher.register('cmd', handle_cmd)
 
-    # ── MASOWE ON/OFF PRZEZ GRUPY ZIGBEE (2026-09-17, polecenie usera) ──────────────────
-    # Bylo: `cmdm` z 78 urzadzeniami = 78 pojedynczych `zigbee2mqtt/<dev>/set` w ciasnej petli.
-    # Ramki LoRa dochodzily, ale Zigbee tego nie unosilo — czesc przekaznikow sie nie przelaczala,
-    # a potwierdzenia `st` przy 78 sztukach naraz czesciowo ginely. Teraz: 6 groupcastow
-    # sekwencyjnie, po kazdym weryfikacja czlonkow i doslanie TYLKO brakujacych — LOKALNIE
-    # na bramce, zero ruchu LoRa na krok posredni. Szczegoly: modules/control/group_cast.py.
+    # ── MASOWE ON/OFF: ROBI HA, NIE PYTHON (2026-10-02, polecenie usera) ─────────────────
+    # Grupy Zigbee i automatyzacje „Schedule ON/OFF — GRUPY" zyja w HA/z2m bramki. Kafle
+    # „WSZYSTKIE ON/OFF" wysylaja JEDEN wirtualny przycisk (vbtn → `lora/vio/<id>/pressed`),
+    # a automatyzacja HA odpala istniejace sekwencje. Dawny GroupCaster (Python) usuniety.
     z2m_ieee = {}                                        # ieee_address → friendly_name
-    gw_ctrl_cfg = CONFIG.get('control', {})              # `ctrl_cfg` istnieje tylko w run_supervisor
-
-    group_caster = GroupCaster(
-        lambda topic, payload: mqtt.publish(topic, payload),
-        lambda dev: (data.states.get(dev) or {}).get('state'),
-        logger=log,
-        settle=gw_ctrl_cfg.get('group_settle', 2.0),
-        verify_wait=gw_ctrl_cfg.get('group_verify_wait', 8.0),
-        retries=gw_ctrl_cfg.get('group_retries', 2))
-
-    def on_z2m_groups(payload):
-        """Czlonkostwo czytamy z z2m (`bridge/groups`), NIE z configu — jedno zrodlo prawdy.
-        z2m podaje czlonkow po `ieee_address`, wiec tlumaczymy przez mape z `bridge/devices`."""
-        try:
-            gl = json.loads(payload)
-        except Exception:
-            return
-        grupy = {}
-        for g in gl if isinstance(gl, list) else []:
-            nazwa = g.get('friendly_name')
-            if not nazwa:
-                continue
-            czlonkowie = []
-            for m in g.get('members') or []:
-                dev = z2m_ieee.get(m.get('ieee_address'))
-                if dev:
-                    czlonkowie.append(dev)
-            grupy[nazwa] = czlonkowie
-        group_caster.set_groups(grupy)
-        log.info('GRP', '👥 grupy z2m: ' + (", ".join(f"{k}={len(v)}" for k, v in sorted(grupy.items()))
-                                            or 'brak'))
 
     def handle_cmdm(d):
         """Ramka ZBIORCZA: jedna komenda, lista urządzeń (masowe ON/OFF z dashboardu)."""
@@ -925,13 +891,6 @@ def run_gateway(log):
         for dev in devs:                                 # pending_st = zrodlo `st` w gore (bez zmian)
             if dev in discovery.devices:
                 pending_st[dev] = (cap, val, time.time())
-        prog = gw_ctrl_cfg.get('group_min_devices', 6)
-        if len(devs) >= prog and group_caster.plan(devs)[0]:
-            # apply() spi miedzy grupami i podczas weryfikacji → osobny watek, zeby nie blokowac
-            # dispatchera (kolejne ramki LoRa musza byc obslugiwane w trakcie).
-            threading.Thread(target=lambda: group_caster.apply(devs, cap, val),
-                             daemon=True, name='groupcast').start()
-            return
         for dev in devs:
             _apply_cmd(dev, cap, val)
     dispatcher.register('cmdm', handle_cmdm)
@@ -994,6 +953,7 @@ def run_gateway(log):
         if not for_me(d): return
         vid = d.get('id')
         log.info('VIO', f'🔘 VButton {vid} pressed (z LoRa)')
+        mqtt.publish(f'{STATE_PREFIX}/vio/{vid}/pressed', '1')   # wyzwalacz dla automatyzacji HA bramki
         lora_send({'t': 'vbtn_ack', 'g': gw_id, 'id': vid})
     dispatcher.register('vbtn', handle_vbtn)
 
@@ -1177,8 +1137,6 @@ def run_gateway(log):
             # Re-subskrypcja każe brokerowi dosłać retained teraz. Lokalny broker, 0 ruchu LoRa.
             mqtt.client.unsubscribe('zigbee2mqtt/+')
             mqtt.client.subscribe('zigbee2mqtt/+')
-        elif topic == 'zigbee2mqtt/bridge/groups':       # czlonkostwo grup → GroupCaster
-            on_z2m_groups(payload)
         elif topic == 'zigbee2mqtt/bridge/state':        # BULK: z2m up/down → mass_offline transfer
             on_bridge_state(payload)
         elif topic.endswith('/availability'):           # FAZA 2: z2m native availability (autorytet)
@@ -1287,6 +1245,7 @@ def run_gateway(log):
         elif topic.startswith(f'{STATE_PREFIX}/vio/') and topic.endswith('/press'):
             vid = topic.split('/')[2]
             log.info('VIO', f'🔘 VButton {vid} pressed (lokalny)')
+            mqtt.publish(f'{STATE_PREFIX}/vio/{vid}/pressed', '1')
 
     def on_lora(text):
         try:
