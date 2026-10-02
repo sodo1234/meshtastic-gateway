@@ -28,6 +28,7 @@ def test_startup_seed_nie_zalewa_lora():
     gd.disc, gd.log = _Disc(), None
     gd.states, gd.last_msg_ts = {}, {}
     gd._alive, gd._z2m_avail, gd._avail_pub, gd._a_sent = {}, {}, {}, {}
+    gd._zls, gd.last_seen_ts, gd.stale_online_s = {}, {}, 90000   # pola dodane 2026-10-01/02
     gd.active_fn = None
     sent = []
     gd._enqueue = lambda *a, **k: sent.append(a[0])
