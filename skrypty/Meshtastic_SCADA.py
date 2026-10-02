@@ -722,6 +722,7 @@ def run_gateway(log):
                           chunk_ack_timeout=30.0,
                           chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
                           chunk_retries=3,  # RTT pod obciążeniem ~60s, 30s toleruje
+                          window=CONFIG.get('transfer', {}).get('window', 1),   # 2026-10-02: okno z cack zbiorczym (1 = stop-and-wait)
                           arbiter=arbiter, accept_gw=gw_id)   # multi-gw: transfer cudzej bramki ignorowany (brak cack)
     # (a)+(d) MAPA i pełny sweep availability jako skompresowane bloby przez ReliableTransfer
     # (kind='devmap'/'avail') — zamiast 94 pkt `db` / ~33 pkt `b`/sweep. Kanał rt_* (osobny od cal_*).
@@ -1724,6 +1725,7 @@ def run_supervisor(log):
             log.warn('XFER', f'rt kind={kind} nieobsłużony (payload {type(payload).__name__})')
     rt = ReliableTransfer(send_fn=send_to_all, on_received=on_rt_received, logger=log,
                           chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
+                          window=CONFIG.get('transfer', {}).get('window', 1),
                           arbiter=arbiter, accept_gw=None)   # agreguj transfery wszystkich bramek
 
     # ANTY-FLOOD (2026-08-05): wszystkie trzy ścieżki ponawiania `disc` (note_hash,
