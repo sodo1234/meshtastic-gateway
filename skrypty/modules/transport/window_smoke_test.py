@@ -130,9 +130,9 @@ def test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju():
     a.hash_fn = lambda: {"dh": "d1", "sh": "s1", "ah": "a1"}
     assert a._end_frame("t", 1, "c", "G1", "dsnap")["hs"] == ["d1", "s1"]
     assert a._end_frame("t", 1, "c", "G1", "avail")["hs"] == ["d1", "s1"]
+    assert a._end_frame("t", 1, "c", "G1", "bdata")["hs"] == ["d1", "s1"]
     assert a._end_frame("t", 1, "c", "G1", "ansnap")["hs"] == ["", "", "a1"]
     assert "hs" not in a._end_frame("t", 1, "c", "G1", "devmap")
-    assert "hs" not in a._end_frame("t", 1, "c", "G1", "bdata")
     b = ReliableTransfer(lambda m: None)
     got = {}
     b.on_received = lambda gw, kind, p: got.update(hs=dict(b.last_hs.get(gw) or {}))
@@ -147,11 +147,89 @@ def test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju():
     print("✅ okno do window_max; hs per rodzaj; odbiorca tolerancyjny na czesciowe hs")
 
 
+def test_partial_cack_natychmiast_uruchamia_braki_i_hold_pokrywa_okno():
+    """Regresja v7: m=[...] nie moze czekac calego timeoutu ani zwalniac arbitra za wczesnie."""
+    sent, finished = [], threading.Event()
+    box = {'round': 0}
+    a = None
+
+    def send(msg):
+        sent.append(dict(msg))
+        if msg.get('t') == 'rt_chunk' and msg.get('w'):
+            box['round'] += 1
+            missing = [1] if box['round'] == 1 else []
+            a.handle_cack({'t': 'rt_cack', 'tid': msg['tid'], 's': msg['s'], 'm': missing})
+        elif msg.get('t') == 'rt_end':
+            a.handle_ack({'t': 'rt_ack', 'tid': msg['tid'], 'ok': 1, 'miss': []})
+            finished.set()
+
+    a = ReliableTransfer(send, chunk_size=50, chunk_delay=0.0, chunk_ack_timeout=4.0,
+                         window=4, window_gap=0.05)
+    a.serialize = lambda _p: 'x' * 200                    # dokladnie 4 chunki
+    t0 = time.time()
+    a.start_send('G1', 'devmap', {'x': 1})
+    assert finished.wait(3), 'partial CACK zostawil sender do timeoutu'
+    assert time.time() - t0 < 2.0, 'retry brakow nie byl natychmiastowy'
+    chunks = [m['s'] for m in sent if m.get('t') == 'rt_chunk']
+    assert chunks == [0, 1, 2, 3, 1], chunks
+
+    class _Arb:
+        def __init__(self): self.holds = []
+        def hold(self, seconds, owner=None): self.holds.append(seconds)
+    arb = _Arb()
+    r = ReliableTransfer(lambda _m: None, chunk_ack_timeout=30, hold_extra=60, arbiter=arb)
+    r._hold_channel(sender=True, wait_extra=42)
+    assert arb.holds[-1] >= 136, arb.holds
+    print("✅ partial CACK → retry od razu; hold obejmuje caly budzet okna")
+
+
+def test_hashe_devmap_param_i_calendar_bez_dodatkowych_ramek():
+    """Kazda sciezka niesie realny hash w payloadzie/confirm/ACK, bez osobnego pakietu."""
+    from modules.protocol.discovery import SupervisorDiscovery
+    from modules.params.manager import ParamSync
+    from modules.calendar.transfer import CalendarTransfer
+
+    class _HA:
+        def __getattr__(self, _name): return lambda *a, **kw: None
+    disc = SupervisorDiscovery(_HA())
+    devmap = {'hash': 'disc-real', 'dev_n': 1,
+              'devs': {'7': ['Temp 1', 'S', 't']}}
+    disc.handle_devmap('G1', devmap)
+    assert disc.gw_synced['G1'] == devmap['hash']
+    assert disc.gw_devn['G1'] == 1 and disc.is_complete('G1')
+
+    class _MQ:
+        def publish(self, *a, **kw): pass
+        def subscribe(self, *a, **kw): pass
+    frames = []
+    params = ParamSync('gateway', 'G1', _MQ(), frames.append, persist_path=None)
+    params.push_all()
+    assert frames[-1]['ph'] == params.params_hash()
+    assert len(json.dumps(frames[-1], separators=(',', ':')).encode()) <= 220
+
+    applied, acked, done = {}, {}, threading.Event()
+    tx = rx = None
+    tx = CalendarTransfer(lambda m: rx.dispatch(dict(m)), chunk_size=60, chunk_delay=0.0,
+                          chunk_ack_timeout=1.0,
+                          on_sent=lambda g, d, h: (acked.update(g=g, d=d, h=h), done.set()))
+    rx = CalendarTransfer(lambda m: tx.dispatch(dict(m)), chunk_size=60, chunk_delay=0.0,
+                          chunk_ack_timeout=1.0,
+                          on_received=lambda g, d, slots: applied.update(h='cal-real', slots=slots),
+                          ack_hash_fn=lambda _g, _d, _s: applied.get('h'))
+    slots = [[100, 30, 1]]
+    tx.start_send('G1', 'cal', slots)
+    assert done.wait(3), 'brak finalnego cal_ack'
+    assert applied['slots'] == slots and acked == {'g': 'G1', 'd': 'cal', 'h': 'cal-real'}
+    print("✅ devmap.hash + param_upd.ph + cal_ack.h po apply (zero dodatkowych ramek)")
+
+
 if __name__ == "__main__":
     tests = [test_okno_dochodzi_przy_stracie, test_okno_mniej_cackow, test_zgodnosc_ze_starym_koncem,
              test_hashe_nadawcy_na_koncu_transferu,
              test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end,
-             test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju]
+             test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju,
+             test_partial_cack_natychmiast_uruchamia_braki_i_hold_pokrywa_okno,
+             test_hashe_devmap_param_i_calendar_bez_dodatkowych_ramek]
     failed = 0
     for t in tests:
         try:

@@ -24,11 +24,15 @@ class CalendarTransfer:
     def __init__(self, send_fn, chunk_size=90, chunk_delay=3.0,
                  on_received=None, logger=None,
                  chunk_ack_timeout=12.0, chunk_retries=6, end_retries=4,
-                 arbiter=None, accept_gw=None):
+                 arbiter=None, accept_gw=None, ack_hash_fn=None, on_sent=None):
         self.send = send_fn              # callable(dict) → wyślij ramkę LoRa
         self.chunk_size = chunk_size
         self.chunk_delay = chunk_delay   # odstęp startowy / cooldown LoRa
         self.on_received = on_received   # callback(gw, direction, slots) po udanym odbiorze
+        # ack_hash_fn liczy hash REALNEGO stanu odbiorcy PO on_received. Jest doklejany do
+        # istniejacego cal_ack (zero dodatkowych ramek), a on_sent dostaje go u nadawcy.
+        self.ack_hash_fn = ack_hash_fn   # callback(gw, direction, slots) -> hash lub None
+        self.on_sent = on_sent           # callback(gw, direction, receiver_hash) po ACK ok=1
         self.log = logger
         self.chunk_ack_timeout = chunk_ack_timeout   # ile czekać na cal_cack zanim retransmit
         self.chunk_retries = chunk_retries           # ile retransmisji chunku
@@ -43,6 +47,7 @@ class CalendarTransfer:
         self.incoming = {}
         self.outgoing = {}
         self.completed = {}              # tid → ts ukończonych odbiorów (idempotentny re-ACK)
+        self.completed_ack = {}          # tid → pelny ACK (z hashem) do identycznego re-ACK
         self.lock = threading.Lock()
 
     def _hold_channel(self):
@@ -238,7 +243,6 @@ class CalendarTransfer:
                 self._log('warn', 'SYNC', f"⚠️ tid={tid} CRC mismatch")
                 self.send({"t": "cal_ack", "tid": tid, "ok": 0, "miss": []})
             return None
-        self.send({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})
         try:
             slots = self.deserialize(b64)
         except Exception as e:
@@ -246,7 +250,26 @@ class CalendarTransfer:
             return None
         self._log('info', 'SYNC', f"✅ Odebrano {len(slots)} slotów [{gw}] dir={direction}")
         if self.on_received:
-            self.on_received(gw, direction, slots)
+            try:
+                self.on_received(gw, direction, slots)
+            except Exception as e:
+                # Jak przed dodaniem hasha: poprawny CRC jest ACK-owany. Hash odbiorcy ponizej
+                # pozostanie stary, wiec zgodnosc nie zostanie falszywie ustawiona.
+                self._log('error', 'SYNC', f"on_received: {e}")
+        ack = {"t": "cal_ack", "tid": tid, "ok": 1, "miss": []}
+        if self.ack_hash_fn:
+            try:
+                receiver_hash = self.ack_hash_fn(gw, direction, slots)
+                if receiver_hash:
+                    ack['h'] = receiver_hash
+            except Exception as e:
+                self._log('debug', 'SYNC', f"ack_hash_fn: {e}")
+        with self.lock:
+            self.completed_ack[tid] = dict(ack)
+            for old in list(self.completed_ack):
+                if old not in self.completed:
+                    self.completed_ack.pop(old, None)
+        self.send(ack)
         return gw, direction, slots
 
     def handle_end(self, data):
@@ -280,7 +303,8 @@ class CalendarTransfer:
             # zginąć na RF, nadawca retransmituje cal_end → re-ACK idempotentnie (bez tego
             # master "rezygnuje" mimo że bramka odebrała i zapisała ICS).
             if done_before:
-                self.send({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})
+                self.send(dict(self.completed_ack.get(
+                    tid, {"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})))
             return None
         return self._try_finalize(tid, nack=True)
 
@@ -289,19 +313,28 @@ class CalendarTransfer:
         tid = data.get('tid')
         ok = data.get('ok', 0)
         miss = data.get('miss', [])
+        completed_info = None
         with self.lock:
             info = self.outgoing.get(tid)
             if not info:
                 return
             if ok == 1:
                 info['done'] = True
+                completed_info = (info.get('gw', '?'), info.get('dir', 'push'), data.get('h'))
                 self.outgoing.pop(tid, None)
                 self._log('info', 'SYNC', f"✅ ACK ok tid={tid}")
-                return
-            chunks = info['chunks']
-            crc = info.get('crc', '')
-            gw = info.get('gw', '?')
-            direction = info.get('dir', 'push')
+            else:
+                chunks = info['chunks']
+                crc = info.get('crc', '')
+                gw = info.get('gw', '?')
+                direction = info.get('dir', 'push')
+        if completed_info is not None:
+            if self.on_sent:
+                try:
+                    self.on_sent(*completed_info)
+                except Exception as e:
+                    self._log('error', 'SYNC', f"on_sent: {e}")
+            return
         self._log('warn', 'SYNC', f"🔁 NACK tid={tid} retransmit {miss}")
         for i in miss:
             if 0 <= i < len(chunks):

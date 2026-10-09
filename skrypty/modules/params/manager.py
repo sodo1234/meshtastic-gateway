@@ -252,7 +252,8 @@ class ParamSync:
     def _send_group(self, keys, label, target_gw=None):
         d = {k: self.values[k] for k in keys}
         if self.role == "gateway":                       # master → broadcast potwierdzonej prawdy
-            self.send({"t": "param_upd", "g": self.gw_id, "d": d})
+            self.send({"t": "param_upd", "g": self.gw_id, "d": d,
+                       "ph": self.params_hash()})
             if self.log:
                 self.log.info('PARAM', f"⚙️➡️ Send {label} (master→broadcast): {d}")
         else:                                            # mirror → proposal do KONKRETNEJ bramki (per-gw)
@@ -275,7 +276,8 @@ class ParamSync:
                     applied[key] = val
             if applied:
                 self._save(); self._publish_states()
-                self.send({"t": "param_upd", "g": self.gw_id, "d": applied})
+                self.send({"t": "param_upd", "g": self.gw_id, "d": applied,
+                           "ph": self.params_hash()})
                 if self.log:
                     self.log.info('PARAM', f"⚙️ proposal {applied} → zastosowano + confirm")
         elif self.role == "supervisor" and t == "param_upd":   # confirmed from gateway
@@ -294,7 +296,8 @@ class ParamSync:
     def push_all(self):
         """Gateway → broadcast confirmed full param set (startup / on request)."""
         if self.role == "gateway":
-            self.send({"t": "param_upd", "g": self.gw_id, "d": dict(self.values)})
+            self.send({"t": "param_upd", "g": self.gw_id, "d": dict(self.values),
+                       "ph": self.params_hash()})
             if self.log:
                 self.log.info('PARAM', f"⚙️ push_all → {self.values}")
 
