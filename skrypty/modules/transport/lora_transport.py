@@ -432,6 +432,15 @@ class LoraTransport:
                     time.sleep(self.tx_cooldown - gap)
             if job is None:
                 job = self._tx_queue.popleft()
+            # bramka slotu PO odstepie: odstep (cooldown) potrafi przesunac nadanie za koniec okna
+            while self.slot_gate is not None:
+                try:
+                    _w = self.slot_gate()
+                except Exception:
+                    _w = 0.0
+                if _w <= 0:
+                    break
+                time.sleep(min(_w, 1.0))
             text, target_label = job['text'], job.get('label')
             if target_label:
                 with self.lock: iface = self.interfaces.get(target_label)

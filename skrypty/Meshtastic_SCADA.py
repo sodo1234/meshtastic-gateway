@@ -736,6 +736,7 @@ def run_gateway(log):
                           chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
                           chunk_retries=3,  # RTT pod obciążeniem ~60s, 30s toleruje
                           window=CONFIG.get('transfer', {}).get('window', 1),   # 2026-10-02: okno z cack zbiorczym (1 = stop-and-wait)
+                          hold_extra=(slot.cycle if slot is not None else 0.0),   # slot: wysylka czeka na okno, hold nie moze wygasnac
                           arbiter=arbiter, accept_gw=gw_id)   # multi-gw: transfer cudzej bramki ignorowany (brak cack)
     # 2026-10-09: rt_end niesie biezace hashe bramki (dh/sh/ah) → supervisor liczy zgodnosc W CHWILI
     # konca transferu, a nie dopiero po nastepnym HB/pingu. HB zostaje kontrola dryfu.
