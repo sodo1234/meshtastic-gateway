@@ -724,6 +724,10 @@ def run_gateway(log):
                           chunk_retries=3,  # RTT pod obciążeniem ~60s, 30s toleruje
                           window=CONFIG.get('transfer', {}).get('window', 1),   # 2026-10-02: okno z cack zbiorczym (1 = stop-and-wait)
                           arbiter=arbiter, accept_gw=gw_id)   # multi-gw: transfer cudzej bramki ignorowany (brak cack)
+    # 2026-10-09: rt_end niesie biezace hashe bramki (dh/sh/ah) → supervisor liczy zgodnosc W CHWILI
+    # konca transferu, a nie dopiero po nastepnym HB/pingu. HB zostaje kontrola dryfu.
+    rt.hash_fn = lambda: {**_hb_hashes(),
+                          **({'ah': an_reconciler._last_hash} if an_reconciler._last_hash else {})}
     # (a)+(d) MAPA i pełny sweep availability jako skompresowane bloby przez ReliableTransfer
     # (kind='devmap'/'avail') — zamiast 94 pkt `db` / ~33 pkt `b`/sweep. Kanał rt_* (osobny od cal_*).
     discovery.map_send_fn = lambda payload: rt.start_send(gw_id, 'devmap', payload)
@@ -1723,6 +1727,31 @@ def run_supervisor(log):
             _reconcile_ansnap(gw, payload)
         else:
             log.warn('XFER', f'rt kind={kind} nieobsłużony (payload {type(payload).__name__})')
+        _zg_po_transferze(gw)
+
+    def _zg_po_transferze(gw):
+        """ZGODNOSC W CHWILI KONCA TRANSFERU (2026-10-09). Wczesniej flagi liczyl tylko handler HB/pong,
+        wiec po zakonczonym transferze dashboard pokazywal rozjazd az do nastepnego HB (kanal potrafi
+        go opoznic o kilka minut). Teraz nadawca dokleja do rt_end swoje biezace hashe (`hs`):
+        wpisujemy je do cache hashy bramki i oceniamy zgodnosc od razu. To REALNE hashe bramki, nie
+        zalozenie — niezgodnosc dalej wyjdzie jako ROZJAZD, a HB/ping zostaja kontrola dryfu."""
+        try:
+            hs = rt.last_hs.pop(gw, None)
+            hb = last_hb.get(gw)
+            if not hs or not hb:
+                return
+            c = gw_hb_hash.setdefault(gw, {})
+            for k in ('dh', 'ah'):
+                if hs.get(k):
+                    c[k] = hs[k]
+            if hs.get('dh'):
+                c['sh'] = hs.get('sh') or hs['dh']          # brak `sh` = rowny `dh` (patrz _hb_hashes)
+            if hs.get('ah'):
+                gw_ah_sync[gw] = (AnomalyReconciler.blob_hash(_sup_anom_rows(gw)) == hs['ah'])
+            d2 = {k: v for k, v in hb.items() if k not in _HB_HASH_KEYS}   # hashe z cache, nie ze starego HB
+            _eval_zg(gw, d2, False, get_sup_params(gw))
+        except Exception as e:
+            log.warn('XFER', f'zgodnosc po transferze [{gw}]: {e}')
     rt = ReliableTransfer(send_fn=send_to_all, on_received=on_rt_received, logger=log,
                           chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
                           window=CONFIG.get('transfer', {}).get('window', 1),
@@ -2552,6 +2581,109 @@ def run_supervisor(log):
     time_sync_guard = {}                                 # gw → ts ostatniego wysłanego sync (debounce)
     gw_last_up = {}                                       # #2: gw → ostatni uptime (wykrycie restartu bramki)
 
+    last_hb = {}                                         # gw → ostatni HB/pong (do ponownej oceny zgodnosci po transferze)
+
+    def _eval_zg(gw, d, hb_stale, psync):
+        """Zgodnosc bramka↔supervisor (flagi disc/param/cal/anom/dane) + push `zg` + topic /hashes.
+        Wolana z HB/pong ORAZ tuz po zakonczeniu transferu (hashe z rt_end → gw_hb_hash)."""
+        if gw:
+            def _mark(ok):
+                return 'zgodny ✅' if ok else 'ROZJAZD ⚠️'
+            _disc = _hb_val(gw, d, 'hash'); _param = _hb_val(gw, d, 'ph')
+            _cal = _hb_val(gw, d, 'cal'); _ah = _hb_val(gw, d, 'ah')
+            # RE-SYNC GUARD (C): sam hash kłamał — kafel pokazywał „zgodny ✅" przy mirrorze
+            # 78/194. Zgodność = hash ORAZ komplet urządzeń.
+            # NIEZNANE POLE = BEZ ZDANIA, NIE ROZJAZD (2026-09-17). `_fit` przycina ramke, a cache
+            # `merge_hb_hashes` startuje pusty po restarcie SUPERVISORA — przy HB co 900 s
+            # skompletowanie wszystkich szesciu hashy trwa kilkadziesiat minut. Wczesniej kazde
+            # jeszcze-nieznane pole dawalo False, czyli kafel swiecil sie na czerwono bez powodu.
+            # `_ah_ok` mial te obrone od dawna; tu wyrownujemy reszte do tej samej zasady.
+            # WYJATEK — RE-SYNC GUARD przy disc: sam hash potrafil klamac (kafel „zgodny ✅"
+            # przy mirrorze 78/194), wiec kompletnosc mapy sprawdzamy ZAWSZE, takze gdy hasha
+            # jeszcze nie znamy. Inaczej ta poprawka cofnelaby tamten fix.
+            _disc_ok = (bool(sup_disc.is_complete(gw)) if _disc == '--' else
+                        bool(_disc and _disc == sup_disc.gw_synced.get(gw)
+                             and sup_disc.is_complete(gw)))
+            _param_ok = True if _param == '--' else bool(psync is not None
+                                                         and _param == psync.params_hash())
+            _cal_ok = True if _cal == '--' else bool(_cal and _cal == expected_cal_hash.get(gw))
+            _ah_ok = bool(gw_ah_sync.get(gw)) if _ah != '--' else True
+            # 5. FLAGA — DANE (2026-08-03, decyzja usera). Hash stanu urządzeń (`dh`, B6) jest
+            # równorzędny z disc/param/cal/anom: odkąd binarne raportują tylko zdarzeniowo, to on
+            # pilnuje, że lustro nie rozjechało się po cichu. Bez flagi klient nie widzi rozjazdu,
+            # który system i tak sam naprawia blobem `dsnap` — a widzieć powinien.
+            def _sup_status_hash(_gw):
+                """Lustrzany odpowiednik `GatewayData.status_hash()` — ten sam wzór po stronie
+                supervisora: capy z lustra + REALNA dostępność z `dev_avail`. Pozwala pokazać,
+                czy status (w tym masowa zmiana o zmierzchu/świcie) jest zsynchronizowany,
+                a nie tylko czy zgadzają się wartości, które bramka zdążyła dowieźć (`dh`)."""
+                from modules.data import encode_short as _es, status_hash as _sh_fn
+                _items = []
+                for _dev, _f in (sup_data.state.get(_gw) or {}).items():
+                    _info = (sup_disc.devices(_gw) or {}).get(_dev) or {}
+                    _sid = _info.get('sid')
+                    if _sid is None or not sup_disc.allowed(_gw, _dev):
+                        continue
+                    _caps = {k: v for k, v in _f.items()
+                             if k in TYPE_CAPS.get(_info.get('type', 'sensor'), ())}
+                    _av = dev_avail.get((_gw, _dev), True)
+                    _items.append((_sid, _es(_caps, available=bool(_av), include_avail=True)))
+                return _sh_fn(_items)
+
+            _dh = _hb_val(gw, d, 'dh')
+            # 2026-08-26: na kafel idzie `sh` (hash stanu, KTÓRY BRAMKA ZNA) — `dh` po restarcie
+            # bramki stoi na 0 i wyglądał jak awaria. Zgodność lustra dalej liczymy z `dh`,
+            # bo to ono opisuje, co bramka faktycznie dowiozła.
+            _sh_raw = _hb_val(gw, d, 'sh')
+            _sh = _sh_raw if _sh_raw != '--' else _dh
+            _status_ok = bool(_sh and _sh != '--' and _sh == _sup_status_hash(gw))
+            # NAPRAWA ROZJAZDU STATUSU (2026-10-01). HB ma sufit 200 B i rotacyjnie gubi pola, wiec
+            # `dh` bywa nieobecny albo '0', a `sh` jedzie. Wtedy rozjazd lustra (np. dostepnosc po
+            # anulowanym transferze `avail`) NIE wywolywal zadnej naprawy — flaga Dane stala na
+            # ROZJAZD, bo jedyny wyzwalacz dsnap siedzial na `dh`. Teraz `sh` ≠ lustro tez prosi
+            # o dsnap (te same bramki: swiezy HB, kompletna mapa, brak transferu, debounce 300 s).
+            if (gw and not hb_stale and not _status_ok and _sh and _sh != '--'
+                    and _dh in ('0', '--', None, '')
+                    and sup_disc.is_complete(gw) and not sup_disc._xfer_busy(gw)
+                    and time.time() - dsnap_guard.get(gw, 0) > 300):
+                dsnap_guard[gw] = time.time()
+                log.info('DATA', f'🔄 {gw} rozjazd hasha statusu (sh {_sh}≠{_sup_status_hash(gw)}) → proszę o dsnap')
+                send_to_all({"t": "dsnap_req", "g": gw})
+            # `dh` = hash tego, co bramka DOWIOZLA. Wartosc '0' znaczy „nie dowiozlem jeszcze
+            # NICZEGO" — po restarcie bramki, albo gdy bramka nocna stoi w dzien i przekazniki
+            # sa bez napiecia (G1 carport: 0/78 online w dzien). To NIE jest rozjazd lustra,
+            # tylko brak dostaw, a mimo to flaga szla na ROZJAZD i zostawala tam CALY DZIEN
+            # (zgloszone 2026-09-17). Tak samo '--' = pole nigdy nie przyszlo.
+            # Wtedy o zgodnosci decyduje `sh` (co bramka WIE) vs lustro supervisora, czyli
+            # policzone juz obok `_status_ok`. To nie jest zluzowanie kryterium: `_status_ok`
+            # porownuje pelny status z dostepnoscia, wiec realny rozjazd nadal wychodzi.
+            if _dh == '--' and _sh == '--':
+                _data_ok = True                # nic jeszcze nie wiemy — bez zdania, nie rozjazd
+            elif _dh in ('0', '--'):
+                _data_ok = _status_ok
+            else:
+                _data_ok = bool(_dh == sup_data.state_hash(gw))
+            _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok and _data_ok
+            _zgv = ''.join('1' if f else '0'               # → sup_pong ORAZ push przy zmianie
+                           for f in (_disc_ok, _param_ok, _cal_ok, _ah_ok, _data_ok))
+            if gw_zg.get(gw) != _zgv:                      # PUSH tylko przy ZMIANIE — steady
+                gw_zg[gw] = _zgv                           # state = 0 ramek. Sam pong nie wystarcza:
+                send_to_all({"t": "zg", "g": gw, "z": _zgv})   # probe bramki pinguje TYLKO przy ciszy.
+                log.info('HB', f'🛡️ {gw}: zgodność {_zgv} → push do bramki')
+            mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes", json.dumps({
+                'disc': _disc, 'disc_ok': _mark(_disc_ok),
+                # RE-SYNC GUARD: ile urządzeń mam w mapie / ile bramka zgłasza w HB.
+                # „78/194" mówi od razu ile brakuje — bez zaglądania w log.
+                'disc_n': f"{len(sup_disc.devices(gw))}/{sup_disc.gw_devn.get(gw, '?')}",
+                'param': _param, 'param_ok': _mark(_param_ok),
+                'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok),
+                'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
+                'data': _sh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash STANU bramki (sh) + zgodność (dh)
+                'data_sent': _dh,                          # co bramka dowiozła (diagnostyka rozjazdu)
+                'status_ok': _mark(_status_ok),            # 2026-08-26: czy STATUS (z dostępnością) zsynchronizowany
+                'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
+                separators=(',', ':')), retain=True)
+
     def on_hb(d):
         gw = d.get('g'); sup_hb.handle_hb(d)
         # SPOZNIONY HB (2026-10-01): kanal LoRa z transferami potrafi dostarczyc HB z OPOZNIENIEM
@@ -2662,103 +2794,8 @@ def run_supervisor(log):
                     psync.request()
         # #9: KOMPLET hashy + zgodności w JEDNYM topicu (na końcu — wszystkie flagi policzone).
         # disc: gw_synced (mapa zarejestrowana), param: mirror, cal: expected, anomaly: gw_ah_sync.
-        if gw:
-            def _mark(ok):
-                return 'zgodny ✅' if ok else 'ROZJAZD ⚠️'
-            _disc = _hb_val(gw, d, 'hash'); _param = _hb_val(gw, d, 'ph')
-            _cal = _hb_val(gw, d, 'cal'); _ah = _hb_val(gw, d, 'ah')
-            # RE-SYNC GUARD (C): sam hash kłamał — kafel pokazywał „zgodny ✅" przy mirrorze
-            # 78/194. Zgodność = hash ORAZ komplet urządzeń.
-            # NIEZNANE POLE = BEZ ZDANIA, NIE ROZJAZD (2026-09-17). `_fit` przycina ramke, a cache
-            # `merge_hb_hashes` startuje pusty po restarcie SUPERVISORA — przy HB co 900 s
-            # skompletowanie wszystkich szesciu hashy trwa kilkadziesiat minut. Wczesniej kazde
-            # jeszcze-nieznane pole dawalo False, czyli kafel swiecil sie na czerwono bez powodu.
-            # `_ah_ok` mial te obrone od dawna; tu wyrownujemy reszte do tej samej zasady.
-            # WYJATEK — RE-SYNC GUARD przy disc: sam hash potrafil klamac (kafel „zgodny ✅"
-            # przy mirrorze 78/194), wiec kompletnosc mapy sprawdzamy ZAWSZE, takze gdy hasha
-            # jeszcze nie znamy. Inaczej ta poprawka cofnelaby tamten fix.
-            _disc_ok = (bool(sup_disc.is_complete(gw)) if _disc == '--' else
-                        bool(_disc and _disc == sup_disc.gw_synced.get(gw)
-                             and sup_disc.is_complete(gw)))
-            _param_ok = True if _param == '--' else bool(psync is not None
-                                                         and _param == psync.params_hash())
-            _cal_ok = True if _cal == '--' else bool(_cal and _cal == expected_cal_hash.get(gw))
-            _ah_ok = bool(gw_ah_sync.get(gw)) if _ah != '--' else True
-            # 5. FLAGA — DANE (2026-08-03, decyzja usera). Hash stanu urządzeń (`dh`, B6) jest
-            # równorzędny z disc/param/cal/anom: odkąd binarne raportują tylko zdarzeniowo, to on
-            # pilnuje, że lustro nie rozjechało się po cichu. Bez flagi klient nie widzi rozjazdu,
-            # który system i tak sam naprawia blobem `dsnap` — a widzieć powinien.
-            def _sup_status_hash(_gw):
-                """Lustrzany odpowiednik `GatewayData.status_hash()` — ten sam wzór po stronie
-                supervisora: capy z lustra + REALNA dostępność z `dev_avail`. Pozwala pokazać,
-                czy status (w tym masowa zmiana o zmierzchu/świcie) jest zsynchronizowany,
-                a nie tylko czy zgadzają się wartości, które bramka zdążyła dowieźć (`dh`)."""
-                from modules.data import encode_short as _es, status_hash as _sh_fn
-                _items = []
-                for _dev, _f in (sup_data.state.get(_gw) or {}).items():
-                    _info = (sup_disc.devices(_gw) or {}).get(_dev) or {}
-                    _sid = _info.get('sid')
-                    if _sid is None or not sup_disc.allowed(_gw, _dev):
-                        continue
-                    _caps = {k: v for k, v in _f.items()
-                             if k in TYPE_CAPS.get(_info.get('type', 'sensor'), ())}
-                    _av = dev_avail.get((_gw, _dev), True)
-                    _items.append((_sid, _es(_caps, available=bool(_av), include_avail=True)))
-                return _sh_fn(_items)
-
-            _dh = _hb_val(gw, d, 'dh')
-            # 2026-08-26: na kafel idzie `sh` (hash stanu, KTÓRY BRAMKA ZNA) — `dh` po restarcie
-            # bramki stoi na 0 i wyglądał jak awaria. Zgodność lustra dalej liczymy z `dh`,
-            # bo to ono opisuje, co bramka faktycznie dowiozła.
-            _sh_raw = _hb_val(gw, d, 'sh')
-            _sh = _sh_raw if _sh_raw != '--' else _dh
-            _status_ok = bool(_sh and _sh != '--' and _sh == _sup_status_hash(gw))
-            # NAPRAWA ROZJAZDU STATUSU (2026-10-01). HB ma sufit 200 B i rotacyjnie gubi pola, wiec
-            # `dh` bywa nieobecny albo '0', a `sh` jedzie. Wtedy rozjazd lustra (np. dostepnosc po
-            # anulowanym transferze `avail`) NIE wywolywal zadnej naprawy — flaga Dane stala na
-            # ROZJAZD, bo jedyny wyzwalacz dsnap siedzial na `dh`. Teraz `sh` ≠ lustro tez prosi
-            # o dsnap (te same bramki: swiezy HB, kompletna mapa, brak transferu, debounce 300 s).
-            if (gw and not hb_stale and not _status_ok and _sh and _sh != '--'
-                    and _dh in ('0', '--', None, '')
-                    and sup_disc.is_complete(gw) and not sup_disc._xfer_busy(gw)
-                    and time.time() - dsnap_guard.get(gw, 0) > 300):
-                dsnap_guard[gw] = time.time()
-                log.info('DATA', f'🔄 {gw} rozjazd hasha statusu (sh {_sh}≠{_sup_status_hash(gw)}) → proszę o dsnap')
-                send_to_all({"t": "dsnap_req", "g": gw})
-            # `dh` = hash tego, co bramka DOWIOZLA. Wartosc '0' znaczy „nie dowiozlem jeszcze
-            # NICZEGO" — po restarcie bramki, albo gdy bramka nocna stoi w dzien i przekazniki
-            # sa bez napiecia (G1 carport: 0/78 online w dzien). To NIE jest rozjazd lustra,
-            # tylko brak dostaw, a mimo to flaga szla na ROZJAZD i zostawala tam CALY DZIEN
-            # (zgloszone 2026-09-17). Tak samo '--' = pole nigdy nie przyszlo.
-            # Wtedy o zgodnosci decyduje `sh` (co bramka WIE) vs lustro supervisora, czyli
-            # policzone juz obok `_status_ok`. To nie jest zluzowanie kryterium: `_status_ok`
-            # porownuje pelny status z dostepnoscia, wiec realny rozjazd nadal wychodzi.
-            if _dh == '--' and _sh == '--':
-                _data_ok = True                # nic jeszcze nie wiemy — bez zdania, nie rozjazd
-            elif _dh in ('0', '--'):
-                _data_ok = _status_ok
-            else:
-                _data_ok = bool(_dh == sup_data.state_hash(gw))
-            _all_ok = _disc_ok and _param_ok and _cal_ok and _ah_ok and _data_ok
-            _zgv = ''.join('1' if f else '0'               # → sup_pong ORAZ push przy zmianie
-                           for f in (_disc_ok, _param_ok, _cal_ok, _ah_ok, _data_ok))
-            if gw_zg.get(gw) != _zgv:                      # PUSH tylko przy ZMIANIE — steady
-                gw_zg[gw] = _zgv                           # state = 0 ramek. Sam pong nie wystarcza:
-                send_to_all({"t": "zg", "g": gw, "z": _zgv})   # probe bramki pinguje TYLKO przy ciszy.
-                log.info('HB', f'🛡️ {gw}: zgodność {_zgv} → push do bramki')
-            mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes", json.dumps({
-                'disc': _disc, 'disc_ok': _mark(_disc_ok),
-                # RE-SYNC GUARD: ile urządzeń mam w mapie / ile bramka zgłasza w HB.
-                # „78/194" mówi od razu ile brakuje — bez zaglądania w log.
-                'disc_n': f"{len(sup_disc.devices(gw))}/{sup_disc.gw_devn.get(gw, '?')}",
-                'param': _param, 'param_ok': _mark(_param_ok),
-                'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok),
-                'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
-                'data': _sh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash STANU bramki (sh) + zgodność (dh)
-                'data_sent': _dh,                          # co bramka dowiozła (diagnostyka rozjazdu)
-                'status_ok': _mark(_status_ok),            # 2026-08-26: czy STATUS (z dostępnością) zsynchronizowany
-                'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
-                separators=(',', ':')), retain=True)
+        last_hb[gw] = d if gw else None
+        _eval_zg(gw, d, hb_stale, psync)
     dispatcher.register('hb', on_hb)
     dispatcher.register('pong', on_hb)
     dispatcher.register('disc_meta', sup_disc.handle_disc_meta)

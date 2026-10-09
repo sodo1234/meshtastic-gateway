@@ -54,6 +54,12 @@ class ReliableTransfer:
         #           IGNORUJEMY całkowicie: brak cack (żeby nie kłamać ACK nadawcy) i brak apply.
         self.accept_gw = accept_gw
         self._foreign = set()                # tid transferów NIE dla nas (z *_begin/*_end)
+        # HASHE NA KONCU TRANSFERU (2026-10-09): nadawca dokleja do rt_end swoje biezace hashe stanu
+        # (`hash_fn()` → {'dh':..,'sh':..,'ah':..}), a odbiorca odklada je w `last_hs[gw]` tuz przed
+        # on_received. Dzieki temu zgodnosc mozna policzyc w chwili zakonczenia transferu, a nie dopiero
+        # po kolejnym HB/pingu (HB zostaje kontrola dryfu). Brak hash_fn = zachowanie jak dotad.
+        self.hash_fn = None
+        self.last_hs = {}
         self.incoming = {}
         self.outgoing = {}
         self.completed = {}                  # tid → ts (idempotentny re-ACK)
@@ -124,6 +130,17 @@ class ReliableTransfer:
                 return max(1, int(f.read().strip()))
         except Exception:
             return self.window
+
+    def _end_frame(self, tid, n, crc, gw, kind):
+        f = {"t": f"{self.p}_end", "tid": tid, "n": n, "crc": crc, "g": gw, "kind": kind}
+        if self.hash_fn is not None:
+            try:
+                hs = self.hash_fn()
+                if hs:
+                    f["hs"] = hs
+            except Exception as e:
+                self._log('debug', 'XFER', f"hash_fn: {e}")
+        return f
 
     def start_send(self, gw, kind, payload):
         win = self._window_now()
@@ -219,8 +236,7 @@ class ReliableTransfer:
                         return
             for attempt in range(self.end_retries):
                 self._hold_channel()
-                self.send({"t": f"{self.p}_end", "tid": tid, "n": len(chunks),
-                           "crc": crc, "g": gw, "kind": kind})
+                self.send(self._end_frame(tid, len(chunks), crc, gw, kind))
                 res = _wait_flag(lambda inf: inf.get('done'))
                 if res is None or res:
                     return
@@ -329,7 +345,7 @@ class ReliableTransfer:
             self._log('warn', 'XFER', f"⚠️ tid={tid} brakujące chunki: {missing[:5]}")
             with self.lock:
                 self.incoming[tid]['ts'] = time.time()
-            self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 0, "miss": missing[:5]})
+            self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 0, "miss": missing[:8]})
             return None
         b64 = ''.join(info['chunks'][i] for i in range(info['total']))
         if self.crc16(b64) != info['crc']:
@@ -352,6 +368,8 @@ class ReliableTransfer:
             return None
         n = len(payload) if hasattr(payload, '__len__') else '?'
         self._log('info', 'XFER', f"✅ Odebrano kind={info['kind']} [{info['gw']}] ({n} elem.)")
+        if isinstance(data.get('hs'), dict):
+            self.last_hs[info['gw']] = data['hs']        # hashe nadawcy z chwili konca transferu
         if self.on_received:
             try:
                 self.on_received(info['gw'], info['kind'], payload)
@@ -380,8 +398,7 @@ class ReliableTransfer:
         for i in miss:
             if 0 <= i < len(chunks):
                 self.send({"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunks[i]})
-        self.send({"t": f"{self.p}_end", "tid": tid, "n": len(chunks),
-                   "crc": crc, "g": gw, "kind": kind})
+        self.send(self._end_frame(tid, len(chunks), crc, gw, kind))
 
     # ── router (rejestruj w dispatcherze: rt_begin/chunk/end/ack/cack) ──
     def dispatch(self, data):
