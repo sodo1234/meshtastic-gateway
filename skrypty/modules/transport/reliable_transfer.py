@@ -141,6 +141,13 @@ class ReliableTransfer:
     def crc16(data):
         return hashlib.md5(data.encode()).hexdigest()[:4]
 
+    @staticmethod
+    def _with_g(frame, gw):
+        """Attach a concrete transfer gateway; leave legacy/global unknowns unaddressed."""
+        if gw not in (None, '', '?'):
+            frame['g'] = gw
+        return frame
+
     def _log(self, lvl, tag, msg):
         if self.log:
             getattr(self.log, lvl, self.log.info)(tag, msg)
@@ -219,7 +226,8 @@ class ReliableTransfer:
                     ok = False
                     for attempt in range(self.chunk_retries + 1):
                         self._hold_channel(sender=True)             # kanał należy do transferu (wolumen b/ab czeka)
-                        self._tx({"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunk})
+                        self._tx({"t": f"{self.p}_chunk", "tid": tid, "g": gw,
+                                  "s": i, "d": chunk})
                         res = _wait_flag(lambda inf: i in inf['acked'])
                         if res is None:
                             return
@@ -252,7 +260,8 @@ class ReliableTransfer:
                     wait_extra = self.window_gap * len(paczka)
                     for k, i in enumerate(paczka):
                         self._hold_channel(sender=True, wait_extra=wait_extra)
-                        m = {"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunks[i]}
+                        m = {"t": f"{self.p}_chunk", "tid": tid, "g": gw,
+                             "s": i, "d": chunks[i]}
                         if k == len(paczka) - 1:
                             m["w"] = 1                   # koniec okna → odbiorca odpowiada cack zbiorczym
                         self._tx(m)
@@ -334,6 +343,9 @@ class ReliableTransfer:
         m = data.get('m')
         with self.lock:
             info = self.outgoing.get(tid)
+            if (info is not None and data.get('g') is not None
+                    and data.get('g') != info.get('gw')):
+                return
             if info is not None and s is not None:
                 if m is None:
                     info['acked'].add(s)                 # cack pojedynczy (stary tryb / stary odbiorca)
@@ -360,24 +372,34 @@ class ReliableTransfer:
         tid = data.get('tid')
         s = data.get('s', 0)
         self._hold_channel(tid)
+        if (self.accept_gw is not None and data.get('g') is not None
+                and data.get('g') != self.accept_gw):
+            self._note_foreign(tid)
+            return
         if tid in self._foreign:
             return                           # cudzy transfer → NIE cack (unikamy fałszywego ACK nadawcy)
         with self.lock:
             if tid not in self.incoming:
                 # begin zgubiony na RF → odtwórz z chunku-sieroty (kind/total/crc z rt_end)
                 self.incoming[tid] = {'chunks': {}, 'total': None, 'crc': None,
-                                      'gw': '?', 'kind': '?', 'ts': time.time(), 'no_begin': True}
+                                      'gw': data.get('g', '?'), 'kind': '?',
+                                      'ts': time.time(), 'no_begin': True}
                 self._log('warn', 'XFER', f"⚠️ chunk {s} tid={tid} bez rt_begin (zgubiony) → odtwarzam z rt_end")
+            elif self.incoming[tid].get('gw', '?') == '?' and data.get('g'):
+                self.incoming[tid]['gw'] = data['g']
             self.incoming[tid]['chunks'][s] = data.get('d', '')
             self.incoming[tid]['ts'] = time.time()
             win = self.incoming[tid].get('win', 1)
             have = self.incoming[tid]['chunks']
             brak = [i for i in range(s + 1) if i not in have]
+            reply_gw = self.incoming[tid].get('gw')
         if win > 1:
             if data.get('w'):                            # koniec okna → jeden cack zbiorczy z lista brakujacych
-                self.send({"t": f"{self.p}_cack", "tid": tid, "s": s, "m": brak})
+                self.send(self._with_g(
+                    {"t": f"{self.p}_cack", "tid": tid, "s": s, "m": brak}, reply_gw))
             return                                       # chunki w srodku okna: cisza (oszczednosc lacza)
-        self.send({"t": f"{self.p}_cack", "tid": tid, "s": s})    # per-chunk ACK (idempotentny, niezawodność)
+        self.send(self._with_g(
+            {"t": f"{self.p}_cack", "tid": tid, "s": s}, reply_gw))  # per-chunk ACK
 
     def handle_end(self, data):
         tid = data.get('tid')
@@ -397,7 +419,8 @@ class ReliableTransfer:
                 self.incoming[tid] = info
         if not info:
             if done_before:
-                self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 1, "miss": []})
+                self.send(self._with_g(
+                    {"t": f"{self.p}_ack", "tid": tid, "ok": 1, "miss": []}, data.get('g')))
             return None
         if info.get('total') is None:
             info['total'] = data.get('n', 0)
@@ -411,14 +434,18 @@ class ReliableTransfer:
             self._log('warn', 'XFER', f"⚠️ tid={tid} brakujące chunki: {missing[:5]}")
             with self.lock:
                 self.incoming[tid]['ts'] = time.time()
-            self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 0, "miss": missing[:8]})
+            self.send(self._with_g(
+                {"t": f"{self.p}_ack", "tid": tid, "ok": 0, "miss": missing[:8]},
+                info.get('gw') or data.get('g')))
             return None
         b64 = ''.join(info['chunks'][i] for i in range(info['total']))
         if self.crc16(b64) != info['crc']:
             self._log('warn', 'XFER', f"⚠️ tid={tid} CRC mismatch")
             with self.lock:
                 self.incoming[tid]['ts'] = time.time()
-            self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 0, "miss": []})
+            self.send(self._with_g(
+                {"t": f"{self.p}_ack", "tid": tid, "ok": 0, "miss": []},
+                info.get('gw') or data.get('g')))
             return None
         with self.lock:
             self.incoming.pop(tid, None)
@@ -426,7 +453,9 @@ class ReliableTransfer:
             if len(self.completed) > 32:
                 for old in sorted(self.completed, key=self.completed.get)[:-16]:
                     self.completed.pop(old, None)
-        self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 1, "miss": []})
+        self.send(self._with_g(
+            {"t": f"{self.p}_ack", "tid": tid, "ok": 1, "miss": []},
+            info.get('gw') or data.get('g')))
         if self.arbiter is not None:
             self.arbiter.release(tid)                     # koniec odbioru → b/ab/hb moga isc (hold nie wisi ~94 s)
         try:
@@ -456,6 +485,8 @@ class ReliableTransfer:
             info = self.outgoing.get(tid)
             if not info:
                 return
+            if data.get('g') is not None and data.get('g') != info.get('gw'):
+                return
             if ok == 1:
                 info['done'] = True
                 self.outgoing.pop(tid, None)
@@ -465,7 +496,8 @@ class ReliableTransfer:
         self._log('warn', 'XFER', f"🔁 NACK tid={tid} retransmit {miss}")
         for i in miss:
             if 0 <= i < len(chunks):
-                self.send({"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunks[i]})
+                self.send({"t": f"{self.p}_chunk", "tid": tid, "g": info.get('gw'),
+                           "s": i, "d": chunks[i]})
         with self.lock:                                   # rt_end wysyla WYLACZNIE petla _tx_body (po chunkach)
             inf = self.outgoing.get(tid)
             if inf is not None:
