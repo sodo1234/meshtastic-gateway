@@ -447,9 +447,21 @@ class LoraTransport:
             else:
                 self._tx_broadcast(text)
             self._last_tx = time.monotonic()      # F3: znacznik do min-spacingu następnego TX
+            self._air_log(job['text'])             # moment FAKTYCZNEGO nadania (log TX jest przy wstawieniu do kolejki)
             _e = job.get('evt')
             if _e is not None:
                 _e.set()                          # nadawca (ReliableTransfer) liczy timeout ACK od TEJ chwili
+
+    def _air_log(self, text):
+        """Osobny plik /tmp/lora_air.log: czas faktycznego nadania + typ + rozmiar. Sluzy do weryfikacji slotow i
+        odstepu 3 s (log glowny pokazuje czas wstawienia do kolejki, nie czas anteny). Bez spamu w logu glownym."""
+        try:
+            now = time.time()
+            tt = text[6:text.index('"', 6)] if text.startswith('{"t":"') else '?'
+            with open('/tmp/lora_air.log', 'a', encoding='utf-8') as f:
+                f.write(time.strftime('%H:%M:%S', time.localtime(now)) + ('.%03d %s %d' % (int((now % 1) * 1000), tt, len(text.encode('utf-8')))) + chr(10))
+        except Exception:
+            pass
 
     def _tx_broadcast(self, text):
         with self.lock: ifaces = list(self.interfaces.items())

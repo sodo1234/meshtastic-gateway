@@ -17,6 +17,7 @@ try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
 from modules.transport.reliable_transfer import ReliableTransfer
+from modules.transport.dispatcher import Dispatcher
 
 
 def _payload():
@@ -223,13 +224,80 @@ def test_hashe_devmap_param_i_calendar_bez_dodatkowych_ramek():
     print("✅ devmap.hash + param_upd.ph + cal_ack.h po apply (zero dodatkowych ramek)")
 
 
+def test_wszystkie_ramki_transferow_naleza_do_bramki():
+    """Begin/chunk/end and every reply must carry the transfer gateway."""
+    from modules.calendar.transfer import CalendarTransfer
+
+    rt_frames, rt_done = [], threading.Event()
+    rt_tx = rt_rx = None
+
+    def rt_to_rx(msg):
+        rt_frames.append(dict(msg)); rt_rx.dispatch(dict(msg))
+
+    def rt_to_tx(msg):
+        rt_frames.append(dict(msg)); rt_tx.dispatch(dict(msg))
+
+    rt_tx = ReliableTransfer(rt_to_rx, chunk_size=60, chunk_delay=0.0,
+                             chunk_ack_timeout=1.0)
+    rt_rx = ReliableTransfer(rt_to_tx, chunk_size=60, chunk_delay=0.0,
+                             chunk_ack_timeout=1.0,
+                             on_received=lambda *_: rt_done.set())
+    small_payload = {'devs': dict(list(_payload()['devs'].items())[:20])}
+    rt_tx.start_send('G1', 'devmap', small_payload)
+    assert rt_done.wait(10), 'rt transfer nie doszedl'
+    assert rt_frames and all(f.get('g') == 'G1' for f in rt_frames), rt_frames
+    assert all(len(f.get('d', '')) <= 60 for f in rt_frames if f['t'] == 'rt_chunk')
+    assert all(len(json.dumps(f, separators=(',', ':')).encode()) <= 220 for f in rt_frames)
+    orphan = []
+    ReliableTransfer(orphan.append).handle_chunk(
+        {'t': 'rt_chunk', 'tid': 'orphan-g', 'g': 'G1', 's': 0, 'd': 'x'})
+    ReliableTransfer(orphan.append).handle_chunk(
+        {'t': 'rt_chunk', 'tid': 'orphan-legacy', 's': 0, 'd': 'x'})
+    assert orphan[-2].get('g') == 'G1' and 'g' not in orphan[-1], orphan
+
+    cal_frames, cal_done = [], threading.Event()
+    cal_tx = cal_rx = None
+
+    def cal_to_rx(msg):
+        cal_frames.append(dict(msg)); cal_rx.dispatch(dict(msg))
+
+    def cal_to_tx(msg):
+        cal_frames.append(dict(msg)); cal_tx.dispatch(dict(msg))
+
+    cal_tx = CalendarTransfer(cal_to_rx, chunk_size=60, chunk_delay=0.0,
+                              chunk_ack_timeout=1.0,
+                              on_sent=lambda *_: cal_done.set())
+    cal_rx = CalendarTransfer(cal_to_tx, chunk_size=60, chunk_delay=0.0,
+                              chunk_ack_timeout=1.0)
+    cal_tx.start_send('G1', 'cal', [[100, 30, 1], [200, 45, 2]])
+    assert cal_done.wait(10), 'calendar transfer nie doszedl'
+    assert cal_frames and all(f.get('g') == 'G1' for f in cal_frames), cal_frames
+    assert all(len(f.get('d', '')) <= 60 for f in cal_frames if f['t'] == 'cal_chunk')
+    assert all(len(json.dumps(f, separators=(',', ':')).encode()) <= 220 for f in cal_frames)
+    print("✅ wszystkie ramki rt_*/cal_* maja g; chunk_size i limit 220 B zachowane")
+
+
+def test_dispatcher_bramki_odrzuca_obce_g_i_zachowuje_globalne():
+    seen = []
+    d = Dispatcher(gateway_id='G1')
+    d.register('ping', lambda msg: seen.append(msg.get('g')))
+    d.dispatch({'t': 'ping', 'g': 'G2'})
+    d.dispatch({'t': 'ping', 'g': 'G1'})
+    d.dispatch({'t': 'ping'})
+    assert seen == ['G1', None], seen
+    assert d.foreign_dropped == 1
+    print("✅ dispatcher G1 odrzuca g=G2; przepuszcza g=G1 i ramke globalna bez g")
+
+
 if __name__ == "__main__":
     tests = [test_okno_dochodzi_przy_stracie, test_okno_mniej_cackow, test_zgodnosc_ze_starym_koncem,
              test_hashe_nadawcy_na_koncu_transferu,
              test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end,
              test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju,
              test_partial_cack_natychmiast_uruchamia_braki_i_hold_pokrywa_okno,
-             test_hashe_devmap_param_i_calendar_bez_dodatkowych_ramek]
+             test_hashe_devmap_param_i_calendar_bez_dodatkowych_ramek,
+             test_wszystkie_ramki_transferow_naleza_do_bramki,
+             test_dispatcher_bramki_odrzuca_obce_g_i_zachowuje_globalne]
     failed = 0
     for t in tests:
         try:

@@ -520,7 +520,7 @@ def run_gateway(log):
     # stagnację, zalewając listy anomalii alarmami o sprzęcie, którego nikt nie obsługuje.
     # Filtr działa U ŹRÓDŁA (silniki offline/stagnacja), więc urządzenia nie wchodzą do zbiorów
     # anomalii → nie ma ich ani w hashu `oh`, ani w dump_anom, ani u supervisora.
-    # Anomalie baterii/temp/wilgoci celowo ZOSTAJĄ — user wykluczył wyłącznie offline i stagnację.
+    # 2026-10-09: lista wyklucza WSZYSTKIE typy anomalii (offline, stagnacja, bateria, temp/wilgoc, alarmy).
     _no_anom_pat = list(an_cfg.get('no_anomaly', []))
 
     _skip_logged = []                     # jednorazowy log PO zapełnieniu discovery
@@ -620,7 +620,8 @@ def run_gateway(log):
         get_battery=lambda dev: data.states.get(dev, {}).get('battery'),
         emit=anomaly_batcher.add,
         get_thresholds=lambda: (param_sync.get('BL'), param_sync.get('BC')),  # progi z dashboardu (live)
-        logger=log, check_interval=an_cfg.get('battery_check', 300))
+        logger=log, check_interval=an_cfg.get('battery_check', 300),
+        skip_dev=_skip_anom)                             # anomaly.no_anomaly: wszystkie typy anomalii
 
     # STEP 5 (krok 14): temp/hum high/low dla WSZYSTKICH urządzeń bramki (override usera 2026-06-25)
     temphum_mon = TempHumMonitor(
@@ -630,7 +631,8 @@ def run_gateway(log):
         get_thresholds=lambda: {                              # progi z dashboardu (live, bez restartu)
             'temp_low': param_sync.get('TL'), 'temp_high': param_sync.get('TH'),
             'hum_low': param_sync.get('HL'), 'hum_high': param_sync.get('HH')},
-        logger=log, check_interval=an_cfg.get('temphum_check', 60))
+        logger=log, check_interval=an_cfg.get('temphum_check', 60),
+        skip_dev=_skip_anom)
 
     # ZALANIE/DYM (2026-07-30): silnika NIE BYŁO — kody `wl`/`sk` istniały tylko w mapach etykiet,
     # więc zalanie jechało wyłącznie jako stan urządzenia i nie trafiało do liczników/list/popupu.
@@ -640,7 +642,8 @@ def run_gateway(log):
         gw_id, discovery,
         get_state=lambda dev: data.states.get(dev, {}),
         emit=anomaly_batcher.add,
-        logger=log, check_interval=an_cfg.get('alarm_check', 10))
+        logger=log, check_interval=an_cfg.get('alarm_check', 10),
+        skip_dev=_skip_anom)
 
     # STEP 5: stagnacja ALL devices, emit przez batcher (zamiast bezpośredniego `ab`)
     stagnation = StagnationEngine(
@@ -853,7 +856,7 @@ def run_gateway(log):
         cal_transfer.start_send(gw_id, 'gw_push', compact)
 
     # ── Dispatcher (LoRa RX from supervisor) ──
-    dispatcher = Dispatcher(logger=log)
+    dispatcher = Dispatcher(logger=log, gateway_id=gw_id)
     dispatcher.register('ping', lambda d: for_me(d) and heartbeat.handle_ping(d))  # multi-gw: ignoruj ping cudzej bramki
 
     def handle_disc_request(d):

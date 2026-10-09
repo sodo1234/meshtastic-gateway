@@ -23,8 +23,9 @@ class TempHumMonitor:
     _ICON = {"high": "🔺", "low": "🔻", "ok": "✅"}
 
     def __init__(self, gw_id, discovery, get_state, emit, get_thresholds,
-                 logger=None, check_interval=60):
+                 logger=None, check_interval=60, skip_dev=None):
         self.gw_id = gw_id
+        self.skip_dev = skip_dev         # callable(dev) → True = urzadzenie wykluczone z anomalii (config anomaly.no_anomaly)
         self.disc = discovery            # GatewayDiscovery (is_monitored, short_ids, devices)
         self.get_state = get_state       # callable(dev) → dict (GatewayData.states[dev])
         self.emit = emit                 # callable(sid, code, value)
@@ -63,6 +64,8 @@ class TempHumMonitor:
     def check(self):
         thr = self.get_thresholds() or {}
         for dev in list(self.disc.devices.keys()):   # WSZYSTKIE urządzenia bramki (nie tylko monitored)
+            if self.skip_dev and self.skip_dev(dev):
+                continue
             st = self.get_state(dev) or {}
             sid = self.disc.short_ids.get(dev)
             if sid is None:

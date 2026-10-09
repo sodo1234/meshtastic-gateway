@@ -77,6 +77,13 @@ class CalendarTransfer:
     def crc16(data):
         return hashlib.md5(data.encode()).hexdigest()[:4]
 
+    @staticmethod
+    def _with_g(frame, gw):
+        """Attach a concrete transfer gateway; leave legacy/global unknowns unaddressed."""
+        if gw not in (None, '', '?'):
+            frame['g'] = gw
+        return frame
+
     def _log(self, lvl, tag, msg):
         if self.log:
             getattr(self.log, lvl, self.log.info)(tag, msg)
@@ -113,7 +120,8 @@ class CalendarTransfer:
                 ok = False
                 for attempt in range(self.chunk_retries + 1):
                     self._hold_channel()             # kanał należy do transferu (wolumen b/ab czeka)
-                    self.send({"t": "cal_chunk", "tid": tid, "s": i, "d": chunk})
+                    self.send({"t": "cal_chunk", "tid": tid, "g": gw,
+                               "s": i, "d": chunk})
                     res = _wait_flag(lambda inf: i in inf['acked'])
                     if res is None:
                         return
@@ -167,6 +175,9 @@ class CalendarTransfer:
         s = data.get('s')
         with self.lock:
             info = self.outgoing.get(tid)
+            if (info is not None and data.get('g') is not None
+                    and data.get('g') != info.get('gw')):
+                return
             if info is not None and s is not None:
                 info['acked'].add(s)
 
@@ -188,6 +199,10 @@ class CalendarTransfer:
         tid = data.get('tid')
         s = data.get('s', 0)
         self._hold_channel()
+        if (self.accept_gw is not None and data.get('g') is not None
+                and data.get('g') != self.accept_gw):
+            self._note_foreign(tid)
+            return
         if tid in self._foreign:
             return                           # cudzy kalendarz → NIE cack (unikamy fałszywego ACK)
         with self.lock:
@@ -196,13 +211,16 @@ class CalendarTransfer:
                 # total/crc/gw/dir uzupełni cal_end (niesie je redundantnie). Bez tego
                 # chunk byłby porzucony, a cal_cack i tak wysłany = nadawca myśli że dotarł.
                 self.incoming[tid] = {'chunks': {}, 'total': None, 'crc': None,
-                                      'gw': '?', 'dir': 'push', 'ts': time.time(),
+                                      'gw': data.get('g', '?'), 'dir': 'push', 'ts': time.time(),
                                       'no_begin': True}
                 self._log('warn', 'SYNC', f"⚠️ chunk {s} tid={tid} bez cal_begin (zgubiony na RF) → odtwarzam z cal_end")
+            elif self.incoming[tid].get('gw', '?') == '?' and data.get('g'):
+                self.incoming[tid]['gw'] = data['g']
             self.incoming[tid]['chunks'][s] = data.get('d', '')
             self.incoming[tid]['ts'] = time.time()
+            reply_gw = self.incoming[tid].get('gw')
         # PER-CHUNK ACK — potwierdź odbiór tego chunku (idempotentnie, też dla retransmisji)
-        self.send({"t": "cal_cack", "tid": tid, "s": s})
+        self.send(self._with_g({"t": "cal_cack", "tid": tid, "s": s}, reply_gw))
         # Znamy total (cal_begin dotarł) i to był ostatni brakujący chunk → finalizuj OD RAZU,
         # bez czekania na cal_end. cal_end to najbardziej kruchy pakiet (wysyłany pojedynczo);
         # gdy ginie na RF, odbiorca z kompletem danych utykał i NIE aktualizował hasha →
@@ -236,12 +254,14 @@ class CalendarTransfer:
         if missing:
             if nack:
                 self._log('warn', 'SYNC', f"⚠️ tid={tid} brakujące chunki: {missing[:5]}")
-                self.send({"t": "cal_ack", "tid": tid, "ok": 0, "miss": missing[:5]})
+                self.send(self._with_g(
+                    {"t": "cal_ack", "tid": tid, "ok": 0, "miss": missing[:5]}, gw))
             return None
         if not crc_ok:
             if nack:
                 self._log('warn', 'SYNC', f"⚠️ tid={tid} CRC mismatch")
-                self.send({"t": "cal_ack", "tid": tid, "ok": 0, "miss": []})
+                self.send(self._with_g(
+                    {"t": "cal_ack", "tid": tid, "ok": 0, "miss": []}, gw))
             return None
         try:
             slots = self.deserialize(b64)
@@ -256,7 +276,7 @@ class CalendarTransfer:
                 # Jak przed dodaniem hasha: poprawny CRC jest ACK-owany. Hash odbiorcy ponizej
                 # pozostanie stary, wiec zgodnosc nie zostanie falszywie ustawiona.
                 self._log('error', 'SYNC', f"on_received: {e}")
-        ack = {"t": "cal_ack", "tid": tid, "ok": 1, "miss": []}
+        ack = self._with_g({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []}, gw)
         if self.ack_hash_fn:
             try:
                 receiver_hash = self.ack_hash_fn(gw, direction, slots)
@@ -303,8 +323,9 @@ class CalendarTransfer:
             # zginąć na RF, nadawca retransmituje cal_end → re-ACK idempotentnie (bez tego
             # master "rezygnuje" mimo że bramka odebrała i zapisała ICS).
             if done_before:
-                self.send(dict(self.completed_ack.get(
-                    tid, {"t": "cal_ack", "tid": tid, "ok": 1, "miss": []})))
+                fallback = self._with_g(
+                    {"t": "cal_ack", "tid": tid, "ok": 1, "miss": []}, data.get('g'))
+                self.send(dict(self.completed_ack.get(tid, fallback)))
             return None
         return self._try_finalize(tid, nack=True)
 
@@ -317,6 +338,8 @@ class CalendarTransfer:
         with self.lock:
             info = self.outgoing.get(tid)
             if not info:
+                return
+            if data.get('g') is not None and data.get('g') != info.get('gw'):
                 return
             if ok == 1:
                 info['done'] = True
@@ -338,7 +361,8 @@ class CalendarTransfer:
         self._log('warn', 'SYNC', f"🔁 NACK tid={tid} retransmit {miss}")
         for i in miss:
             if 0 <= i < len(chunks):
-                self.send({"t": "cal_chunk", "tid": tid, "s": i, "d": chunks[i]})
+                self.send({"t": "cal_chunk", "tid": tid, "g": gw,
+                           "s": i, "d": chunks[i]})
         self.send({"t": "cal_end", "tid": tid, "n": len(chunks),
                    "crc": crc, "g": gw, "dir": direction})
 

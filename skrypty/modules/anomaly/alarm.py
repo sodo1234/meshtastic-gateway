@@ -27,8 +27,9 @@ class AlarmMonitor:
         ("smoke",      "sk", "ko", "🔥", "DYM"),
     ]
 
-    def __init__(self, gw_id, discovery, get_state, emit, logger=None, check_interval=10):
+    def __init__(self, gw_id, discovery, get_state, emit, logger=None, check_interval=10, skip_dev=None):
         self.gw_id = gw_id
+        self.skip_dev = skip_dev         # callable(dev) → True = urzadzenie wykluczone z anomalii (config anomaly.no_anomaly)
         self.disc = discovery            # GatewayDiscovery (devices, short_ids)
         self.get_state = get_state       # callable(dev) → dict (GatewayData.states[dev])
         self.emit = emit                 # callable(sid, code, value)
@@ -70,6 +71,8 @@ class AlarmMonitor:
 
     def check(self):
         for dev in list(self.disc.devices.keys()):
+            if self.skip_dev and self.skip_dev(dev):
+                continue
             st = self.get_state(dev) or {}
             sid = self.disc.short_ids.get(dev)
             if sid is None:
