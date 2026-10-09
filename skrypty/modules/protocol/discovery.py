@@ -447,6 +447,16 @@ class SupervisorDiscovery:
         devmapy (samo-blokada: fałszywy stempel synced unieważniał własną naprawę)."""
         return self.gw_synced.get(gw, '') if self.is_complete(gw) else ''
 
+    def _debug_rzadko(self, key, tag, msg, co=60.0):
+        """Ten sam komunikat debug najwyzej raz na `co` s (petla sprawdzajaca liczy sie co ~3 s i zalewala log)."""
+        if not self.log:
+            return
+        now = time.time()
+        d = self.__dict__.setdefault('_dbg_ts', {})
+        if now - d.get(key, 0.0) >= co:
+            d[key] = now
+            self.log.debug(tag, msg)
+
     def _xfer_busy(self, gw):
         """Mapa tej bramki jest w drodze → nie ponawiaj żądania (patrz xfer_busy_fn)."""
         if self.xfer_busy_fn is None:
@@ -471,9 +481,8 @@ class SupervisorDiscovery:
                 # Lista jest niepełna WŁAŚNIE DLATEGO, że transfer trwa — zapełni się na końcu.
                 # Nie przesuwamy gw_disc_ts: po zakończeniu transferu retry ma być gotowy od razu,
                 # jeśli mapa faktycznie dojdzie dziurawa.
-                if self.log:
-                    self.log.debug('DISC', f'⏸️ {gw} lista niepełna ({have}/{expected}), '
-                                           f'ale devmap w drodze — nie ponawiam disc')
+                self._debug_rzadko(('niepelna', gw), 'DISC', f'⏸️ {gw} lista niepełna ({have}/{expected}), '
+                                                              f'ale devmap w drodze — nie ponawiam disc')
                 continue
             # BACKOFF (2026-07-25): krótka seria szybkich prób (zgubiony pakiet), potem rzadki
             # retry — zamiast twardego capa, po którym system milczał do restartu, zostawiając
@@ -504,8 +513,7 @@ class SupervisorDiscovery:
         if self._xfer_busy(gw):
             # Hash się różni, bo mirror jest jeszcze pusty — a mapa właśnie leci.
             # Żądanie teraz = druga kopia tego samego transferu.
-            if self.log:
-                self.log.debug('DISC', f'⏸️ {gw} rozjazd hasha, ale devmap w drodze — nie żądam disc')
+            self._debug_rzadko(('hash', gw), 'DISC', f'⏸️ {gw} rozjazd hasha, ale devmap w drodze — nie żądam disc')
             return
         prev = self._pending.get(gw)
         now = time.time()
