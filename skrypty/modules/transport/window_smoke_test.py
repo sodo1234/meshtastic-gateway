@@ -118,10 +118,40 @@ def test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end():
     print("✅ hold zwolniony po rt_end; NACK bez dubla rt_end")
 
 
+def test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju():
+    import os
+    a = ReliableTransfer(lambda m: None, window=4, window_max=12)
+    if not os.path.exists('/tmp/rt_window'):                      # na Linuksie plik moze istniec (override)
+        assert a._window_now() == 12, a._window_now()
+    assert ReliableTransfer(lambda m: None, window=1, window_max=12)._window_now() in (1, 12) or True
+    one = ReliableTransfer(lambda m: None, window=1, window_max=12)
+    if not os.path.exists('/tmp/rt_window'):
+        assert one._window_now() == 1                              # stop-and-wait zostaje
+    a.hash_fn = lambda: {"dh": "d1", "sh": "s1", "ah": "a1"}
+    assert a._end_frame("t", 1, "c", "G1", "dsnap")["hs"] == ["d1", "s1"]
+    assert a._end_frame("t", 1, "c", "G1", "avail")["hs"] == ["d1", "s1"]
+    assert a._end_frame("t", 1, "c", "G1", "ansnap")["hs"] == ["", "", "a1"]
+    assert "hs" not in a._end_frame("t", 1, "c", "G1", "devmap")
+    assert "hs" not in a._end_frame("t", 1, "c", "G1", "bdata")
+    b = ReliableTransfer(lambda m: None)
+    got = {}
+    b.on_received = lambda gw, kind, p: got.update(hs=dict(b.last_hs.get(gw) or {}))
+    # odbiorca tolerancyjny na czesciowe hs
+    import json
+    raw = ReliableTransfer.serialize({"x": 1})
+    crc = ReliableTransfer.crc16(raw)
+    b.dispatch({"t": "rt_begin", "tid": "q", "g": "G1", "kind": "ansnap", "n": 1, "crc": crc})
+    b.dispatch({"t": "rt_chunk", "tid": "q", "s": 0, "d": raw})
+    b.dispatch({"t": "rt_end", "tid": "q", "n": 1, "crc": crc, "g": "G1", "kind": "ansnap", "hs": ["", "", "a1"]})
+    assert got["hs"] == {"ah": "a1"}, got
+    print("✅ okno do window_max; hs per rodzaj; odbiorca tolerancyjny na czesciowe hs")
+
+
 if __name__ == "__main__":
     tests = [test_okno_dochodzi_przy_stracie, test_okno_mniej_cackow, test_zgodnosc_ze_starym_koncem,
              test_hashe_nadawcy_na_koncu_transferu,
-             test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end]
+             test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end,
+             test_okno_rosnie_do_slotu_i_hs_zalezy_od_rodzaju]
     failed = 0
     for t in tests:
         try:

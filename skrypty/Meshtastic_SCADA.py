@@ -734,6 +734,9 @@ def run_gateway(log):
                           window=CONFIG.get('transfer', {}).get('window', 1),   # 2026-10-02: okno z cack zbiorczym (1 = stop-and-wait)
                           hold_extra=(slot.cycle if slot is not None else 0.0),   # slot: wysylka czeka na okno, hold nie moze wygasnac
                           frames_fit=((lambda: slot.frame_capacity(CONFIG.get('lora', {}).get('tx_cooldown', 3.0))) if slot is not None else None),
+                          window_max=CONFIG.get('transfer', {}).get('window_max', 12),
+                          # rozproszony start: domyslnie indeks slotu * 45 s (G1 0, G2 45, G3 90); config 'startup_delay'
+                          start_delay=CONFIG.get('startup_delay', {}).get(gw_id, (slot.index * 45.0 if slot is not None else 0.0)),
                           arbiter=arbiter, accept_gw=gw_id)   # multi-gw: transfer cudzej bramki ignorowany (brak cack)
     # 2026-10-09: rt_end niesie biezace hashe bramki (dh/sh/ah) → supervisor liczy zgodnosc W CHWILI
     # konca transferu, a nie dopiero po nastepnym HB/pingu. HB zostaje kontrola dryfu.

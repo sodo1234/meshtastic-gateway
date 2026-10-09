@@ -30,7 +30,7 @@ class ReliableTransfer:
                  chunk_size=90, chunk_delay=3.0,
                  chunk_ack_timeout=12.0, chunk_retries=6, end_retries=4,
                  arbiter=None, accept_gw=None, window=1, window_gap=3.5, hold_extra=0.0,
-                 frames_fit=None):
+                 frames_fit=None, window_max=0, start_delay=0.0):
         self.send = send_fn                  # callable(dict) → wyślij ramkę LoRa
         self.on_received = on_received       # callback(gw, kind, payload) po udanym odbiorze
         self.log = logger
@@ -52,6 +52,12 @@ class ReliableTransfer:
         # frames_fit: callable → ile ramek miesci sie teraz w oknie slotu (None = bez limitu). Runda okna
         # nie wiekszej niz to, zeby nie przerzucac polowy okna na kolejny cykl 60 s.
         self.frames_fit = frames_fit
+        # window_max: gdy window>1, okno rosnie do tej wartosci, a runda i tak nie przekracza frames_fit()
+        # (czyli tego, co miesci sie w slocie: G1 ~13 ramek, G2 ~3). 0 = bez wzrostu (jak dotad).
+        self.window_max = int(window_max or 0)
+        # start_delay [s]: bulk-transfery (devmap/avail/ansnap/dsnap/bdata) nie startuja przed uplywem
+        # tego czasu od uruchomienia — bramki po wspolnym restarcie nie zalewaja kanalu naraz.
+        self._not_before = time.monotonic() + float(start_delay or 0.0)
         self.window_gap = window_gap
         # ChannelArbiter: gdy transfer aktywny, kanał należy do niego (wolumen b/ab czeka).
         # Nadawca odnawia hold przy każdym chunku; odbiorca trzyma po *_begin/*_chunk.
@@ -136,13 +142,14 @@ class ReliableTransfer:
 
     # ── wysyłka (stop-and-wait per chunk) ───────────────
     def _window_now(self):
-        """Okno na TEN transfer. Plik /tmp/rt_window (liczba) nadpisuje config w locie — do testow A/B
-        i do natychmiastowego wylaczenia (wpisz 1) bez restartu bramki."""
+        """Okno na TEN transfer. Plik /tmp/rt_window (liczba) = jawny limit, nadpisuje config w locie (A/B,
+        natychmiastowe wylaczenie wpisem 1). Bez pliku: window=1 → stop-and-wait; window>1 → rosnie do
+        window_max (runda i tak <= frames_fit(), czyli pojemnosc slotu)."""
         try:
             with open('/tmp/rt_window', encoding='utf-8') as f:
                 return max(1, int(f.read().strip()))
         except Exception:
-            return self.window
+            return max(self.window, self.window_max) if self.window > 1 else self.window
 
     def _tx(self, msg):
         """Nadaj ramke i (jesli transport zwraca Event) poczekaj az faktycznie poszla do radia —
@@ -155,11 +162,13 @@ class ReliableTransfer:
         f = {"t": f"{self.p}_end", "tid": tid, "n": n, "crc": crc, "g": gw, "kind": kind}
         # hs = [dh, sh, ah] (kompakt: ~-27 B wzgledem dict; rt_end ma isc po stratnym LoRa).
         # /tmp/rt_nohs (plik) wylacza hashe w locie — do testow A/B bez restartu.
-        if self.hash_fn is not None and not os.path.exists('/tmp/rt_nohs'):
+        if self.hash_fn is not None and kind in ('dsnap', 'avail', 'ansnap') and not os.path.exists('/tmp/rt_nohs'):
             try:
                 hs = self.hash_fn()
                 if hs:
-                    f["hs"] = [hs.get('dh', ''), hs.get('sh', ''), hs.get('ah', '')]
+                    # tylko to, co dany rodzaj zmienia: stan/status (dsnap, avail) albo anomalie (ansnap);
+                    # devmap/bdata bez hashy → krotszy rt_end
+                    f["hs"] = ["", "", hs.get('ah', '')] if kind == 'ansnap' else [hs.get('dh', ''), hs.get('sh', '')]
             except Exception as e:
                 self._log('debug', 'XFER', f"hash_fn: {e}")
         return f
@@ -283,6 +292,9 @@ class ReliableTransfer:
                 self.outgoing.pop(tid, None)
 
         def _run():
+            _w = self._not_before - time.monotonic()
+            if _w > 0:
+                time.sleep(_w)                                  # rozproszenie startu bramek (start_delay)
             # SERIALIZACJA transfer-vs-transfer: czekaj aż poprzedni transfer zwolni kanał.
             # Begin wysyłamy DOPIERO po przejęciu (nie zapowiadamy transferu w środek cudzego).
             if self.arbiter is not None:
@@ -408,7 +420,7 @@ class ReliableTransfer:
         n = len(payload) if hasattr(payload, '__len__') else '?'
         self._log('info', 'XFER', f"✅ Odebrano kind={info['kind']} [{info['gw']}] ({n} elem.)")
         hs = data.get('hs')
-        if isinstance(hs, list) and len(hs) == 3:         # [dh, sh, ah] → dict (puste = brak pola)
+        if isinstance(hs, list) and 1 <= len(hs) <= 3:         # [dh, sh, ah] → dict (puste = brak pola)
             self.last_hs[info['gw']] = {k: v for k, v in zip(('dh', 'sh', 'ah'), hs) if v}
         elif isinstance(hs, dict):
             self.last_hs[info['gw']] = hs
