@@ -79,12 +79,17 @@ class ReliableTransfer:
         self.completed = {}                  # tid → ts (idempotentny re-ACK)
         self.lock = threading.Lock()
 
-    def _hold_channel(self, tid=None, sender=False):
+    def _hold_channel(self, tid=None, sender=False, wait_extra=0.0):
         """Nadawca (sender=True) odnawia hold z dodatkiem na czekanie w slocie; odbiorca trzyma
         krotko i z ownerem=tid, zeby handle_end mogl go zwolnic (inaczej b/ab/hb stoja do ~94 s)."""
         if self.arbiter is not None:
             if sender:
-                self.arbiter.hold(self.chunk_ack_timeout + 4.0 + self.hold_extra)
+                # Okno czeka dluzej niz zwykly stop-and-wait: timeout bazowy + zapas na
+                # kazda ramke okna. Hold musi pokrywac TEN SAM budzet, inaczej wygasa jeszcze
+                # podczas oczekiwania na zbiorczy CACK i drugi lokalny transfer wchodzi w srodek
+                # pierwszego (v7: avail wystartowal 4 s przed retry devmapy G1).
+                self.arbiter.hold(self.chunk_ack_timeout + 4.0 + self.hold_extra
+                                  + float(wait_extra or 0.0))
             else:
                 self.arbiter.hold(self.chunk_ack_timeout + 4.0, owner=tid)
 
@@ -162,12 +167,12 @@ class ReliableTransfer:
         f = {"t": f"{self.p}_end", "tid": tid, "n": n, "crc": crc, "g": gw, "kind": kind}
         # hs = [dh, sh, ah] (kompakt: ~-27 B wzgledem dict; rt_end ma isc po stratnym LoRa).
         # /tmp/rt_nohs (plik) wylacza hashe w locie — do testow A/B bez restartu.
-        if self.hash_fn is not None and kind in ('dsnap', 'avail', 'ansnap') and not os.path.exists('/tmp/rt_nohs'):
+        if self.hash_fn is not None and kind in ('dsnap', 'avail', 'bdata', 'ansnap') and not os.path.exists('/tmp/rt_nohs'):
             try:
                 hs = self.hash_fn()
                 if hs:
-                    # tylko to, co dany rodzaj zmienia: stan/status (dsnap, avail) albo anomalie (ansnap);
-                    # devmap/bdata bez hashy → krotszy rt_end
+                    # tylko to, co dany rodzaj zmienia: stan/status (dsnap, avail, bdata) albo
+                    # anomalie (ansnap); devmap ma hash juz we wlasnym payloadzie.
                     f["hs"] = ["", "", hs.get('ah', '')] if kind == 'ansnap' else [hs.get('dh', ''), hs.get('sh', '')]
             except Exception as e:
                 self._log('debug', 'XFER', f"hash_fn: {e}")
@@ -241,22 +246,33 @@ class ReliableTransfer:
                     if not brak:
                         break
                     paczka = brak[:min(win, max(1, self.frames_fit()))] if self.frames_fit else brak[:win]
+                    with self.lock:
+                        info = self.outgoing.get(tid)
+                        cack_rev = info.get('cack_rev', 0) if info else 0
+                    wait_extra = self.window_gap * len(paczka)
                     for k, i in enumerate(paczka):
-                        self._hold_channel(sender=True)
+                        self._hold_channel(sender=True, wait_extra=wait_extra)
                         m = {"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunks[i]}
                         if k == len(paczka) - 1:
                             m["w"] = 1                   # koniec okna → odbiorca odpowiada cack zbiorczym
                         self._tx(m)
                     budzet = self.chunk_ack_timeout + self.window_gap * len(paczka)
-                    res = _wait_flag(lambda inf: all(j in inf['acked'] for j in paczka), timeout=budzet)
+                    # Zbiorczy CACK z lista brakow jest ODPOWIEDZIA, nie timeoutem. Dawniej
+                    # predicate czekal tylko na komplet, wiec po CACK m=[...] spal do konca
+                    # calego budzetu (v7 G1: +64 s) zanim wyslal brakujace chunki.
+                    res = _wait_flag(
+                        lambda inf: (all(j in inf['acked'] for j in paczka)
+                                     or inf.get('cack_rev', 0) > cack_rev),
+                        timeout=budzet)
                     if res is None:
                         return
-                    if res:
-                        rounds_bez_postepu = 0
-                        continue
                     with self.lock:
                         info = self.outgoing.get(tid)
                         zrobione = sum(1 for j in paczka if info and j in info['acked'])
+                        komplet = bool(info) and all(j in info['acked'] for j in paczka)
+                    if komplet:
+                        rounds_bez_postepu = 0
+                        continue
                     rounds_bez_postepu = 0 if zrobione else rounds_bez_postepu + 1
                     self._log('warn', 'XFER', f"🔁 okno {paczka[0]}..{paczka[-1]}/{len(chunks)} tid={tid}: "
                               f"{zrobione}/{len(paczka)} potwierdzone — kolejna runda")
@@ -323,6 +339,7 @@ class ReliableTransfer:
                     info['acked'].add(s)                 # cack pojedynczy (stary tryb / stary odbiorca)
                 else:                                    # cack zbiorczy: wszystko <= s oprocz brakujacych
                     info['acked'].update(i for i in range(s + 1) if i not in m)
+                    info['cack_rev'] = info.get('cack_rev', 0) + 1
 
     # ── odbiór ──────────────────────────────────────────
     def handle_begin(self, data):

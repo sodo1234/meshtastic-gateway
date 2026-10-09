@@ -597,6 +597,7 @@ class SupervisorDiscovery:
             else:
                 self.ha.reg_sensor(gw, name, caps)
         h = (payload or {}).get('hash', '') or self.gw_hashes.get(gw, '')
+        self.note_devn(gw, (payload or {}).get('dev_n'))
         self.gw_hashes[gw] = h
         self.gw_synced[gw] = h
         self._pending.pop(gw, None)
