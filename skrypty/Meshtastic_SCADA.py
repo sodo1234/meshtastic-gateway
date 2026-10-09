@@ -159,7 +159,7 @@ def run_gateway(log):
 
         # Slot egzekwuje WYLACZNIE petla TX transportu (po odstepie, tuz przed nadaniem). Dawny wrapper
         # blokowal watki wywolujace (takze watek RX odpowiadajacy cack/ack) do 60 s.
-        lora.slot_gate = lambda: slot.seconds_until_slot(min_left=_slot_min_left)
+        lora.slot_gate = lambda _text=None: slot.seconds_until_slot(min_left=_slot_min_left)
 
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
@@ -1582,6 +1582,29 @@ def run_supervisor(log):
         client_id=f"step3_sup_{int(time.time())}", logger=log)
 
     lora = _make_lora(CONFIG, log)
+    # ── OKNO NADAWCZE SUPERVISORA (2026-10-09) ──
+    # Sloty porzadkuja bramki, ale supervisor tez nadaje (kalendarz w dol, params, komendy sterujace, dsnap_req,
+    # ping, zg) i trafial w srodek slotu bramki, ktora wlasnie nadawala — half-duplex: ramka ginela
+    # (14:00 kalendarz do G1: chunk wyslany w slocie G1, bez cack, retry po 75 s). Ramki INICJOWANE przez
+    # supervisora wychodza teraz w jego oknie = slot nieistniejacej bramki G3 (config slotting.supervisor_slot).
+    # Natychmiastowe odpowiedzi protokolu (cack/ack/back) zostaja bez bramki — wracaja do bramki w jej slocie.
+    _scfg = CONFIG.get('slotting', {})
+    if _scfg.get('enabled'):
+        _sup_slot = SlotScheduler(_scfg.get('supervisor_slot', 'G3'), gateways=_scfg.get('gateways', ['G1', 'G2', 'G3']),
+                                  slot_seconds=_scfg.get('slot_seconds', 20), logger=log)
+        _SUP_REACTIVE = ('rt_cack', 'rt_ack', 'cal_cack', 'cal_ack', 'back', 'sup_pong')
+
+        def _sup_gate(_text=None):
+            try:
+                _t = _text[6:_text.index('"', 6)] if _text and _text.startswith('{"t":"') else ''
+            except ValueError:
+                _t = ''
+            if _t in _SUP_REACTIVE:
+                return 0.0
+            return _sup_slot.seconds_until_slot(min_left=_scfg.get('min_left', 3.0))
+        lora.slot_gate = _sup_gate
+        _a, _b = _sup_slot.window()
+        log.info('SLOT', f'⏱️ supervisor nadaje inicjowane ramki w oknie {_a:.0f}-{_b:.0f}s / cykl {_sup_slot.cycle:.0f}s (odpowiedzi cack/ack/back natychmiast)')
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
     #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
