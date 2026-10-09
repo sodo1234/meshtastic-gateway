@@ -17,6 +17,7 @@ begina z chunków-sierot (rt_end niesie redundantnie n/crc/kind); idempotentny r
 import base64
 import hashlib
 import json
+import os
 import random
 import string
 import threading
@@ -133,11 +134,13 @@ class ReliableTransfer:
 
     def _end_frame(self, tid, n, crc, gw, kind):
         f = {"t": f"{self.p}_end", "tid": tid, "n": n, "crc": crc, "g": gw, "kind": kind}
-        if self.hash_fn is not None:
+        # hs = [dh, sh, ah] (kompakt: ~-27 B wzgledem dict; rt_end ma isc po stratnym LoRa).
+        # /tmp/rt_nohs (plik) wylacza hashe w locie — do testow A/B bez restartu.
+        if self.hash_fn is not None and not os.path.exists('/tmp/rt_nohs'):
             try:
                 hs = self.hash_fn()
                 if hs:
-                    f["hs"] = hs
+                    f["hs"] = [hs.get('dh', ''), hs.get('sh', ''), hs.get('ah', '')]
             except Exception as e:
                 self._log('debug', 'XFER', f"hash_fn: {e}")
         return f
@@ -368,8 +371,11 @@ class ReliableTransfer:
             return None
         n = len(payload) if hasattr(payload, '__len__') else '?'
         self._log('info', 'XFER', f"✅ Odebrano kind={info['kind']} [{info['gw']}] ({n} elem.)")
-        if isinstance(data.get('hs'), dict):
-            self.last_hs[info['gw']] = data['hs']        # hashe nadawcy z chwili konca transferu
+        hs = data.get('hs')
+        if isinstance(hs, list) and len(hs) == 3:         # [dh, sh, ah] → dict (puste = brak pola)
+            self.last_hs[info['gw']] = {k: v for k, v in zip(('dh', 'sh', 'ah'), hs) if v}
+        elif isinstance(hs, dict):
+            self.last_hs[info['gw']] = hs
         if self.on_received:
             try:
                 self.on_received(info['gw'], info['kind'], payload)

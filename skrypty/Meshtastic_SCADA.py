@@ -136,6 +136,40 @@ def run_gateway(log):
         client_id=f"step3_gw_{gw_id}_{int(time.time())}", logger=log)
 
     lora = _make_lora(CONFIG, log)
+    # ── SLOTOWANIE CALEGO NADAWANIA BRAMKI (2026-10-09, polecenie usera: „slotowac masz wszystko”) ──
+    # Kazda bramka nadaje WYLACZNIE w swoim oknie (G1 0-19 s, G2 20-39 s w cyklu 60 s). Dotad slotowal
+    # sie tylko batch `b`; HB, transfery rt_*, anomalie, stm itd. szly surowo i nakladaly sie miedzy
+    # bramkami na wspolnym kanale half-duplex (zgubione pakiety, retransmisje, wolne transfery).
+    # WYJATKI (musza wyjsc natychmiast): odpowiedzi protokolu pong / *_ack / *_cack — supervisor
+    # odpowiada w slocie bramki, ktora go wlasnie zaadresowala — oraz alarmy priorytetowe (pri_lora).
+    # `min_left`: nie zaczynaj ramki na ostatnich sekundach okna (zeby nie wlazic w slot sasiada).
+    slot_cfg = CONFIG.get('slotting', {})
+    slot = None
+    lora_raw_send = lora.send
+    if slot_cfg.get('enabled'):
+        slot = SlotScheduler(gw_id, gateways=slot_cfg.get('gateways', ['G1', 'G2', 'G3']),
+                             slot_seconds=slot_cfg.get('slot_seconds', 20), logger=log)
+        _SLOT_EXEMPT = ('pong', 'rt_cack', 'rt_ack', 'cal_cack', 'cal_ack', 'disc_ack')
+        _slot_min_left = slot_cfg.get('min_left', 4.0)
+
+        def _slotted_send(text, *a, **k):
+            try:
+                _t = text[6:text.index('"', 6)] if text.startswith('{"t":"') else ''
+            except ValueError:
+                _t = ''
+            if _t not in _SLOT_EXEMPT:
+                slot.wait_my_turn(min_left=_slot_min_left)
+            return lora_raw_send(text, *a, **k)
+        lora.send = _slotted_send
+
+    class _RawLora:
+        """Transport BEZ slotu — alarmy priorytetowe nie czekaja na okno bramki."""
+        def __init__(self, inner):
+            self._inner = inner
+        def send(self, text, *a, **k):
+            return lora_raw_send(text, *a, **k)
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
     #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
@@ -203,33 +237,17 @@ def run_gateway(log):
     # ── STEP 4: slotowanie (krok 7) — batch `b` nadawany TYLKO w oknie tej bramki ──
     # (HB/pong/st/cal idą surowym lora = natychmiast; gate'ujemy tylko wolumenowy batch,
     #  bo to on koliduje gdy 3 bramki nadają naraz. cal_* mają własny CRC+retry.)
-    slot_cfg = CONFIG.get('slotting', {})
-    slot = None
-    data_lora = lora                                     # domyślnie bez gate
-    if slot_cfg.get('enabled'):
-        slot = SlotScheduler(gw_id, gateways=slot_cfg.get('gateways', ['G1', 'G2', 'G3']),
-                             slot_seconds=slot_cfg.get('slot_seconds', 20), logger=log)
-
-        class _SlottedLora:
-            """Proxy nad LoraTransport — send() czeka na okno slotu; reszta delegowana."""
-            def __init__(self, inner, sched):
-                self._inner, self._sched = inner, sched
-            def send(self, text):
-                self._sched.wait_my_turn()
-                return self._inner.send(text)
-            def __getattr__(self, name):
-                return getattr(self._inner, name)
-
-        data_lora = _SlottedLora(lora, slot)
+    data_lora = lora                                     # lora jest juz slotowane (patrz wyzej)
+    if slot is not None:
         s0, s1 = slot.window()
-        log.info('SLOT', f'⏱️ slotowanie ON: {gw_id} okno {s0:.0f}-{s1:.0f}s / cykl {slot.cycle:.0f}s (batch w slocie)')
+        log.info('SLOT', f'⏱️ slotowanie ON: {gw_id} okno {s0:.0f}-{s1:.0f}s / cykl {slot.cycle:.0f}s (CALE nadawanie bramki; wyjatki: pong/ack/cack + alarmy)')
 
     # STEP 3: data layer — Z2M → delta → batched `b`
     data = GatewayData(
         gw_id=gw_id, discovery=discovery, lora=data_lora, logger=log,
         # ACK P1 (2026-07-30): pakiety priority dostają id `p`, sup odbija `back`, brak ACK =
         # retransmisja. `pri_lora` = transport BEZ gate'u slotu → alarm nie czeka na okno bramki.
-        pri_lora=lora,
+        pri_lora=_RawLora(lora),
         pri_ack_wait=data_cfg.get('pri_ack_wait', 35.0),   # 35s: zmierzony RTT 26s + margines
         pri_ack_retries=data_cfg.get('pri_ack_retries', 2),
         mon_interval=data_cfg.get('mon_interval', 30),

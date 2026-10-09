@@ -41,10 +41,13 @@ class SlotScheduler:
         s, e = self.window()
         return s <= self.position(now) < e
 
-    def seconds_until_slot(self, now=None):
-        """0 jeśli teraz w oknie; inaczej sekundy do najbliższego startu okna."""
+    def seconds_until_slot(self, now=None, min_left=0.0):
+        """0 jeśli teraz w oknie (i zostało ≥ min_left s); inaczej sekundy do najbliższego startu okna."""
         if self.in_slot(now):
-            return 0.0
+            left = self.window()[1] - self.position(now)
+            if min_left <= 0 or left >= min_left:
+                return 0.0
+            return left + self.cycle - self.slot_seconds       # za późno w oknie → następny cykl
         pos = self.position(now)
         start = self.window()[0]
         delta = start - pos
@@ -52,9 +55,9 @@ class SlotScheduler:
             delta += self.cycle          # okno już minęło w tym cyklu → następny cykl
         return delta
 
-    def wait_my_turn(self, now=None):
+    def wait_my_turn(self, now=None, min_left=0.0):
         """Blokująco poczekaj do swojego okna (realny sleep). Zwraca ile czekano."""
-        wait = self.seconds_until_slot(now)
+        wait = self.seconds_until_slot(now, min_left)
         if wait > 0:
             if self.log:
                 self.log.debug('SLOT', f"⏳ {self.gw_id} czeka {wait:.1f}s na slot {self.index}")
