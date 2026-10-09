@@ -17,20 +17,27 @@ class SlotScheduler:
                  clock=time.time, logger=None):
         gws = list(gateways or [gw_id])
         self.gw_id = gw_id
+        # slot_seconds: liczba (wszystkie sloty rowne) ALBO dict {bramka: sekundy} — np. G1 40 s (93%
+        # ruchu), G2/G3 po 10 s. Cykl = suma dlugosci; kolejnosc `gateways` = kolejnosc okien.
+        if isinstance(slot_seconds, dict):
+            lens = [float(slot_seconds.get(g, 10)) for g in gws]
+        else:
+            lens = [float(slot_seconds)] * len(gws)
         self.num_slots = int(num_slots or max(len(gws), 1))
-        self.slot_seconds = float(slot_seconds)
-        self.cycle = self.slot_seconds * self.num_slots
+        self.lens = lens
+        self.cycle = sum(lens)
         try:
             self.index = gws.index(gw_id) % self.num_slots
         except ValueError:
             self.index = 0
+        self._start = sum(lens[:self.index])
+        self.slot_seconds = lens[self.index] if lens else 20.0
         self.clock = clock
         self.log = logger
 
     def window(self):
         """(start_sec, end_sec) okna tej bramki w obrębie cyklu."""
-        s = self.index * self.slot_seconds
-        return s, s + self.slot_seconds
+        return self._start, self._start + self.slot_seconds
 
     def position(self, now=None):
         """Pozycja [0, cycle) w bieżącym cyklu."""
