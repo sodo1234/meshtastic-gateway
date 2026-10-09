@@ -1126,6 +1126,12 @@ def run_gateway(log):
         else:
             log.info('DATA', f'↻ dsnap_req [{gw_id}]: {len(snap)} urządzeń → blob (rozjazd hasha)')
         rt.start_send(gw_id, 'dsnap', {'ts': int(time.time()), 's': snap})
+        # dsnap niesie tylko urzadzenia Z WARTOSCIA; dostepnosc reszty jedzie blobem `avail`, a jego
+        # bramki (hash 'bez zmian' + 6 h) po restarcie supervisora wstrzymuja go na godziny — status
+        # stoi na ROZJAZD. Prosba o dsnap = lustro stracilo stan, wiec zdejmij bramki: najblizszy
+        # sweep wysle `avail` (2026-10-09).
+        _avail_gate['h'] = None
+        data._avail_hash = None
     dispatcher.register('dsnap_req', handle_dsnap_req)
     dispatcher.set_fallback(lambda d: log.debug('RX', f'unknown t={d.get("t")}'))
 
