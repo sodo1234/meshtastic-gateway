@@ -117,9 +117,16 @@ def _make_lora(cfg, log):
                   "label": "ANT-1", "gateways": [cfg['id']]}]
     else:
         ports = cfg.get('mesh_ports', [])
+    # ODSTEP MIEDZY RAMKAMI Z CONFIGU (2026-10-09). Dotad `tx_cooldown` z configu NIE byl przekazywany
+    # (transport szedl na domyslnych 2,0 s mimo 3,0 w configu), a `tx_delay` dotyczyl tylko `disc`.
+    # Ograniczenie Meshtastica: ramki nadawane zbyt gesto nakladaja sie i gina — odstep jest stosowany
+    # do KAZDEJ ramki: max(lora.tx_cooldown, discovery.tx_delay).
+    gap = max(float(cfg.get('lora', {}).get('tx_cooldown', 2.0)),
+              float(cfg.get('discovery', {}).get('tx_delay', 0.0)))
+    log.info('LORA', f'⏲️ odstep miedzy ramkami TX = {gap:.1f}s (max z lora.tx_cooldown i discovery.tx_delay)')
     return LoraTransport(ports_cfg=ports,
                          reconnect_cfg=cfg.get('mesh_reconnect', {}),
-                         logger=log)
+                         logger=log, tx_cooldown=gap)
 
 
 # ── Gateway mode ────────────────────────────────────────
@@ -156,6 +163,7 @@ def run_gateway(log):
             slot.wait_my_turn(min_left=_slot_min_left)       # BEZ wyjatkow (decyzja usera 2026-10-09)
             return lora_raw_send(text, *a, **k)
         lora.send = _slotted_send
+        lora.slot_gate = lambda: slot.seconds_until_slot(min_left=_slot_min_left - 1.0)   # patrz lora_transport._tx_loop
 
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
