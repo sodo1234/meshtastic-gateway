@@ -75,8 +75,30 @@ def test_zgodnosc_ze_starym_koncem():
     print("✅ zgodnosc wsteczna: okno↔stop-and-wait w obie strony")
 
 
+def test_hashe_nadawcy_na_koncu_transferu():
+    """rt_end niesie `hs` nadawcy; odbiorca widzi je w last_hs JUZ w on_received (zgodnosc bez HB)."""
+    seen = {}
+    box = {}
+    def deliver(dst):
+        return lambda m: dst.dispatch(m)
+    kw = dict(chunk_size=60, chunk_delay=0.0, chunk_ack_timeout=1.2, window_gap=0.05)
+    a = ReliableTransfer(lambda m: deliver(b)(m), **kw)
+    b = ReliableTransfer(lambda m: deliver(a)(m),
+                         on_received=lambda gw, kind, p: seen.update(hs=box["b"].last_hs.get(gw)), **kw)
+    box["b"] = b
+    a.hash_fn = lambda: {"dh": "aaaa1111", "sh": "bbbb2222"}
+    done = threading.Event()
+    b_cb = b.on_received
+    b.on_received = lambda *x: (b_cb(*x), done.set())
+    a.start_send("G1", "avail", _payload())
+    assert done.wait(30), "transfer nie doszedl"
+    assert seen.get("hs") == {"dh": "aaaa1111", "sh": "bbbb2222"}, seen
+    print("✅ hs nadawcy dostepne w on_received")
+
+
 if __name__ == "__main__":
-    tests = [test_okno_dochodzi_przy_stracie, test_okno_mniej_cackow, test_zgodnosc_ze_starym_koncem]
+    tests = [test_okno_dochodzi_przy_stracie, test_okno_mniej_cackow, test_zgodnosc_ze_starym_koncem,
+             test_hashe_nadawcy_na_koncu_transferu]
     failed = 0
     for t in tests:
         try:
