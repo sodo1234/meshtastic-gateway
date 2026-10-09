@@ -427,7 +427,10 @@ class LoraTransport:
             # ramka wychodzi w powietrze tylko w oknie bramki, z zapasem min_left na jej czas antenowy.
             while self.slot_gate is not None:
                 try:
-                    _w = self.slot_gate()
+                    try:
+                        _w = self.slot_gate(job['text'])         # bramka moze zalezec od typu ramki (odpowiedzi vs inicjowane)
+                    except TypeError:
+                        _w = self.slot_gate()
                 except Exception:
                     _w = 0.0
                 if _w <= 0:
