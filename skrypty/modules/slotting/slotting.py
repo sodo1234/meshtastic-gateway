@@ -62,6 +62,11 @@ class SlotScheduler:
             delta += self.cycle          # okno już minęło w tym cyklu → następny cykl
         return delta
 
+    def frame_capacity(self, gap, now=None):
+        """Ile ramek (co `gap` s) zmiesci sie w biezacym oknie; poza oknem — w calym nastepnym."""
+        left = (self.window()[1] - self.position(now)) if self.in_slot(now) else self.slot_seconds
+        return max(1, int(left // max(gap, 0.1)))
+
     def wait_my_turn(self, now=None, min_left=0.0):
         """Blokująco poczekaj do swojego okna (realny sleep). Zwraca ile czekano."""
         wait = self.seconds_until_slot(now, min_left)

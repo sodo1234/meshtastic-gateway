@@ -152,17 +152,14 @@ def run_gateway(log):
     # `min_left`: nie zaczynaj ramki na ostatnich sekundach okna (zeby nie wlazic w slot sasiada).
     slot_cfg = CONFIG.get('slotting', {})
     slot = None
-    lora_raw_send = lora.send
     if slot_cfg.get('enabled'):
         slot = SlotScheduler(gw_id, gateways=slot_cfg.get('gateways', ['G1', 'G2', 'G3']),
                              slot_seconds=slot_cfg.get('slot_seconds', 20), logger=log)
         _slot_min_left = slot_cfg.get('min_left', 3.0)
 
-        def _slotted_send(text, *a, **k):
-            slot.wait_my_turn(min_left=_slot_min_left)       # BEZ wyjatkow (decyzja usera 2026-10-09)
-            return lora_raw_send(text, *a, **k)
-        lora.send = _slotted_send
-        lora.slot_gate = lambda: slot.seconds_until_slot(min_left=_slot_min_left - 1.0)   # patrz lora_transport._tx_loop
+        # Slot egzekwuje WYLACZNIE petla TX transportu (po odstepie, tuz przed nadaniem). Dawny wrapper
+        # blokowal watki wywolujace (takze watek RX odpowiadajacy cack/ack) do 60 s.
+        lora.slot_gate = lambda: slot.seconds_until_slot(min_left=_slot_min_left)
 
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
@@ -384,7 +381,7 @@ def run_gateway(log):
     threading.Thread(target=_hydrate_states_from_ha, daemon=True, name='hydrate').start()
 
     def lora_send(obj):
-        lora.send(json.dumps(obj, separators=(',', ':')))
+        return lora.send(json.dumps(obj, separators=(',', ':')))     # Event 'faktycznie nadano' (ReliableTransfer)
 
     # ── RAMKA ZBIORCZA `stm` (2026-08-26) — masowa zmiana stanu szła 1 ramka `st` na
     #    urządzenie (pomiar: 67× st w 7 min, pik 42 ramki/min przy suficie ~20/min).
@@ -736,6 +733,7 @@ def run_gateway(log):
                           chunk_retries=3,  # RTT pod obciążeniem ~60s, 30s toleruje
                           window=CONFIG.get('transfer', {}).get('window', 1),   # 2026-10-02: okno z cack zbiorczym (1 = stop-and-wait)
                           hold_extra=(slot.cycle if slot is not None else 0.0),   # slot: wysylka czeka na okno, hold nie moze wygasnac
+                          frames_fit=((lambda: slot.frame_capacity(CONFIG.get('lora', {}).get('tx_cooldown', 3.0))) if slot is not None else None),
                           arbiter=arbiter, accept_gw=gw_id)   # multi-gw: transfer cudzej bramki ignorowany (brak cack)
     # 2026-10-09: rt_end niesie biezace hashe bramki (dh/sh/ah) → supervisor liczy zgodnosc W CHWILI
     # konca transferu, a nie dopiero po nastepnym HB/pingu. HB zostaje kontrola dryfu.
