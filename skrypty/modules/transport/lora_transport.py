@@ -144,7 +144,9 @@ class LoraTransport:
         if n > 220 and self.log:
             self.log.warn('TX', f"⚠️ OVERSIZE {n}B > 220B — Meshtastic ODRZUCI/UTNIE (pakiet nie chunkowany!): {text[:70]}…")
         if self.log: self.log.info('TX', f"📤 TX: {text}")
-        self._tx_queue.append({'text': text, 'label': None})
+        evt = threading.Event()          # ustawiany przez _tx_loop, gdy ramka FAKTYCZNIE poszla do radia
+        self._tx_queue.append({'text': text, 'label': None, 'evt': evt})
+        return evt
 
     def send_to(self, gw, text):
         """Unicast via antenna routed to `gw`. Falls back to broadcast if no route."""
@@ -405,17 +407,6 @@ class LoraTransport:
         while self.running:
             if not self._tx_queue:
                 time.sleep(0.05); continue
-            # SLOT NA POZIOMIE NADAWANIA (2026-10-09): `send()` tylko kolejkuje, a kolejka drenuje sie
-            # z cooldownem 2-3 s — seria ramek wstawiona na poczatku okna rozlewala sie na slot sasiada.
-            # Bramka slotu zamyka kran: ramka wychodzi w powietrze WYLACZNIE gdy w oknie zostalo
-            # >= min_left s; reszta czeka w kolejce na nastepny cykl.
-            if self.slot_gate is not None:
-                try:
-                    _w = self.slot_gate()
-                except Exception:
-                    _w = 0.0
-                if _w > 0:
-                    time.sleep(min(_w, 1.0)); continue
             # ARBITER: podczas transferu przepuść tylko transfer/odpowiedzi, odłóż bulk (half-duplex).
             job = None
             if self.arbiter is not None and self.arbiter.busy():
@@ -432,7 +423,8 @@ class LoraTransport:
                     time.sleep(self.tx_cooldown - gap)
             if job is None:
                 job = self._tx_queue.popleft()
-            # bramka slotu PO odstepie: odstep (cooldown) potrafi przesunac nadanie za koniec okna
+            # JEDNA bramka slotu, PO odstepie (cooldown potrafi przesunac nadanie za koniec okna):
+            # ramka wychodzi w powietrze tylko w oknie bramki, z zapasem min_left na jej czas antenowy.
             while self.slot_gate is not None:
                 try:
                     _w = self.slot_gate()
@@ -452,6 +444,9 @@ class LoraTransport:
             else:
                 self._tx_broadcast(text)
             self._last_tx = time.monotonic()      # F3: znacznik do min-spacingu następnego TX
+            _e = job.get('evt')
+            if _e is not None:
+                _e.set()                          # nadawca (ReliableTransfer) liczy timeout ACK od TEJ chwili
 
     def _tx_broadcast(self, text):
         with self.lock: ifaces = list(self.interfaces.items())

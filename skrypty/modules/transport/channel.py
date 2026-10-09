@@ -29,9 +29,12 @@ class ChannelArbiter:
         """Zajmij/odnów kanał na `seconds` (odnawialne). Wołane przez transfer-plik przy każdym chunku.
         Nie zmienia ownera gdy owner=None (renew w trakcie transferu)."""
         with self._cv:
-            self._until = max(self._until, time.monotonic() + seconds)
-            if owner:
+            now = time.monotonic()
+            # owner ustawiamy tylko gdy kanal wolny/bez wlasciciela — renew odbiorcy nie moze
+            # przejac rezerwacji trwajacego transferu nadawczego (release(tid) przestalby dzialac).
+            if owner and (self._owner is None or now >= self._until):
                 self._owner = owner
+            self._until = max(self._until, now + seconds)
 
     def acquire(self, owner, hold_seconds, max_wait=300.0):
         """SERIALIZACJA transfer-vs-transfer: czekaj aż kanał wolny (żaden inny transfer aktywny),
@@ -41,7 +44,7 @@ class ChannelArbiter:
         with self._cv:
             while True:
                 now = time.monotonic()
-                free = (now >= self._until) or (self._owner is None) or (self._owner == owner)
+                free = (now >= self._until) or (self._owner is not None and self._owner == owner)
                 if free:
                     self._owner = owner
                     self._until = max(self._until, now + hold_seconds)

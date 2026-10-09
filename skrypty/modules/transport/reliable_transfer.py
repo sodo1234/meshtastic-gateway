@@ -29,7 +29,8 @@ class ReliableTransfer:
     def __init__(self, send_fn, on_received=None, logger=None, prefix="rt",
                  chunk_size=90, chunk_delay=3.0,
                  chunk_ack_timeout=12.0, chunk_retries=6, end_retries=4,
-                 arbiter=None, accept_gw=None, window=1, window_gap=3.5, hold_extra=0.0):
+                 arbiter=None, accept_gw=None, window=1, window_gap=3.5, hold_extra=0.0,
+                 frames_fit=None):
         self.send = send_fn                  # callable(dict) → wyślij ramkę LoRa
         self.on_received = on_received       # callback(gw, kind, payload) po udanym odbiorze
         self.log = logger
@@ -48,6 +49,9 @@ class ReliableTransfer:
         # hold_extra [s]: dodatek do rezerwacji kanalu — przy slotowaniu wysylka potrafi czekac na okno do
         # dlugosci cyklu; bez dodatku hold wygasal, arbiter wpuszczal kolejne transfery RÓWNOLEGLE.
         self.hold_extra = float(hold_extra or 0.0)
+        # frames_fit: callable → ile ramek miesci sie teraz w oknie slotu (None = bez limitu). Runda okna
+        # nie wiekszej niz to, zeby nie przerzucac polowy okna na kolejny cykl 60 s.
+        self.frames_fit = frames_fit
         self.window_gap = window_gap
         # ChannelArbiter: gdy transfer aktywny, kanał należy do niego (wolumen b/ab czeka).
         # Nadawca odnawia hold przy każdym chunku; odbiorca trzyma po *_begin/*_chunk.
@@ -69,9 +73,14 @@ class ReliableTransfer:
         self.completed = {}                  # tid → ts (idempotentny re-ACK)
         self.lock = threading.Lock()
 
-    def _hold_channel(self):
+    def _hold_channel(self, tid=None, sender=False):
+        """Nadawca (sender=True) odnawia hold z dodatkiem na czekanie w slocie; odbiorca trzyma
+        krotko i z ownerem=tid, zeby handle_end mogl go zwolnic (inaczej b/ab/hb stoja do ~94 s)."""
         if self.arbiter is not None:
-            self.arbiter.hold(self.chunk_ack_timeout + 4.0 + self.hold_extra)
+            if sender:
+                self.arbiter.hold(self.chunk_ack_timeout + 4.0 + self.hold_extra)
+            else:
+                self.arbiter.hold(self.chunk_ack_timeout + 4.0, owner=tid)
 
     def receiving(self, gw=None, kind=None, stale_after=300.0):
         """Czy TRWA ODBIÓR transferu (opcjonalnie: tej bramki / tego rodzaju)?
@@ -135,6 +144,13 @@ class ReliableTransfer:
         except Exception:
             return self.window
 
+    def _tx(self, msg):
+        """Nadaj ramke i (jesli transport zwraca Event) poczekaj az faktycznie poszla do radia —
+        timeout ACK ma liczyc sie od NADANIA, nie od wstawienia do kolejki. Tylko watek nadawczy."""
+        r = self.send(msg)
+        if hasattr(r, 'wait'):
+            r.wait(120.0)
+
     def _end_frame(self, tid, n, crc, gw, kind):
         f = {"t": f"{self.p}_end", "tid": tid, "n": n, "crc": crc, "g": gw, "kind": kind}
         # hs = [dh, sh, ah] (kompakt: ~-27 B wzgledem dict; rt_end ma isc po stratnym LoRa).
@@ -177,7 +193,7 @@ class ReliableTransfer:
                   "n": len(chunks), "crc": crc}
             if win > 1:
                 _b["win"] = win                          # odbiorca: nie potwierdzaj kazdego chunka
-            self.send(_b)
+            self._tx(_b)
             self._log('info', 'XFER', f"📤 Begin kind={kind} [{gw}] tid={tid} chunks={len(chunks)} ({len(b64)}B)")
             time.sleep(self.chunk_delay)
             # STOP-AND-WAIT per-chunk cack (2026-07-06 PRZYWRÓCONE): niezawodność > liczba wiadomości.
@@ -188,8 +204,8 @@ class ReliableTransfer:
                 for i, chunk in enumerate(chunks):
                     ok = False
                     for attempt in range(self.chunk_retries + 1):
-                        self._hold_channel()             # kanał należy do transferu (wolumen b/ab czeka)
-                        self.send({"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunk})
+                        self._hold_channel(sender=True)             # kanał należy do transferu (wolumen b/ab czeka)
+                        self._tx({"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunk})
                         res = _wait_flag(lambda inf: i in inf['acked'])
                         if res is None:
                             return
@@ -215,13 +231,13 @@ class ReliableTransfer:
                         brak = [i for i in range(len(chunks)) if i not in info['acked']]
                     if not brak:
                         break
-                    paczka = brak[:win]
+                    paczka = brak[:min(win, max(1, self.frames_fit()))] if self.frames_fit else brak[:win]
                     for k, i in enumerate(paczka):
-                        self._hold_channel()
+                        self._hold_channel(sender=True)
                         m = {"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunks[i]}
                         if k == len(paczka) - 1:
                             m["w"] = 1                   # koniec okna → odbiorca odpowiada cack zbiorczym
-                        self.send(m)
+                        self._tx(m)
                     budzet = self.chunk_ack_timeout + self.window_gap * len(paczka)
                     res = _wait_flag(lambda inf: all(j in inf['acked'] for j in paczka), timeout=budzet)
                     if res is None:
@@ -240,13 +256,28 @@ class ReliableTransfer:
                         with self.lock:
                             self.outgoing.pop(tid, None)
                         return
-            for attempt in range(self.end_retries):
-                self._hold_channel()
-                self.send(self._end_frame(tid, len(chunks), crc, gw, kind))
-                res = _wait_flag(lambda inf: inf.get('done'))
-                if res is None or res:
+            attempt = 0
+            nacks = 0
+            while attempt < self.end_retries:
+                self._hold_channel(sender=True)
+                self._tx(self._end_frame(tid, len(chunks), crc, gw, kind))
+                res = _wait_flag(lambda inf: inf.get('done') or inf.get('resend_end'))
+                if res is None:
                     return
-                self._log('warn', 'XFER', f"⚠️ rt_end retry tid={tid} {attempt + 1}/{self.end_retries}")
+                if res:
+                    with self.lock:
+                        inf = self.outgoing.get(tid)
+                        if inf is None or inf.get('done'):
+                            return
+                        inf.pop('resend_end', None)
+                    # NACK: brakujace chunki sa juz w kolejce (handle_ack) — jeden kolejny rt_end,
+                    # bez zuzywania proby (ale nie w nieskonczonosc przy stalym bledzie CRC).
+                    nacks += 1
+                    if nacks > 6:
+                        attempt += 1
+                    continue
+                attempt += 1
+                self._log('warn', 'XFER', f"⚠️ rt_end retry tid={tid} {attempt}/{self.end_retries}")
             self._log('error', 'XFER', f"❌ tid={tid} brak finalnego ACK po {self.end_retries} rt_end — rezygnacja")
             with self.lock:
                 self.outgoing.pop(tid, None)
@@ -284,7 +315,7 @@ class ReliableTransfer:
     # ── odbiór ──────────────────────────────────────────
     def handle_begin(self, data):
         tid = data.get('tid')
-        self._hold_channel()                 # kanał zajęty (nawet cudzy transfer → backoff wolumenu)
+        self._hold_channel(tid)              # kanał zajęty (nawet cudzy transfer → backoff wolumenu)
         if self.accept_gw is not None and data.get('g') not in (None, self.accept_gw):
             self._note_foreign(tid)          # transfer NIE do nas → nie uczestniczymy (brak cack/apply)
             self._log('debug', 'XFER', f"⏭️ begin tid={tid} g={data.get('g')} ≠ {self.accept_gw} → ignoruję")
@@ -299,7 +330,7 @@ class ReliableTransfer:
     def handle_chunk(self, data):
         tid = data.get('tid')
         s = data.get('s', 0)
-        self._hold_channel()
+        self._hold_channel(tid)
         if tid in self._foreign:
             return                           # cudzy transfer → NIE cack (unikamy fałszywego ACK nadawcy)
         with self.lock:
@@ -367,6 +398,8 @@ class ReliableTransfer:
                 for old in sorted(self.completed, key=self.completed.get)[:-16]:
                     self.completed.pop(old, None)
         self.send({"t": f"{self.p}_ack", "tid": tid, "ok": 1, "miss": []})
+        if self.arbiter is not None:
+            self.arbiter.release(tid)                     # koniec odbioru → b/ab/hb moga isc (hold nie wisi ~94 s)
         try:
             payload = self.deserialize(b64)
         except Exception as e:
@@ -400,14 +433,14 @@ class ReliableTransfer:
                 self._log('info', 'XFER', f"✅ ACK ok tid={tid}")
                 return
             chunks = info['chunks']
-            crc = info.get('crc', '')
-            gw = info.get('gw', '?')
-            kind = info.get('kind', '?')
         self._log('warn', 'XFER', f"🔁 NACK tid={tid} retransmit {miss}")
         for i in miss:
             if 0 <= i < len(chunks):
                 self.send({"t": f"{self.p}_chunk", "tid": tid, "s": i, "d": chunks[i]})
-        self.send(self._end_frame(tid, len(chunks), crc, gw, kind))
+        with self.lock:                                   # rt_end wysyla WYLACZNIE petla _tx_body (po chunkach)
+            inf = self.outgoing.get(tid)
+            if inf is not None:
+                inf['resend_end'] = True
 
     # ── router (rejestruj w dispatcherze: rt_begin/chunk/end/ack/cack) ──
     def dispatch(self, data):

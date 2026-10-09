@@ -96,9 +96,32 @@ def test_hashe_nadawcy_na_koncu_transferu():
     print("✅ hs nadawcy dostepne w on_received")
 
 
+def test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end():
+    from modules.transport.channel import ChannelArbiter
+    # odbiorca zwalnia hold po rt_end
+    arb = ChannelArbiter()
+    sent = []
+    a = ReliableTransfer(lambda m: b.dispatch(m), chunk_size=60, chunk_delay=0.0, chunk_ack_timeout=1.2)
+    done = threading.Event()
+    b = ReliableTransfer(lambda m: a.dispatch(m), chunk_size=60, chunk_delay=0.0, chunk_ack_timeout=1.2,
+                         arbiter=arb, on_received=lambda *x: done.set())
+    a.start_send("G1", "avail", _payload())
+    assert done.wait(30)
+    time.sleep(0.2)
+    assert not arb.busy(), "hold odbiorcy wisi po rt_end"
+    # NACK nie wysyla wlasnego rt_end (robi to tylko petla _tx_body)
+    c = ReliableTransfer(lambda m: sent.append(m))
+    c.outgoing["t1"] = {"chunks": ["x", "y"], "gw": "G1", "kind": "avail", "crc": "0", "acked": set(), "done": False}
+    c.handle_ack({"tid": "t1", "ok": 0, "miss": [1]})
+    assert [m["t"] for m in sent] == ["rt_chunk"], sent
+    assert c.outgoing["t1"].get("resend_end") is True
+    print("✅ hold zwolniony po rt_end; NACK bez dubla rt_end")
+
+
 if __name__ == "__main__":
     tests = [test_okno_dochodzi_przy_stracie, test_okno_mniej_cackow, test_zgodnosc_ze_starym_koncem,
-             test_hashe_nadawcy_na_koncu_transferu]
+             test_hashe_nadawcy_na_koncu_transferu,
+             test_hold_zwolniony_po_end_i_nack_bez_podwojnego_end]
     failed = 0
     for t in tests:
         try:
