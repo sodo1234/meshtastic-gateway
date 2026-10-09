@@ -27,6 +27,16 @@ def test_slot_windows():
     print("✅ okna G1:0-19 / G2:20-39 / G3:40-59")
 
 
+def test_min_left_nie_zaczyna_na_koncu_okna():
+    from modules.slotting import SlotScheduler
+    s = SlotScheduler("G1", ["G1", "G2", "G3"], 20)
+    assert s.seconds_until_slot(now=10, min_left=4) == 0.0
+    assert s.seconds_until_slot(now=17, min_left=4) == 43.0        # 3 s do konca okna → nastepny cykl
+    assert s.seconds_until_slot(now=17) == 0.0                     # bez min_left jak dotad
+    assert s.seconds_until_slot(now=25, min_left=4) == 35.0
+    print("✅ min_left: ramka nie startuje w ostatnich sekundach okna")
+
+
 def test_in_slot_and_wait():
     from modules.slotting import SlotScheduler
     gws = ["G1", "G2", "G3"]
@@ -52,7 +62,7 @@ def test_safe_window():
 
 
 if __name__ == "__main__":
-    tests = [test_imports, test_slot_windows, test_in_slot_and_wait, test_safe_window]
+    tests = [test_imports, test_slot_windows, test_min_left_nie_zaczyna_na_koncu_okna, test_in_slot_and_wait, test_safe_window]
     failed = 0
     for t in tests:
         try:
