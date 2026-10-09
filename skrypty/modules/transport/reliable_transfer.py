@@ -29,7 +29,7 @@ class ReliableTransfer:
     def __init__(self, send_fn, on_received=None, logger=None, prefix="rt",
                  chunk_size=90, chunk_delay=3.0,
                  chunk_ack_timeout=12.0, chunk_retries=6, end_retries=4,
-                 arbiter=None, accept_gw=None, window=1, window_gap=3.5):
+                 arbiter=None, accept_gw=None, window=1, window_gap=3.5, hold_extra=0.0):
         self.send = send_fn                  # callable(dict) → wyślij ramkę LoRa
         self.on_received = on_received       # callback(gw, kind, payload) po udanym odbiorze
         self.log = logger
@@ -45,6 +45,9 @@ class ReliableTransfer:
         # chunki leca w kolejnej rundzie. Odbiorca bez obslugi okna (stary kod) potwierdza kazdy chunk -
         # dziala dalej, tylko bez przyspieszenia. window_gap [s] = zapas czasu na jeden chunk w kolejce TX.
         self.window = max(1, int(window or 1))
+        # hold_extra [s]: dodatek do rezerwacji kanalu — przy slotowaniu wysylka potrafi czekac na okno do
+        # dlugosci cyklu; bez dodatku hold wygasal, arbiter wpuszczal kolejne transfery RÓWNOLEGLE.
+        self.hold_extra = float(hold_extra or 0.0)
         self.window_gap = window_gap
         # ChannelArbiter: gdy transfer aktywny, kanał należy do niego (wolumen b/ab czeka).
         # Nadawca odnawia hold przy każdym chunku; odbiorca trzyma po *_begin/*_chunk.
@@ -68,7 +71,7 @@ class ReliableTransfer:
 
     def _hold_channel(self):
         if self.arbiter is not None:
-            self.arbiter.hold(self.chunk_ack_timeout + 4.0)
+            self.arbiter.hold(self.chunk_ack_timeout + 4.0 + self.hold_extra)
 
     def receiving(self, gw=None, kind=None, stale_after=300.0):
         """Czy TRWA ODBIÓR transferu (opcjonalnie: tej bramki / tego rodzaju)?
@@ -252,7 +255,7 @@ class ReliableTransfer:
             # SERIALIZACJA transfer-vs-transfer: czekaj aż poprzedni transfer zwolni kanał.
             # Begin wysyłamy DOPIERO po przejęciu (nie zapowiadamy transferu w środek cudzego).
             if self.arbiter is not None:
-                if not self.arbiter.acquire(tid, self.chunk_ack_timeout + 4.0):
+                if not self.arbiter.acquire(tid, self.chunk_ack_timeout + 4.0 + self.hold_extra):
                     self._log('warn', 'XFER', f"⏳ tid={tid} kind={kind} nie dostał kanału → anuluję (retry później)")
                     with self.lock:
                         self.outgoing.pop(tid, None)
