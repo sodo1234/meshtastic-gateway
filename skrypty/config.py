@@ -145,7 +145,7 @@ SUPERVISOR_CONFIG = {
     },
     "slotting": {
         "enabled": True,
-        "slot_seconds": 20,
+        "slot_seconds": {"G1": 40, "G2": 10, "G3": 10},
         "safe_window_seconds": 10,                # supervisor TX do bramki tylko ≤10s po RX od niej
     },
 
@@ -330,7 +330,7 @@ GATEWAY_CONFIG = {
     },
     "slotting": {
         "enabled": True,
-        "slot_seconds": 20,       # G1:0-19 / G2:20-39 / G3:40-59 w cyklu 60s
+        "slot_seconds": {"G1": 40, "G2": 10, "G3": 10},       # G1:0-19 / G2:20-39 / G3:40-59 w cyklu 60s
         "gateways": ["G1", "G2", "G3"],   # kolejność = indeks slotu tej bramki
     },
 

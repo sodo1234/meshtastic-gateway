@@ -117,13 +117,12 @@ def _make_lora(cfg, log):
                   "label": "ANT-1", "gateways": [cfg['id']]}]
     else:
         ports = cfg.get('mesh_ports', [])
-    # ODSTEP MIEDZY RAMKAMI Z CONFIGU (2026-10-09). Dotad `tx_cooldown` z configu NIE byl przekazywany
-    # (transport szedl na domyslnych 2,0 s mimo 3,0 w configu), a `tx_delay` dotyczyl tylko `disc`.
-    # Ograniczenie Meshtastica: ramki nadawane zbyt gesto nakladaja sie i gina — odstep jest stosowany
-    # do KAZDEJ ramki: max(lora.tx_cooldown, discovery.tx_delay).
-    gap = max(float(cfg.get('lora', {}).get('tx_cooldown', 2.0)),
-              float(cfg.get('discovery', {}).get('tx_delay', 0.0)))
-    log.info('LORA', f'⏲️ odstep miedzy ramkami TX = {gap:.1f}s (max z lora.tx_cooldown i discovery.tx_delay)')
+    # ODSTEP MIEDZY RAMKAMI Z CONFIGU (2026-10-09): `tx_cooldown` z configu (3,0 s) byl dotad ignorowany —
+    # transport szedl na domyslnych 2,0 s. Ograniczenie Meshtastica: ramki nadawane zbyt gesto
+    # nakladaja sie i gina, wiec odstep jest stosowany do KAZDEJ ramki. (`discovery.tx_delay` zostaje
+    # dodatkowym odstepem tylko miedzy pakietami disc.)
+    gap = float(cfg.get('lora', {}).get('tx_cooldown', 2.0))
+    log.info('LORA', f'⏲️ odstep miedzy ramkami TX = {gap:.1f}s (lora.tx_cooldown z configu)')
     return LoraTransport(ports_cfg=ports,
                          reconnect_cfg=cfg.get('mesh_reconnect', {}),
                          logger=log, tx_cooldown=gap)
@@ -157,7 +156,7 @@ def run_gateway(log):
     if slot_cfg.get('enabled'):
         slot = SlotScheduler(gw_id, gateways=slot_cfg.get('gateways', ['G1', 'G2', 'G3']),
                              slot_seconds=slot_cfg.get('slot_seconds', 20), logger=log)
-        _slot_min_left = slot_cfg.get('min_left', 4.0)
+        _slot_min_left = slot_cfg.get('min_left', 3.0)
 
         def _slotted_send(text, *a, **k):
             slot.wait_my_turn(min_left=_slot_min_left)       # BEZ wyjatkow (decyzja usera 2026-10-09)
