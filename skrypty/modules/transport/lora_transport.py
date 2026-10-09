@@ -47,6 +47,7 @@ class LoraTransport:
         # wątek TX słał back-to-back → burst komend (klik-klik) przepełniał kolejkę Meshtastic i
         # pakiety ginęły. Dławi TYLKO bursty; ruch już rozstawiony (transfery czekają na cack) nie
         # dostaje dodatkowego opóźnienia bo odstęp od ostatniego TX i tak > cooldown.
+        self.slot_gate = None            # callable → sekundy do okna slotu (0 = wolno nadawac); ustawia SCADA
         self.tx_cooldown = tx_cooldown
         self._last_tx = 0.0
         # ARBITER (2026-07-06): podczas transferu-pliku (arbiter.busy) ODŁÓŻ ruch nie-transferowy
@@ -404,6 +405,17 @@ class LoraTransport:
         while self.running:
             if not self._tx_queue:
                 time.sleep(0.05); continue
+            # SLOT NA POZIOMIE NADAWANIA (2026-10-09): `send()` tylko kolejkuje, a kolejka drenuje sie
+            # z cooldownem 2-3 s — seria ramek wstawiona na poczatku okna rozlewala sie na slot sasiada.
+            # Bramka slotu zamyka kran: ramka wychodzi w powietrze WYLACZNIE gdy w oknie zostalo
+            # >= min_left s; reszta czeka w kolejce na nastepny cykl.
+            if self.slot_gate is not None:
+                try:
+                    _w = self.slot_gate()
+                except Exception:
+                    _w = 0.0
+                if _w > 0:
+                    time.sleep(min(_w, 1.0)); continue
             # ARBITER: podczas transferu przepuść tylko transfer/odpowiedzi, odłóż bulk (half-duplex).
             job = None
             if self.arbiter is not None and self.arbiter.busy():
