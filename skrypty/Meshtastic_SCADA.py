@@ -140,8 +140,9 @@ def run_gateway(log):
     # Kazda bramka nadaje WYLACZNIE w swoim oknie (G1 0-19 s, G2 20-39 s w cyklu 60 s). Dotad slotowal
     # sie tylko batch `b`; HB, transfery rt_*, anomalie, stm itd. szly surowo i nakladaly sie miedzy
     # bramkami na wspolnym kanale half-duplex (zgubione pakiety, retransmisje, wolne transfery).
-    # WYJATKI (musza wyjsc natychmiast): odpowiedzi protokolu pong / *_ack / *_cack — supervisor
-    # odpowiada w slocie bramki, ktora go wlasnie zaadresowala — oraz alarmy priorytetowe (pri_lora).
+    # BEZ WYJATKOW: takze pong, ACK-i, cack i alarmy priorytetowe czekaja na slot (decyzja usera:
+    # opoznienie 30-60 s nie jest istotne, kolizje sa). Dlatego timeouty po stronie supervisora
+    # (ping, cal_cack, rt cack) sa podniesione do ~75 s, zeby opozniona odpowiedz nie rodzila retransmisji.
     # `min_left`: nie zaczynaj ramki na ostatnich sekundach okna (zeby nie wlazic w slot sasiada).
     slot_cfg = CONFIG.get('slotting', {})
     slot = None
@@ -149,27 +150,13 @@ def run_gateway(log):
     if slot_cfg.get('enabled'):
         slot = SlotScheduler(gw_id, gateways=slot_cfg.get('gateways', ['G1', 'G2', 'G3']),
                              slot_seconds=slot_cfg.get('slot_seconds', 20), logger=log)
-        _SLOT_EXEMPT = ('pong', 'rt_cack', 'rt_ack', 'cal_cack', 'cal_ack', 'disc_ack')
         _slot_min_left = slot_cfg.get('min_left', 4.0)
 
         def _slotted_send(text, *a, **k):
-            try:
-                _t = text[6:text.index('"', 6)] if text.startswith('{"t":"') else ''
-            except ValueError:
-                _t = ''
-            if _t not in _SLOT_EXEMPT:
-                slot.wait_my_turn(min_left=_slot_min_left)
+            slot.wait_my_turn(min_left=_slot_min_left)       # BEZ wyjatkow (decyzja usera 2026-10-09)
             return lora_raw_send(text, *a, **k)
         lora.send = _slotted_send
 
-    class _RawLora:
-        """Transport BEZ slotu — alarmy priorytetowe nie czekaja na okno bramki."""
-        def __init__(self, inner):
-            self._inner = inner
-        def send(self, text, *a, **k):
-            return lora_raw_send(text, *a, **k)
-        def __getattr__(self, name):
-            return getattr(self._inner, name)
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
     #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
@@ -240,14 +227,14 @@ def run_gateway(log):
     data_lora = lora                                     # lora jest juz slotowane (patrz wyzej)
     if slot is not None:
         s0, s1 = slot.window()
-        log.info('SLOT', f'⏱️ slotowanie ON: {gw_id} okno {s0:.0f}-{s1:.0f}s / cykl {slot.cycle:.0f}s (CALE nadawanie bramki; wyjatki: pong/ack/cack + alarmy)')
+        log.info('SLOT', f'⏱️ slotowanie ON: {gw_id} okno {s0:.0f}-{s1:.0f}s / cykl {slot.cycle:.0f}s (CALE nadawanie bramki, bez wyjatkow)')
 
     # STEP 3: data layer — Z2M → delta → batched `b`
     data = GatewayData(
         gw_id=gw_id, discovery=discovery, lora=data_lora, logger=log,
         # ACK P1 (2026-07-30): pakiety priority dostają id `p`, sup odbija `back`, brak ACK =
         # retransmisja. `pri_lora` = transport BEZ gate'u slotu → alarm nie czeka na okno bramki.
-        pri_lora=_RawLora(lora),
+        pri_lora=lora,
         pri_ack_wait=data_cfg.get('pri_ack_wait', 35.0),   # 35s: zmierzony RTT 26s + margines
         pri_ack_retries=data_cfg.get('pri_ack_retries', 2),
         mon_interval=data_cfg.get('mon_interval', 30),
@@ -1664,7 +1651,7 @@ def run_supervisor(log):
     cal_transfer = CalendarTransfer(
         send_fn=send_to_all, chunk_size=cal_cfg.get('chunk_size', 60),
         chunk_delay=cal_cfg.get('chunk_delay', 6.0),
-        chunk_ack_timeout=cal_cfg.get('chunk_ack_timeout', 30.0),   # anty-spam: round-trip LoRa
+        chunk_ack_timeout=max(75.0, cal_cfg.get('chunk_ack_timeout', 30.0)),  # cack bramki czeka na jej slot   # anty-spam: round-trip LoRa
         chunk_retries=cal_cfg.get('chunk_retries', 2),
         end_retries=cal_cfg.get('end_retries', 3), logger=log,
         arbiter=arbiter, accept_gw=None)
@@ -1777,6 +1764,7 @@ def run_supervisor(log):
         except Exception as e:
             log.warn('XFER', f'zgodnosc po transferze [{gw}]: {e}')
     rt = ReliableTransfer(send_fn=send_to_all, on_received=on_rt_received, logger=log,
+                          chunk_ack_timeout=75.0,            # odpowiedz bramki czeka na jej slot (do ~60 s)
                           chunk_size=CONFIG.get('transfer', {}).get('chunk_size', 60),  # align z cal: niezawodny próg tego łącza LoRa (lekcja RF)
                           window=CONFIG.get('transfer', {}).get('window', 1),
                           arbiter=arbiter, accept_gw=None)   # agreguj transfery wszystkich bramek
@@ -2595,7 +2583,7 @@ def run_supervisor(log):
         ha, logger=log, send_ping_fn=lambda gw: send_to_all({"t": "ping", "g": gw}),
         devices_provider=sup_disc.devices, gateways=known_gateways,
         passive_timeout=wd.get('passive_timeout', 2100),
-        ping_timeout=wd.get('ping_timeout', 25), max_retries=wd.get('max_retries', 2))
+        ping_timeout=wd.get('ping_timeout', 75), max_retries=wd.get('max_retries', 2))
 
     # ── Dispatcher (LoRa RX from gateways) ──
     dispatcher = Dispatcher(logger=log)
