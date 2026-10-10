@@ -8,6 +8,39 @@ Kodek działa wyłącznie na granicy `LoraTransport`: przed `json.dumps` przy TX
 Skracane są tylko klucze najwyższego poziomu; zagnieżdżone payloady pozostają bez zmian. 
 Dekoder akceptuje również starą, długą postać. `g` nigdy nie jest przemianowane.
 
+## Fast lane (ruch natychmiastowy)
+
+Fast lane przywraca małe, sporadyczne ramki sterujące do czasu reakcji sprzed pełnego
+slotowania, bez rozszczelniania slotów dla ruchu masowego. Domyślna lista
+`slotting.immediate` to: `ping`, `pong`, `sup_ping`, `sup_pong`, `cmd`, `st`, `stm`,
+`sync`, `params`, `params_req`, `param_upd`, `zg`. Typ jest rozpoznawany zarówno w długiej,
+jak i krótkiej postaci kodeka.
+
+- Ramka fast lane trafia na początek kolejki TX, omija slot i filtr zajętego arbitra transferu;
+  nie przerywa ramki już nadawanej.
+- Nadal obowiązuje globalny odstęp `lora.tx_cooldown` (produkcyjnie 3,0 s). Przed TX działa
+  listen-before-talk: od ostatniej dowolnej ramki RX musi minąć `slotting.lbt_quiet`
+  (domyślnie 2,0 s), lecz oczekiwanie kończy się najpóźniej po `slotting.lbt_max_wait`
+  (domyślnie 6,0 s).
+- `rt_*`, transfery `cal_*`, `b`, `hb`, `an_d`, `ab`, `disc*`, `dsnap`, `avail`, `ansnap`,
+  `bdata` i pozostały bulk zachowują dotychczasowe bramkowanie slotem. Reaktywne ACK/CACK
+  supervisora zachowują swój wcześniejszy wyjątek.
+
+Uzasadnienie: po włączeniu slotowania benchmark pogorszył `ping→pong` z 6 s do 60 s,
+klik sterowania→stan realny z 24–31 s do 38–39 s, Send parametrów→potwierdzenie z 7 s
+do 32 s i anomalia→licznik z 11 s do 19 s. Fast lane usuwa oczekiwanie na slot tylko
+dla krótkich zdarzeń krytycznych czasowo; bulk nadal korzysta z bezkolizyjnych okien.
+
+## Negocjacja krótkiej postaci kodeka
+
+`LoraTransport` prowadzi wyłącznie w RAM tabelę możliwości per peer (`g`). Odbiornik zawsze
+dekoduje obie postacie. Supervisor nadaje krótko do danej bramki dopiero po odebraniu od niej
+co najmniej jednej jednoznacznie krótkiej ramki; do nieznanego lub starego peera nadaje długo.
+Bramka postępuje analogicznie po krótkiej ramce supervisora albo może zainicjować negocjację
+przez `codec.short_tx: true` (domyślnie `false`). Ramki bez `g` zawsze pozostają długie.
+Nie dodano flagi do `hb`, ponieważ ramka jest blisko limitu 200 B; zdolność jest wnioskowana
+z odebranej postaci radiowej i znika po restarcie procesu.
+
 ## Tabele źródłowe TYPES / KEYS
 
 ### Typy ramek (`t`)
@@ -100,8 +133,8 @@ Dekoder akceptuje również starą, długą postać. `g` nigdy nie jest przemian
 
 ## Katalog ramek
 
-Reguła slotów: bramka nadaje wyłącznie w swoim slocie. Supervisor nadaje ramki inicjowane 
-w slocie supervisora; odpowiedzi `cack`/`ack`, `back` i `sup_pong` wysyła natychmiast.
+Reguła slotów: bulk bramki nadaje w jej slocie, a bulk supervisora w slocie supervisora.
+Fast lane opisany wyżej omija slot; odpowiedzi `cack`/`ack` i `back` zachowują wcześniejsze wyjątki.
 
 ### Łącze, czas i zgodność
 

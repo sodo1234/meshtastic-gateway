@@ -20,14 +20,18 @@ import threading
 import time
 from collections import deque
 
-from .codec import decode, encode, long_type
+from .codec import decode, encode, is_short_frame, long_type
+from .fastlane import (DEFAULT_IMMEDIATE_TYPES, immediate_types,
+                       is_immediate_frame, lbt_wait_seconds)
 
 # meshtastic + pubsub imported lazily in start() — module loadable without hardware deps
 
 
 class LoraTransport:
     def __init__(self, ports_cfg, reconnect_cfg=None, on_receive=None, logger=None,
-                 tx_timeout=8, dedup_seconds=6, tx_cooldown=2.0, tx_hard_timeout=90):
+                 tx_timeout=8, dedup_seconds=6, tx_cooldown=2.0, tx_hard_timeout=90,
+                 immediate=None, lbt_quiet=2.0, lbt_max_wait=6.0,
+                 codec_role='gateway', codec_short_tx=False):
         """
         ports_cfg:     list of dicts: [{"port": "/dev/...", "enabled": True,
                                         "label": "ANT-1", "gateways": ["G1"]}, ...]
@@ -52,6 +56,15 @@ class LoraTransport:
         self.slot_gate = None            # callable → sekundy do okna slotu (0 = wolno nadawac); ustawia SCADA
         self.tx_cooldown = tx_cooldown
         self._last_tx = 0.0
+        self.immediate_types = immediate_types(
+            DEFAULT_IMMEDIATE_TYPES if immediate is None else immediate)
+        self.lbt_quiet = max(0.0, float(lbt_quiet))
+        self.lbt_max_wait = max(0.0, float(lbt_max_wait))
+        self._last_rx_time = 0.0          # monotonic; LBT, aktualizowany dla KAZDEJ ramki RX
+        self.codec_role = str(codec_role or 'gateway').lower()
+        self.codec_short_tx = bool(codec_short_tx)
+        self._short_peers = {}            # {frame['g']: True}; pamiec procesu, bez persistencji
+        self._cap_lock = threading.Lock()
         # ARBITER (2026-07-06): podczas transferu-pliku (arbiter.busy) ODŁÓŻ ruch nie-transferowy
         # (b/ab/disc_vio/disc_meta/hb) — inaczej bramka nadaje i przez half-duplex NIE SŁYSZY cacka
         # → transfer pada → mapa niekompletna → sterowanie. Transfery+odpowiedzi przechodzą od razu.
@@ -138,9 +151,8 @@ class LoraTransport:
         if self.reconnect_cfg.get('enabled', True):
             threading.Thread(target=self._reconnect_loop, daemon=True, name="lora-reconnect").start()
 
-    @staticmethod
-    def _wire_text(frame):
-        """Serialize one frame in abbreviated wire form.
+    def _wire_text(self, frame):
+        """Serialize one frame in negotiated long or abbreviated wire form.
 
         String input remains supported for existing callers, but is parsed back
         to a dict here so every LoRa path crosses the same codec boundary.
@@ -151,7 +163,30 @@ class LoraTransport:
             data = frame
         if not isinstance(data, dict):
             raise TypeError("LoRa frame must be a JSON object")
-        return json.dumps(encode(data), separators=(',', ':'))
+        data = decode(data)               # short input cannot bypass negotiation
+        peer = data.get('g')
+        use_short = False
+        if peer:
+            with self._cap_lock:
+                peer_short = bool(self._short_peers.get(peer))
+            if self.codec_role == 'supervisor':
+                use_short = peer_short
+            else:
+                use_short = self.codec_short_tx or peer_short
+        wire = encode(data) if use_short else data
+        return json.dumps(wire, separators=(',', ':'))
+
+    def peer_supports_short(self, peer):
+        """Expose the in-memory negotiation result for diagnostics/tests."""
+        with self._cap_lock:
+            return bool(peer and self._short_peers.get(peer))
+
+    def _enqueue(self, job):
+        """Fast-lane jobs lead the queue; an in-flight send remains untouched."""
+        if is_immediate_frame(job.get('text'), self.immediate_types):
+            self._tx_queue.appendleft(job)
+        else:
+            self._tx_queue.append(job)
 
     def send(self, frame):
         """Broadcast via ALL antennas. Non-blocking (enqueues to TX thread)."""
@@ -163,7 +198,7 @@ class LoraTransport:
             self.log.warn('TX', f"⚠️ OVERSIZE {n}B > 220B — Meshtastic ODRZUCI/UTNIE (pakiet nie chunkowany!): {text[:70]}…")
         if self.log: self.log.info('TX', f"📤 TX: {text}")
         evt = threading.Event()          # ustawiany przez _tx_loop, gdy ramka FAKTYCZNIE poszla do radia
-        self._tx_queue.append({'text': text, 'label': None, 'evt': evt})
+        self._enqueue({'text': text, 'label': None, 'evt': evt})
         return evt
 
     def send_to(self, gw, frame):
@@ -175,11 +210,11 @@ class LoraTransport:
             with self.lock:
                 has_iface = label in self.interfaces
             if has_iface:
-                self._tx_queue.append({'text': text, 'label': label})
+                self._enqueue({'text': text, 'label': label})
                 if self.log: self.log.debug('ANT', f"📡 Unicast TX queued via {label} → {gw}")
                 return
         if self.log: self.log.warn('ANT', f"⚠️ No route for {gw}, fallback broadcast")
-        self._tx_queue.append({'text': text, 'label': None})
+        self._enqueue({'text': text, 'label': None})
 
     def get_status(self):
         out = {}
@@ -366,12 +401,22 @@ class LoraTransport:
 
     # ── RX path ──
     def _mesh_rx(self, packet, interface):
+        now_mono = time.monotonic()
+        self._last_rx_time = now_mono                    # LBT: kazda ramka radiowa, takze zla/nie-text
         try:
             text = packet.get('decoded', {}).get('text') if isinstance(packet, dict) else None
             if not text: return
             # Decode immediately after JSON parsing.  Dispatch, address filters
             # and RF dedup therefore keep their long-name application contract.
-            frame = decode(json.loads(text))
+            wire_frame = json.loads(text)
+            if isinstance(wire_frame, dict) and wire_frame.get('g') and is_short_frame(wire_frame):
+                peer = wire_frame['g']
+                with self._cap_lock:
+                    first = not self._short_peers.get(peer)
+                    self._short_peers[peer] = True
+                if first and self.log:
+                    self.log.info('LORA', f'codec: {peer} potwierdzil odbior skroconych ramek')
+            frame = decode(wire_frame)
             if not isinstance(frame, dict):
                 return
             text = json.dumps(frame, separators=(',', ':'))
@@ -404,6 +449,8 @@ class LoraTransport:
 
     def _sendable_during_xfer(self, text):
         """Czy ten job może iść W TRAKCIE transferu-pliku."""
+        if is_immediate_frame(text, self.immediate_types):
+            return True
         t = self._job_type(text)
         if t not in self._DEFER_DURING_XFER:
             return True
@@ -440,6 +487,7 @@ class LoraTransport:
                     time.sleep(0.15); continue          # tylko bulk w kolejce → milcz, słuchaj cacka
             else:
                 job = self._pop_first_sendable()         # 2026-07-18: priorytet komend/odpowiedzi nad bulk (b/ab/hb/disc) TAKZE poza transferem -> niska latencja sterowania/trybu/kalendarza (fallback FIFO gdy sama kolejka bulk)
+            wait_started = time.monotonic()
             # F3: wymuś min. odstęp od ostatniego TX (LoRa cooldown) — dławi bursty, chroni przed
             # przepełnieniem kolejki Meshtastic i gubieniem pakietów.
             if self.tx_cooldown > 0:
@@ -448,9 +496,10 @@ class LoraTransport:
                     time.sleep(self.tx_cooldown - gap)
             if job is None:
                 job = self._tx_queue.popleft()
+            immediate = is_immediate_frame(job['text'], self.immediate_types)
             # JEDNA bramka slotu, PO odstepie (cooldown potrafi przesunac nadanie za koniec okna):
             # ramka wychodzi w powietrze tylko w oknie bramki, z zapasem min_left na jej czas antenowy.
-            while self.slot_gate is not None:
+            if not immediate and self.slot_gate is not None:
                 try:
                     try:
                         _w = self.slot_gate(job['text'])         # bramka moze zalezec od typu ramki (odpowiedzi vs inicjowane)
@@ -458,9 +507,22 @@ class LoraTransport:
                         _w = self.slot_gate()
                 except Exception:
                     _w = 0.0
-                if _w <= 0:
+                if _w > 0:
+                    # Nie trzymaj bulkowego joba przez caly czas do slotu. Odlozenie go
+                    # pozwala nowej ramce fast-lane wejsc na poczatek kolejki.
+                    self._tx_queue.appendleft(job)
+                    time.sleep(min(_w, 0.2))
+                    continue
+            if immediate:
+                while self.running:
+                    now_mono = time.monotonic()
+                    _w = lbt_wait_seconds(self._last_rx_time, now_mono, wait_started,
+                                          self.lbt_quiet, self.lbt_max_wait)
+                    if _w <= 0:
+                        break
+                    time.sleep(min(_w, 0.1))
+                if not self.running:
                     break
-                time.sleep(min(_w, 1.0))
             text, target_label = job['text'], job.get('label')
             if target_label:
                 with self.lock: iface = self.interfaces.get(target_label)
