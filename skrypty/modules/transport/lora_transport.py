@@ -20,6 +20,8 @@ import threading
 import time
 from collections import deque
 
+from .codec import decode, encode, long_type
+
 # meshtastic + pubsub imported lazily in start() — module loadable without hardware deps
 
 
@@ -136,8 +138,24 @@ class LoraTransport:
         if self.reconnect_cfg.get('enabled', True):
             threading.Thread(target=self._reconnect_loop, daemon=True, name="lora-reconnect").start()
 
-    def send(self, text):
+    @staticmethod
+    def _wire_text(frame):
+        """Serialize one frame in abbreviated wire form.
+
+        String input remains supported for existing callers, but is parsed back
+        to a dict here so every LoRa path crosses the same codec boundary.
+        """
+        if isinstance(frame, str):
+            data = json.loads(frame)
+        else:
+            data = frame
+        if not isinstance(data, dict):
+            raise TypeError("LoRa frame must be a JSON object")
+        return json.dumps(encode(data), separators=(',', ':'))
+
+    def send(self, frame):
         """Broadcast via ALL antennas. Non-blocking (enqueues to TX thread)."""
+        text = self._wire_text(frame)
         # F2 guard: LoRa/Meshtastic max ~220B/pakiet. Większy = odrzucony/ucięty (cicha awaria).
         # Ostrzegamy GŁOŚNO — łapie bugi typu clear-all enumerujący setki urządzeń w 1 pakiecie.
         n = len(text.encode('utf-8')) if isinstance(text, str) else len(text)
@@ -148,8 +166,9 @@ class LoraTransport:
         self._tx_queue.append({'text': text, 'label': None, 'evt': evt})
         return evt
 
-    def send_to(self, gw, text):
+    def send_to(self, gw, frame):
         """Unicast via antenna routed to `gw`. Falls back to broadcast if no route."""
+        text = self._wire_text(frame)
         if self.log: self.log.info('TX', f"📤 TX→{gw}: {text}")
         label = self.gw_routes.get(gw)
         if label:
@@ -350,6 +369,12 @@ class LoraTransport:
         try:
             text = packet.get('decoded', {}).get('text') if isinstance(packet, dict) else None
             if not text: return
+            # Decode immediately after JSON parsing.  Dispatch, address filters
+            # and RF dedup therefore keep their long-name application contract.
+            frame = decode(json.loads(text))
+            if not isinstance(frame, dict):
+                return
+            text = json.dumps(frame, separators=(',', ':'))
             now = time.time()
             self._last_rx_ts = now                          # watchdog zwisu: ostatni żywy RX
             h = hashlib.md5(text.encode()).hexdigest()[:8]
@@ -373,7 +398,7 @@ class LoraTransport:
 
     def _job_type(self, text):
         try:
-            return json.loads(text).get('t', '')
+            return long_type(json.loads(text).get('t', ''))
         except Exception:
             return ''
 
@@ -457,7 +482,7 @@ class LoraTransport:
         odstepu 3 s (log glowny pokazuje czas wstawienia do kolejki, nie czas anteny). Bez spamu w logu glownym."""
         try:
             now = time.time()
-            tt = text[6:text.index('"', 6)] if text.startswith('{"t":"') else '?'
+            tt = long_type(json.loads(text).get('t', '?'))
             with open('/tmp/lora_air.log', 'a', encoding='utf-8') as f:
                 f.write(time.strftime('%H:%M:%S', time.localtime(now)) + ('.%03d %s %d' % (int((now % 1) * 1000), tt, len(text.encode('utf-8')))) + chr(10))
         except Exception:

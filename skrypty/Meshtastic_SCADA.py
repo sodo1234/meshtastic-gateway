@@ -63,6 +63,7 @@ from modules.calendar import (ScheduleManager, CalendarTransfer, build_ics,
                               reload_local_calendar, sync_ha_calendar_ws)
 from modules.transport.reliable_transfer import ReliableTransfer  # bulk (mass_offline z2m-down)
 from modules.transport.channel import ChannelArbiter  # arbitraż półdupleksu: transfer-plik > wolumen
+from modules.transport.codec import long_type
 from modules.slotting import SlotScheduler, SafeWindow
 from modules.gateway_mode import GatewayMode, mode_active, fmt_uptime
 
@@ -381,7 +382,7 @@ def run_gateway(log):
     threading.Thread(target=_hydrate_states_from_ha, daemon=True, name='hydrate').start()
 
     def lora_send(obj):
-        return lora.send(json.dumps(obj, separators=(',', ':')))     # Event 'faktycznie nadano' (ReliableTransfer)
+        return lora.send(obj)     # Event 'faktycznie nadano'; serializacja jest w LoraTransport
 
     # ── RAMKA ZBIORCZA `stm` (2026-08-26) — masowa zmiana stanu szła 1 ramka `st` na
     #    urządzenie (pomiar: 67× st w 7 min, pik 42 ramki/min przy suficie ~20/min).
@@ -1599,8 +1600,8 @@ def run_supervisor(log):
 
         def _sup_gate(_text=None):
             try:
-                _t = _text[6:_text.index('"', 6)] if _text and _text.startswith('{"t":"') else ''
-            except ValueError:
+                _t = long_type(json.loads(_text).get('t', '')) if _text else ''
+            except (TypeError, ValueError, json.JSONDecodeError):
                 _t = ''
             if _t in _SUP_REACTIVE:
                 return 0.0
@@ -1616,7 +1617,7 @@ def run_supervisor(log):
     known_gateways = CONFIG.get('gateways', ['G1'])
 
     def send_to_all(msg):
-        lora.send(json.dumps(msg, separators=(',', ':')))
+        lora.send(msg)                         # codec + json.dumps w LoraTransport
 
     sup_disc = SupervisorDiscovery(
         ha, logger=log,
