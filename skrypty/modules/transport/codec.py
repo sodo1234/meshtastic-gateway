@@ -151,3 +151,27 @@ def decode(frame_dict):
 def long_type(type_value):
     """Normalize a long or abbreviated ``t`` value to its long spelling."""
     return _TYPE_DECODE["t"].get(type_value, type_value)
+
+
+def is_short_frame(frame_dict):
+    """Return True only when a frame contains an unambiguous codec abbreviation.
+
+    A type such as ``b`` has the same long and short spelling, so it cannot be
+    used as a capability signal.  Abbreviated scoped keys/discriminators also
+    count, which keeps this helper valid if a future type cannot signal through
+    ``t`` alone.
+    """
+    if not isinstance(frame_dict, Mapping):
+        return False
+    wire_type = frame_dict.get("t")
+    decoded_type = long_type(wire_type)
+    if decoded_type != wire_type and wire_type in _TYPE_DECODE["t"]:
+        return True
+    key_decode = _KEY_DECODE.get(decoded_type, {})
+    if any(key in key_decode for key in frame_dict):
+        return True
+    for scope in ("kind", "dir"):
+        value = frame_dict.get(scope)
+        if value in _TYPE_DECODE[scope] and _TYPE_DECODE[scope][value] != value:
+            return True
+    return False

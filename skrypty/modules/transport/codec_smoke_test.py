@@ -140,7 +140,8 @@ def test_required_size_reduction():
 
 def test_lora_transport_boundary():
     received = []
-    transport = LoraTransport([], on_receive=received.append, tx_cooldown=0)
+    transport = LoraTransport([], on_receive=received.append, tx_cooldown=0,
+                              codec_short_tx=True)
     transport.send(SAMPLES["rt_begin"])
     wire_text = transport._tx_queue[-1]["text"]
     wire = json.loads(wire_text)

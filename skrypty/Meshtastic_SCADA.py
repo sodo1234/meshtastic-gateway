@@ -63,7 +63,8 @@ from modules.calendar import (ScheduleManager, CalendarTransfer, build_ics,
                               reload_local_calendar, sync_ha_calendar_ws)
 from modules.transport.reliable_transfer import ReliableTransfer  # bulk (mass_offline z2m-down)
 from modules.transport.channel import ChannelArbiter  # arbitraż półdupleksu: transfer-plik > wolumen
-from modules.transport.codec import long_type
+from modules.transport.fastlane import (DEFAULT_IMMEDIATE_TYPES, immediate_types,
+                                        slot_wait_seconds)
 from modules.slotting import SlotScheduler, SafeWindow
 from modules.gateway_mode import GatewayMode, mode_active, fmt_uptime
 
@@ -123,10 +124,17 @@ def _make_lora(cfg, log):
     # nakladaja sie i gina, wiec odstep jest stosowany do KAZDEJ ramki. (`discovery.tx_delay` zostaje
     # dodatkowym odstepem tylko miedzy pakietami disc.)
     gap = float(cfg.get('lora', {}).get('tx_cooldown', 2.0))
+    slot_cfg = cfg.get('slotting', {})
+    codec_cfg = cfg.get('codec', {})
     log.info('LORA', f'⏲️ odstep miedzy ramkami TX = {gap:.1f}s (lora.tx_cooldown z configu)')
     return LoraTransport(ports_cfg=ports,
                          reconnect_cfg=cfg.get('mesh_reconnect', {}),
-                         logger=log, tx_cooldown=gap)
+                         logger=log, tx_cooldown=gap,
+                         immediate=slot_cfg.get('immediate', DEFAULT_IMMEDIATE_TYPES),
+                         lbt_quiet=slot_cfg.get('lbt_quiet', 2.0),
+                         lbt_max_wait=slot_cfg.get('lbt_max_wait', 6.0),
+                         codec_role=ROLE,
+                         codec_short_tx=codec_cfg.get('short_tx', False))
 
 
 # ── Gateway mode ────────────────────────────────────────
@@ -143,24 +151,24 @@ def run_gateway(log):
         client_id=f"step3_gw_{gw_id}_{int(time.time())}", logger=log)
 
     lora = _make_lora(CONFIG, log)
-    # ── SLOTOWANIE CALEGO NADAWANIA BRAMKI (2026-10-09, polecenie usera: „slotowac masz wszystko”) ──
-    # Kazda bramka nadaje WYLACZNIE w swoim oknie (G1 0-19 s, G2 20-39 s w cyklu 60 s). Dotad slotowal
-    # sie tylko batch `b`; HB, transfery rt_*, anomalie, stm itd. szly surowo i nakladaly sie miedzy
-    # bramkami na wspolnym kanale half-duplex (zgubione pakiety, retransmisje, wolne transfery).
-    # BEZ WYJATKOW: takze pong, ACK-i, cack i alarmy priorytetowe czekaja na slot (decyzja usera:
-    # opoznienie 30-60 s nie jest istotne, kolizje sa). Dlatego timeouty po stronie supervisora
-    # (ping, cal_cack, rt cack) sa podniesione do ~75 s, zeby opozniona odpowiedz nie rodzila retransmisji.
-    # `min_left`: nie zaczynaj ramki na ostatnich sekundach okna (zeby nie wlazic w slot sasiada).
+    # ── SLOTOWANIE BULKU + FAST LANE (2026-10-10) ──
+    # Bulk kazdej bramki wychodzi w jej oknie (G1 0-19 s, G2 20-39 s w cyklu 60 s), co chroni
+    # wspolny kanal half-duplex przed kolizjami transferow/HB/batchy. Male, sporadyczne typy z
+    # `slotting.immediate` omijaja slot, lecz nadal respektuja cooldown i LBT w LoraTransport.
+    # ACK-i transferow bramki zachowuja dotychczasowe slotowanie. `min_left`: nie zaczynaj bulkowej
+    # ramki na ostatnich sekundach okna (zeby nie wlazic w slot sasiada).
     slot_cfg = CONFIG.get('slotting', {})
     slot = None
     if slot_cfg.get('enabled'):
         slot = SlotScheduler(gw_id, gateways=slot_cfg.get('gateways', ['G1', 'G2', 'G3']),
                              slot_seconds=slot_cfg.get('slot_seconds', 20), logger=log)
         _slot_min_left = slot_cfg.get('min_left', 3.0)
+        _immediate = immediate_types(slot_cfg.get('immediate', DEFAULT_IMMEDIATE_TYPES))
 
         # Slot egzekwuje WYLACZNIE petla TX transportu (po odstepie, tuz przed nadaniem). Dawny wrapper
         # blokowal watki wywolujace (takze watek RX odpowiadajacy cack/ack) do 60 s.
-        lora.slot_gate = lambda _text=None: slot.seconds_until_slot(min_left=_slot_min_left)
+        lora.slot_gate = lambda _text=None: slot_wait_seconds(
+            _text, _immediate, slot.seconds_until_slot(min_left=_slot_min_left))
 
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
@@ -1589,26 +1597,24 @@ def run_supervisor(log):
     # ── OKNO NADAWCZE SUPERVISORA (2026-10-09) ──
     # Sloty porzadkuja bramki, ale supervisor tez nadaje (kalendarz w dol, params, komendy sterujace, dsnap_req,
     # ping, zg) i trafial w srodek slotu bramki, ktora wlasnie nadawala — half-duplex: ramka ginela
-    # (14:00 kalendarz do G1: chunk wyslany w slocie G1, bez cack, retry po 75 s). Ramki INICJOWANE przez
-    # supervisora wychodza teraz w jego oknie = slot nieistniejacej bramki G3 (config slotting.supervisor_slot).
-    # Natychmiastowe odpowiedzi protokolu (cack/ack/back) zostaja bez bramki — wracaja do bramki w jej slocie.
+    # (14:00 kalendarz do G1: chunk wyslany w slocie G1, bez cack, retry po 75 s). Bulk inicjowany przez
+    # supervisora wychodzi w jego oknie = slot nieistniejacej bramki G3 (config slotting.supervisor_slot).
+    # Fast lane oraz dotychczasowe reaktywne cack/ack/back omijaja slot; fast lane dodatkowo uzywa LBT.
     _scfg = CONFIG.get('slotting', {})
     if _scfg.get('enabled'):
         _sup_slot = SlotScheduler(_scfg.get('supervisor_slot', 'G3'), gateways=_scfg.get('gateways', ['G1', 'G2', 'G3']),
                                   slot_seconds=_scfg.get('slot_seconds', 20), logger=log)
         _SUP_REACTIVE = ('rt_cack', 'rt_ack', 'cal_cack', 'cal_ack', 'back', 'sup_pong')
+        _sup_immediate = immediate_types(
+            tuple(_scfg.get('immediate', DEFAULT_IMMEDIATE_TYPES)) + _SUP_REACTIVE)
 
         def _sup_gate(_text=None):
-            try:
-                _t = long_type(json.loads(_text).get('t', '')) if _text else ''
-            except (TypeError, ValueError, json.JSONDecodeError):
-                _t = ''
-            if _t in _SUP_REACTIVE:
-                return 0.0
-            return _sup_slot.seconds_until_slot(min_left=_scfg.get('min_left', 3.0))
+            return slot_wait_seconds(
+                _text, _sup_immediate,
+                _sup_slot.seconds_until_slot(min_left=_scfg.get('min_left', 3.0)))
         lora.slot_gate = _sup_gate
         _a, _b = _sup_slot.window()
-        log.info('SLOT', f'⏱️ supervisor nadaje inicjowane ramki w oknie {_a:.0f}-{_b:.0f}s / cykl {_sup_slot.cycle:.0f}s (odpowiedzi cack/ack/back natychmiast)')
+        log.info('SLOT', f'⏱️ supervisor nadaje bulk w oknie {_a:.0f}-{_b:.0f}s / cykl {_sup_slot.cycle:.0f}s (fast lane i cack/ack/back natychmiast)')
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file
     #                                     (mniej wiadomości = brak potrzeby serializacji). Anomalie: fallback.
