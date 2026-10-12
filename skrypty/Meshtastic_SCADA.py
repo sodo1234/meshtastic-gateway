@@ -616,6 +616,7 @@ def run_gateway(log):
         check_interval=an_cfg.get('offline_check', 30),
         grace=an_cfg.get('offline_grace', 120),
         skip_dev=_skip_anom,                             # nieużywany sprzęt nie zgłasza offline
+        on_excluded=lambda dev: an_reconciler.exclude(dev),
         is_active=gw_mode.offline_active)                 # #9: offline_active — calendar off-hours dalej wykrywa offline (BMS)
 
     def _offline_hash():
