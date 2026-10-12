@@ -10,7 +10,7 @@ import time
 
 from .codec import decode, encode
 from .fastlane import (DEFAULT_IMMEDIATE_TYPES, is_immediate_frame,
-                       lbt_wait_seconds, slot_wait_seconds)
+                       lbt_wait_or_requeue, lbt_wait_seconds, slot_wait_seconds)
 from .lora_transport import LoraTransport
 
 
@@ -86,19 +86,54 @@ def test_immediate_bypasses_slot_and_arbiter_front():
         _stop(transport, thread)
 
 
-def test_lbt_waits_and_respects_cap():
+def test_lbt_requeues_at_soft_cap_then_sends_after_silence():
     transport, iface, thread = _running_transport(
-        lbt_quiet=5.0, lbt_max_wait=0.12, codec_role='supervisor')
+        lbt_quiet=0.06, lbt_max_wait=0.05, lbt_hard_cap=0.5,
+        codec_role='supervisor')
+    noisy = threading.Event(); noisy.set()
+    noise_thread = threading.Thread(
+        target=lambda: _keep_channel_busy(transport, noisy), daemon=True)
+    noise_thread.start()
     try:
         before = time.monotonic()
-        transport._mesh_rx({}, None)  # even a non-text radio frame marks the channel busy
-        assert transport._last_rx_time >= before
         event = transport.send({'t': 'ping', 'g': 'G1'})
-        assert event.wait(0.6), 'LBT exceeded its cap'
+        assert not event.wait(0.12), 'soft LBT cap forced TX on a busy channel'
+        noisy.clear(); noise_thread.join(0.2)
+        assert event.wait(0.35), 'frame was not retried after channel silence'
         elapsed = iface.sent[0][0] - before
-        assert 0.09 <= elapsed <= 0.45, elapsed
+        assert 0.12 <= elapsed < 0.5, elapsed
         assert lbt_wait_seconds(before, before + 0.2, before, quiet=5, max_wait=0.1) == 0
+        wait, requeue = lbt_wait_or_requeue(
+            before, before + 0.2, before, before, quiet=5, max_wait=0.1, hard_cap=1)
+        assert wait == 0 and requeue
     finally:
+        noisy.clear()
+        _stop(transport, thread)
+
+
+def _keep_channel_busy(transport, running):
+    while running.is_set():
+        transport._mesh_rx({}, None)  # także ramka non-text oznacza zajęty kanał
+        time.sleep(0.01)
+
+
+def test_lbt_hard_cap_forces_control_frame():
+    transport, iface, thread = _running_transport(
+        lbt_quiet=5.0, lbt_max_wait=0.05, lbt_hard_cap=0.22,
+        codec_role='supervisor')
+    noisy = threading.Event(); noisy.set()
+    noise_thread = threading.Thread(
+        target=lambda: _keep_channel_busy(transport, noisy), daemon=True)
+    noise_thread.start()
+    try:
+        before = time.monotonic()
+        event = transport.send({'t': 'cmd', 'g': 'G1'})
+        assert not event.wait(0.12), 'frame escaped before hard cap on busy channel'
+        assert event.wait(0.35), 'hard cap did not release control frame'
+        elapsed = iface.sent[0][0] - before
+        assert 0.18 <= elapsed <= 0.45, elapsed
+    finally:
+        noisy.clear(); noise_thread.join(0.2)
         _stop(transport, thread)
 
 
@@ -170,7 +205,8 @@ def main():
     tests = (
         test_type_detection_long_and_short,
         test_immediate_bypasses_slot_and_arbiter_front,
-        test_lbt_waits_and_respects_cap,
+        test_lbt_requeues_at_soft_cap_then_sends_after_silence,
+        test_lbt_hard_cap_forces_control_frame,
         test_bulk_stays_slot_gated,
         test_codec_negotiation_and_dual_decode,
         test_two_transport_loopback_negotiates,

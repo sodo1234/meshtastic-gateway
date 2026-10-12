@@ -133,6 +133,7 @@ def _make_lora(cfg, log):
                          immediate=slot_cfg.get('immediate', DEFAULT_IMMEDIATE_TYPES),
                          lbt_quiet=slot_cfg.get('lbt_quiet', 2.0),
                          lbt_max_wait=slot_cfg.get('lbt_max_wait', 6.0),
+                         lbt_hard_cap=slot_cfg.get('lbt_hard_cap', 20.0),
                          codec_role=ROLE,
                          codec_short_tx=codec_cfg.get('short_tx', False))
 
@@ -630,7 +631,8 @@ def run_gateway(log):
         emit=anomaly_batcher.add,
         get_thresholds=lambda: (param_sync.get('BL'), param_sync.get('BC')),  # progi z dashboardu (live)
         logger=log, check_interval=an_cfg.get('battery_check', 300),
-        skip_dev=_skip_anom)                             # anomaly.no_anomaly: wszystkie typy anomalii
+        skip_dev=_skip_anom,                             # anomaly.no_anomaly: wszystkie typy anomalii
+        on_excluded=lambda dev: an_reconciler.exclude(dev))
 
     # STEP 5 (krok 14): temp/hum high/low dla WSZYSTKICH urządzeń bramki (override usera 2026-06-25)
     temphum_mon = TempHumMonitor(
@@ -641,7 +643,8 @@ def run_gateway(log):
             'temp_low': param_sync.get('TL'), 'temp_high': param_sync.get('TH'),
             'hum_low': param_sync.get('HL'), 'hum_high': param_sync.get('HH')},
         logger=log, check_interval=an_cfg.get('temphum_check', 60),
-        skip_dev=_skip_anom)
+        skip_dev=_skip_anom,
+        on_excluded=lambda dev: an_reconciler.exclude(dev))
 
     # ZALANIE/DYM (2026-07-30): silnika NIE BYŁO — kody `wl`/`sk` istniały tylko w mapach etykiet,
     # więc zalanie jechało wyłącznie jako stan urządzenia i nie trafiało do liczników/list/popupu.
@@ -652,7 +655,8 @@ def run_gateway(log):
         get_state=lambda dev: data.states.get(dev, {}),
         emit=anomaly_batcher.add,
         logger=log, check_interval=an_cfg.get('alarm_check', 10),
-        skip_dev=_skip_anom)
+        skip_dev=_skip_anom,
+        on_excluded=lambda dev: an_reconciler.exclude(dev))
 
     # STEP 5: stagnacja ALL devices, emit przez batcher (zamiast bezpośredniego `ab`)
     stagnation = StagnationEngine(

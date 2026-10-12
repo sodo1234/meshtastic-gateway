@@ -245,12 +245,12 @@ class CalendarTransfer:
                 crc_ok = self.crc16(b64) == info.get('crc')
             if missing or not crc_ok:
                 info['ts'] = time.time()          # podtrzymaj wpis, czekaj na retransmit
+            elif info.get('applying'):
+                return None                       # równoległy cal_end/chunk nie może apply drugi raz
             else:
-                self.incoming.pop(tid, None)
-                self.completed[tid] = time.time()
-                if len(self.completed) > 32:      # przytnij najstarsze (bounded)
-                    for old in sorted(self.completed, key=self.completed.get)[:-16]:
-                        self.completed.pop(old, None)
+                # Nie usuwaj incoming i nie oznaczaj completed przed deserialize/apply. Dopóki
+                # callback nie zakończy się sukcesem, nadawca musi móc ponowić cal_end.
+                info['applying'] = True
         if missing:
             if nack:
                 self._log('warn', 'SYNC', f"⚠️ tid={tid} brakujące chunki: {missing[:5]}")
@@ -265,17 +265,33 @@ class CalendarTransfer:
             return None
         try:
             slots = self.deserialize(b64)
+            slot_count = len(slots)
         except Exception as e:
             self._log('error', 'SYNC', f"deserialize: {e}")
+            with self.lock:
+                current = self.incoming.get(tid)
+                if current is info:
+                    current['applying'] = False
+                    current['ts'] = time.time()
+            if nack:
+                self.send(self._with_g(
+                    {"t": "cal_ack", "tid": tid, "ok": 0, "miss": []}, gw))
             return None
-        self._log('info', 'SYNC', f"✅ Odebrano {len(slots)} slotów [{gw}] dir={direction}")
+        self._log('info', 'SYNC', f"✅ Odebrano {slot_count} slotów [{gw}] dir={direction}")
         if self.on_received:
             try:
                 self.on_received(gw, direction, slots)
             except Exception as e:
-                # Jak przed dodaniem hasha: poprawny CRC jest ACK-owany. Hash odbiorcy ponizej
-                # pozostanie stary, wiec zgodnosc nie zostanie falszywie ustawiona.
                 self._log('error', 'SYNC', f"on_received: {e}")
+                with self.lock:
+                    current = self.incoming.get(tid)
+                    if current is info:
+                        current['applying'] = False
+                        current['ts'] = time.time()
+                if nack:
+                    self.send(self._with_g(
+                        {"t": "cal_ack", "tid": tid, "ok": 0, "miss": []}, gw))
+                return None
         ack = self._with_g({"t": "cal_ack", "tid": tid, "ok": 1, "miss": []}, gw)
         if self.ack_hash_fn:
             try:
@@ -285,6 +301,13 @@ class CalendarTransfer:
             except Exception as e:
                 self._log('debug', 'SYNC', f"ack_hash_fn: {e}")
         with self.lock:
+            # Dopiero udany apply kończy transfer i pozwala na pozytywny ACK/re-ACK.
+            if self.incoming.get(tid) is info:
+                self.incoming.pop(tid, None)
+            self.completed[tid] = time.time()
+            if len(self.completed) > 32:          # przytnij najstarsze (bounded)
+                for old in sorted(self.completed, key=self.completed.get)[:-16]:
+                    self.completed.pop(old, None)
             self.completed_ack[tid] = dict(ack)
             for old in list(self.completed_ack):
                 if old not in self.completed:

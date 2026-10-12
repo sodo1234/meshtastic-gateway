@@ -14,9 +14,10 @@ import time
 
 class BatteryMonitor:
     def __init__(self, gw_id, discovery, get_battery, emit, get_thresholds,
-                 logger=None, check_interval=300, skip_dev=None):
+                 logger=None, check_interval=300, skip_dev=None, on_excluded=None):
         self.gw_id = gw_id
         self.skip_dev = skip_dev         # callable(dev) → True = urzadzenie wykluczone z anomalii (config anomaly.no_anomaly)
+        self.on_excluded = on_excluded   # callable(dev) → ciche usunięcie ze store/reconcilera
         self.disc = discovery            # GatewayDiscovery (devices, short_ids) — ALL devices
         self.get_battery = get_battery   # callable(dev) → int|None
         self.emit = emit                 # callable(sid, code, value)
@@ -25,6 +26,7 @@ class BatteryMonitor:
         self.check_interval = check_interval
         self.level = {}                  # dev → 'ok' | 'low' | 'critical'
         self.value = {}                  # dev → ostatni poziom baterii % (snapshot/value)
+        self._excluded = set()
         self.running = True
 
     def start(self):
@@ -55,7 +57,13 @@ class BatteryMonitor:
         low, crit = self.get_thresholds()
         for dev in list(self.disc.devices.keys()):
             if self.skip_dev and self.skip_dev(dev):
+                self.level.pop(dev, None)
+                self.value.pop(dev, None)
+                if dev not in self._excluded and self.on_excluded:
+                    self.on_excluded(dev)
+                self._excluded.add(dev)
                 continue
+            self._excluded.discard(dev)
             b = self.get_battery(dev)
             if b is None:
                 continue                 # urządzenie bez baterii (sieciowe) / brak odczytu

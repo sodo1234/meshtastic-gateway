@@ -104,6 +104,14 @@ class AnomalyReconciler:
         with self._lock:
             self._mute[(dev, cat)] = time.time()
 
+    def exclude(self, dev):
+        """Usuń urządzenie z reconcilera/store bez generowania zdarzenia recovery."""
+        with self._lock:
+            for state in (self._mute, self._stale_since):
+                for key in [key for key in state if key[0] == dev]:
+                    state.pop(key, None)
+        return self.store.remove_dev(self.gw_id, dev)
+
     # ── lifecycle ───────────────────────────────────────
     def start(self):
         if self.running:

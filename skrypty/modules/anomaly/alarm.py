@@ -27,9 +27,11 @@ class AlarmMonitor:
         ("smoke",      "sk", "ko", "🔥", "DYM"),
     ]
 
-    def __init__(self, gw_id, discovery, get_state, emit, logger=None, check_interval=10, skip_dev=None):
+    def __init__(self, gw_id, discovery, get_state, emit, logger=None, check_interval=10,
+                 skip_dev=None, on_excluded=None):
         self.gw_id = gw_id
         self.skip_dev = skip_dev         # callable(dev) → True = urzadzenie wykluczone z anomalii (config anomaly.no_anomaly)
+        self.on_excluded = on_excluded   # callable(dev) → ciche usunięcie ze store/reconcilera
         self.disc = discovery            # GatewayDiscovery (devices, short_ids)
         self.get_state = get_state       # callable(dev) → dict (GatewayData.states[dev])
         self.emit = emit                 # callable(sid, code, value)
@@ -38,6 +40,7 @@ class AlarmMonitor:
         # jest lokalne — zero ruchu LoRa dopóki nie ma ZMIANY stanu.
         self.check_interval = check_interval
         self.active = {}                 # (dev, cap) → bool
+        self._excluded = set()
         self.running = True
 
     def start(self):
@@ -72,7 +75,13 @@ class AlarmMonitor:
     def check(self):
         for dev in list(self.disc.devices.keys()):
             if self.skip_dev and self.skip_dev(dev):
+                for key in [key for key in self.active if key[0] == dev]:
+                    self.active.pop(key, None)
+                if dev not in self._excluded and self.on_excluded:
+                    self.on_excluded(dev)
+                self._excluded.add(dev)
                 continue
+            self._excluded.discard(dev)
             st = self.get_state(dev) or {}
             sid = self.disc.short_ids.get(dev)
             if sid is None:

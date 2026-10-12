@@ -63,3 +63,29 @@ def lbt_wait_seconds(last_rx_time, now, wait_started, quiet=2.0, max_wait=6.0):
     if quiet_left <= 0.0 or cap_left <= 0.0:
         return 0.0
     return min(quiet_left, cap_left)
+
+
+def lbt_wait_or_requeue(last_rx_time, now, wait_started, hard_started,
+                        quiet=2.0, max_wait=6.0, hard_cap=20.0):
+    """Return ``(sleep_seconds, requeue)`` for one LBT attempt.
+
+    ``max_wait`` is a soft limit: if the channel is still busy, the frame must be
+    put back at the front of the queue instead of being transmitted. ``hard_cap``
+    bounds all attempts for that frame; after it expires transmission is allowed
+    even on a continuously busy channel so control traffic cannot hang forever.
+    """
+    quiet = max(0.0, float(quiet))
+    max_wait = max(0.0, float(max_wait))
+    hard_cap = max(0.0, float(hard_cap))
+    if quiet == 0.0 or not last_rx_time:
+        return 0.0, False
+    quiet_left = quiet - max(0.0, now - last_rx_time)
+    if quiet_left <= 0.0:
+        return 0.0, False
+    if hard_cap == 0.0 or now - hard_started >= hard_cap:
+        return 0.0, False
+    soft_left = max_wait - max(0.0, now - wait_started)
+    if soft_left <= 0.0:
+        return 0.0, True
+    hard_left = hard_cap - max(0.0, now - hard_started)
+    return min(quiet_left, soft_left, hard_left), False

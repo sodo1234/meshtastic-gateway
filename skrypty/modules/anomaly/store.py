@@ -182,6 +182,23 @@ class AnomalyStore:
             return 1
         return 0
 
+    def remove_dev(self, gw, dev):
+        """Cicho usuń wszystkie anomalie urządzenia (np. po ``no_anomaly``).
+
+        To nie jest recovery: nie emituje kodów clear ani alertu, tylko zapisuje krótszy
+        stan i odświeża odbiorców store, aby wpis po prostu zniknął z dashboardu/snapshotu.
+        """
+        keys = [k for k in self.anomalies if k[0] == gw and k[1] == dev]
+        for key in keys:
+            del self.anomalies[key]
+        if keys:
+            self._save()
+            if self.on_change:
+                self.on_change(gw)
+            if self.log:
+                self.log.info("ANOM", f"🔕 exclude {gw}/{dev}: usunięto {len(keys)} anomalii")
+        return len(keys)
+
     # ── reconcyliacja (dump_anom) ───────────────────────
     def prune_stale(self, gw, max_age_s):
         """Po dump_anom: skasuj anomalie danej bramki, których bramka NIE potwierdziła
