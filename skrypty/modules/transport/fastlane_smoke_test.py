@@ -117,6 +117,29 @@ def _keep_channel_busy(transport, running):
         time.sleep(0.01)
 
 
+def test_lbt_requeue_does_not_block_other_frames():
+    """Ramka czekająca na ciszę (po miękkim limicie) nie może trzymać wątku TX do hard_cap:
+    inne ramki z kolejki (np. cal_cack) wychodzą, zanim ping dostanie zgodę."""
+    transport, iface, thread = _running_transport(
+        lbt_quiet=5.0, lbt_max_wait=0.05, lbt_hard_cap=1.0,
+        codec_role='supervisor')
+    noisy = threading.Event(); noisy.set()
+    noise_thread = threading.Thread(
+        target=lambda: _keep_channel_busy(transport, noisy), daemon=True)
+    noise_thread.start()
+    try:
+        ping = transport.send({'t': 'ping', 'g': 'G1'})
+        time.sleep(0.02)
+        transport.send({'t': 'cal_cack', 'g': 'G1', 'tid': 1, 's': 0})
+        assert _wait_for(lambda: any('cal_cack' in t for _, t in iface.sent), 0.4), \
+            'requeued fast-lane frame blocked the TX thread'
+        assert not ping.is_set(), 'ping escaped LBT on a busy channel'
+        assert ping.wait(1.2), 'hard cap did not release the requeued frame'
+    finally:
+        noisy.clear(); noise_thread.join(0.2)
+        _stop(transport, thread)
+
+
 def test_lbt_hard_cap_forces_control_frame():
     transport, iface, thread = _running_transport(
         lbt_quiet=5.0, lbt_max_wait=0.05, lbt_hard_cap=0.22,
@@ -207,6 +230,7 @@ def main():
         test_immediate_bypasses_slot_and_arbiter_front,
         test_lbt_requeues_at_soft_cap_then_sends_after_silence,
         test_lbt_hard_cap_forces_control_frame,
+        test_lbt_requeue_does_not_block_other_frames,
         test_bulk_stays_slot_gated,
         test_codec_negotiation_and_dual_decode,
         test_two_transport_loopback_negotiates,

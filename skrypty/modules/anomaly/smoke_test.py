@@ -307,6 +307,33 @@ def test_gateway_offline_anomaly_and_suppression():
     print("✅ gateway offline anomaly: do + supresja trybu bez fałszywego dn (night w dzień)")
 
 
+def test_gateway_offline_no_anomaly_clears_ack():
+    """skip_dev (no_anomaly) czyści offline ORAZ ack i raz woła on_excluded. Po zdjęciu
+    wykluczenia urządzenie nadal offline musi znów zgłosić `do` (ack nie może przetrwać)."""
+    from modules.anomaly import GatewayOfflineAnomaly
+    disc, data, emitted, excluded = FakeGwDisc(), FakeGwData(), [], []
+    skip = {"v": False}
+    eng = GatewayOfflineAnomaly("G1", disc, data,
+                                emit=lambda sid, code: emitted.append((sid, code)),
+                                get_timeout=lambda dt: 60, grace=0,
+                                skip_dev=lambda dev: skip["v"] and dev == "Temp 1",
+                                on_excluded=excluded.append)
+    data._alive["Temp 1"] = False
+    eng.check()
+    assert emitted == [(0, "do")]
+    eng.ack_clear("Temp 1")                        # ręczny clear → wyciszony do recovery
+    skip["v"] = True; emitted.clear()
+    eng.check(); eng.check()
+    assert emitted == [] and eng.offline_devices() == set()
+    assert "Temp 1" not in eng.ack, "ack przetrwał wykluczenie"
+    assert excluded == ["Temp 1"], excluded       # on_excluded tylko raz, bez recovery `dn`
+    skip["v"] = False
+    eng.check()
+    assert emitted == [(0, "do")], emitted
+    assert eng.snapshot() == [(0, "do", None)]
+    print("✅ gateway offline: no_anomaly czyści ack, po zdjęciu wykluczenia alarm wraca")
+
+
 def test_anomaly_store_handle_dedup_clear_alert():
     from modules.anomaly import AnomalyStore
     sid2dev = {0: "Temp 1", 2: "Door 1", 5: "Test 1"}
@@ -501,6 +528,7 @@ if __name__ == "__main__":
              test_anomaly_batcher_dedup_and_flush,
              test_anomaly_batcher_split, test_stagnation_all_devices_and_emit,
              test_gateway_offline_anomaly_and_suppression,
+             test_gateway_offline_no_anomaly_clears_ack,
              test_anomaly_store_handle_dedup_clear_alert,
              test_anomaly_store_prune_stale_and_snapshot, test_anomaly_store_ghost_prune,
              test_reconciler_rearm_mute_and_snapshot, test_reconciler_offline_unack_and_diag,
