@@ -148,6 +148,7 @@ class GatewayOfflineAnomaly:
                 continue
             if self.skip_dev and self.skip_dev(dev):
                 self.offline.discard(dev)        # gdyby wpadł przed wykluczeniem — wyczyść hash
+                self.ack.discard(dev)            # i flagę ack, żeby ponowny dev nie był wyciszony
                 continue
             if not active:               # bramka nieaktywna → wyczyść offline, nie zgłaszaj
                 # 2026-09-10: NIE emitujemy już `dn`. `dn` znaczy „urządzenie WRÓCIŁO online",
