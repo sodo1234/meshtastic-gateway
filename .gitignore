@@ -42,3 +42,4 @@ skrypty/secrets.env
 .playwright-mcp/
 .serena/
 *.bak_*
+tools/jev_log.jsonl

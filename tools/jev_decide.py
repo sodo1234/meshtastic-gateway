@@ -33,7 +33,22 @@ def ask(state, questions):
         return None
 
 
+def choose(question, options):
+    """Dowolna decyzja wyboru: python jev_decide.py choice "pytanie" "opcja A" "opcja B" ..."""
+    crit = {str(i): o for i, o in enumerate(options)}
+    res = ask({"pytanie": question}, {"pick": {"type": "choice", "criteria": crit,
+                                              "instructions": "Ktora opcja jest najlepsza?"}})
+    a = (res or {}).get("answers", {}).get("pick")
+    mn = float(os.environ.get("JEV_MIN", "0.7"))
+    if not a or a.get("confidence", 0) < mn:
+        print(json.dumps({"fallback": True}))
+    else:
+        print(json.dumps({"choice": options[int(a["choice"])], "confidence": a["confidence"]}, ensure_ascii=False))
+
+
 def main():
+    if len(sys.argv) >= 4 and sys.argv[1] == "choice":
+        return choose(sys.argv[2], sys.argv[3:])
     if len(sys.argv) < 3 or sys.argv[1] not in ("level", "anomaly"):
         sys.exit(__doc__)
     kind, text = sys.argv[1], " ".join(a for a in sys.argv[2:] if a != "--min")

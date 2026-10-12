@@ -213,5 +213,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=collect, daemon=True).start()
-    print(f"agent_status on http://0.0.0.0:{PORT}/")
-    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+    print(f"agent_status on http://127.0.0.1:{PORT}/")
+    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
