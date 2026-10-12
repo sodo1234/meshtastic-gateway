@@ -10,6 +10,7 @@ from pathlib import Path
 
 PORT = 8977
 INTERVAL = 20
+DISPATCH_LOG = Path(__file__).resolve().parents[1] / "dispatch.log"
 HOSTS = {"G2": "td@100.98.155.78", "SUP": "td@100.79.111.24", "G1": "td@100.68.79.100"}
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6"]
 REPO, ISSUE = "sodo1234/meshtastic-gateway", "3"
@@ -117,6 +118,23 @@ def probe_channel():
              "text": " ".join((c.get("body") or "").split())[:120]} for c in reversed(comments)]
 
 
+def dispatch_entries(limit=50):
+    """Read a bounded tail and tolerate old/malformed JSONL records."""
+    try:
+        lines = DISPATCH_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+    except OSError:
+        return []
+    entries = []
+    for line in reversed(lines):
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        entries.append({k: item.get(k) for k in
+                        ("ts", "level", "model", "elapsed_ms", "status", "task", "result")})
+    return entries
+
+
 def collect():
     while True:
         res = {}
@@ -145,14 +163,18 @@ h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:20px 0 8px}.mut{color:
 .c h3{margin:0 0 6px;font-size:16px;display:flex;justify-content:space-between}
 .ok{color:var(--ok)}.bad{color:var(--bad)}table{width:100%;border-collapse:collapse}td{padding:2px 0;vertical-align:top}
 td:last-child{text-align:right}.cm{border-bottom:1px solid var(--bd);padding:8px 0;word-break:break-word}
+.log{overflow-x:auto}.log table{min-width:760px}.log th,.log td{padding:7px 8px;border-bottom:1px solid var(--bd);text-align:left}
+.log th{color:var(--mut);font-size:12px}.log td:last-child{text-align:left}.result{max-width:430px;white-space:pre-wrap;word-break:break-word}
 </style></head><body>
 <h1>Agent Status</h1><div class="mut" id="u">ladowanie...</div>
-<div class="grid" id="m"></div><h2>Kanal (issue #3)</h2><div class="c" id="ch"></div>
+<div class="grid" id="m"></div><h2>Dispatch</h2><div class="c log" id="dispatch"></div>
+<h2>Kanal (issue #3)</h2><div class="c" id="ch"></div>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ago=t=>{if(!t)return'-';const s=(Date.now()-new Date(t))/1e3;return s<90?Math.round(s)+' s temu':s<5400?Math.round(s/60)+' min temu':s<172800?Math.round(s/3600)+' h temu':Math.round(s/86400)+' d temu'};
 const yn=b=>b?'<span class="ok">tak</span>':'<span class="mut">nie</span>';
-async function load(){try{const d=await (await fetch('/api/status')).json();
+const duration=ms=>ms==null?'-':ms<1000?ms+' ms':(ms/1000).toFixed(1)+' s';
+async function load(){try{const [d,logs]=await Promise.all([fetch('/api/status').then(r=>r.json()),fetch('/api/dispatch').then(r=>r.json())]);
 document.getElementById('u').textContent='aktualizacja: '+(d.updated?new Date(d.updated).toLocaleTimeString():'-');
 document.getElementById('m').innerHTML=Object.entries(d.machines).map(([n,m])=>!m.online?
 `<div class="c"><h3>${esc(n)}<span class="bad">offline</span></h3><div class="mut">${esc(m.target||'')}</div></div>`:
@@ -161,9 +183,10 @@ document.getElementById('m').innerHTML=Object.entries(d.machines).map(([n,m])=>!
 <tr><td>gemini</td><td>${esc(m.gemini.version||'brak')}</td></tr><tr><td class="mut">ost. aktywnosc</td><td>${ago(m.gemini.last_activity)}</td></tr>
 <tr><td>procesy codex / companion / gemini</td><td>${m.processes.codex} / ${m.processes['codex-companion']} / ${m.processes.gemini}</td></tr>
 <tr><td>TYPESAFE_API_KEY</td><td>${yn(m.TYPESAFE_API_KEY_set)}</td></tr><tr><td>Vertex AI</td><td>${yn(m.vertexai)}</td></tr></table></div>`).join('');
+document.getElementById('dispatch').innerHTML=logs.length?`<table><thead><tr><th>czas</th><th>poziom</th><th>model</th><th>trwanie</th><th>wynik</th></tr></thead><tbody>${logs.map(x=>`<tr><td>${x.ts?new Date(x.ts*1000).toLocaleString():'-'}</td><td>${esc(x.level)}</td><td>${esc(x.model||'-')}</td><td>${duration(x.elapsed_ms)}</td><td class="result"><b class="${x.status==='ok'||x.status==='local'?'ok':x.status?'bad':'mut'}">${esc(x.status||'-')}</b>${x.result?' — '+esc(x.result):x.task?' — '+esc(x.task):''}</td></tr>`).join('')}</tbody></table>`:'<span class="mut">brak wpisow</span>';
 document.getElementById('ch').innerHTML=d.channel.map(c=>`<div class="cm"><b>${esc(c.author)}</b> <span class="mut">${ago(c.time)}</span><br>${esc(c.text)}</div>`).join('')||'<span class="mut">brak</span>';
 }catch(e){document.getElementById('u').textContent='blad: '+e}}
-load();setInterval(load,10000);
+load();setInterval(load,5000);
 </script></body></html>"""
 
 
@@ -172,6 +195,8 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith("/api/status"):
             with LOCK:
                 body, ctype = json.dumps(STATE, ensure_ascii=False).encode(), "application/json"
+        elif self.path.startswith("/api/dispatch"):
+            body, ctype = json.dumps(dispatch_entries(), ensure_ascii=False).encode(), "application/json"
         elif self.path in ("/", "/index.html"):
             body, ctype = PAGE.encode(), "text/html; charset=utf-8"
         else:
