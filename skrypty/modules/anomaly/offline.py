@@ -91,7 +91,8 @@ class GatewayOfflineAnomaly:
     offline, wyczyść istniejące (urządzenia świadomie bez zasilania)."""
 
     def __init__(self, gw_id, discovery, data, emit, get_timeout, logger=None,
-                 check_interval=30, grace=120, is_active=None, skip_dev=None):
+                 check_interval=30, grace=120, is_active=None, skip_dev=None,
+                 on_excluded=None):
         self.gw_id = gw_id
         self.disc = discovery            # GatewayDiscovery (devices, short_ids) — ALL
         self.data = data                 # GatewayData (last_msg_ts keyed by dev)
@@ -106,6 +107,8 @@ class GatewayOfflineAnomaly:
         # do self.offline: ten zbiór karmi hash `oh`, snapshot() i dump_anom, więc samo zdławienie
         # ramki `ab` nie wystarczyłoby (urządzenia dalej wisiałyby na liście u supervisora).
         self.skip_dev = skip_dev         # callable(dev) → True = pomiń całkowicie
+        self.on_excluded = on_excluded   # callable(dev) → ciche usunięcie ze store/reconcilera
+        self._excluded = set()
         self.offline = set()             # dev names (= availability offline, do hasha/dryfu)
         # ACK: urządzenia offline RĘCZNIE wyczyszczone (clear z bramki/supervisora przez ac_b).
         # Rozdziela AVAILABILITY (prawda — urządzenie nadal offline, zostaje w self.offline dla
@@ -148,8 +151,14 @@ class GatewayOfflineAnomaly:
                 continue
             if self.skip_dev and self.skip_dev(dev):
                 self.offline.discard(dev)        # gdyby wpadł przed wykluczeniem — wyczyść hash
-                self.ack.discard(dev)            # i flagę ack, żeby ponowny dev nie był wyciszony
+                # Wyczyść też ACK: inaczej po zdjęciu z no_anomaly urządzenie nadal offline
+                # wraca do self.offline bez emisji `do` (alert wyciszony do najbliższego recovery).
+                self.ack.discard(dev)
+                if dev not in self._excluded and self.on_excluded:
+                    self.on_excluded(dev)
+                self._excluded.add(dev)
                 continue
+            self._excluded.discard(dev)
             if not active:               # bramka nieaktywna → wyczyść offline, nie zgłaszaj
                 # 2026-09-10: NIE emitujemy już `dn`. `dn` znaczy „urządzenie WRÓCIŁO online",
                 # a bramka nieaktywna nic takiego nie wie — carport w dzień ma obwód przekaźników
