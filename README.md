@@ -81,6 +81,12 @@ Pełna tabela w [CLAUDE.md](CLAUDE.md#protokół--short-json).
 
 Status: v38 = monolit `Gateway`/`Supervisor` (~2500 lin każda). Plan rozbicia na ~10 modułów (Transport, Dispatcher, AnomalyEngine, Batcher, Scheduler, AntennaManager, HAIntegration). Szczegóły w CLAUDE.md.
 
+## Claude na kredytach API
+
+Zadania dla Claude można zlecać przez issue/komentarz z `@claude` — wykonuje je
+GitHub Action na kluczu API (kredyty z konsoli Anthropic), nie na limicie planu
+claude.ai. Konfiguracja i przykłady: [docs/claude-w-chmurze.md](docs/claude-w-chmurze.md).
+
 ## License
 
 Private — proprietary domain logic.

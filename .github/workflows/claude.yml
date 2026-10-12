@@ -1,0 +1,54 @@
+# Claude Code w GitHub Actions — rozliczane z kredytów API (konsola Anthropic,
+# projekt "meshtastic gateway"), NIE z limitu planu claude.ai.
+# Uruchamia się, gdy w issue / PR / komentarzu pojawi się "@claude".
+# Opis: docs/claude-w-chmurze.md
+name: Claude (kredyty API)
+
+on:
+  issues:
+    types: [opened, assigned]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Sonnet = dobry stosunek jakości do ceny; --max-turns to bezpiecznik kosztów.
+          # Do trudnych kroków refactoringu zmień na claude-opus-5-5.
+          # python3 dozwolony, żeby Claude mógł robić ast.parse() i testy importu (zasady z CLAUDE.md).
+          claude_args: >-
+            --model claude-sonnet-5-5
+            --max-turns 40
+            --allowedTools "Bash(python3:*),Bash(git diff:*),Bash(git log:*),Bash(git status:*)"
