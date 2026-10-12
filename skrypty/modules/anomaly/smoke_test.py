@@ -67,6 +67,54 @@ def test_battery_low_critical_recovery():
     print("✅ battery: ok→low(lb)→critical(cb)→recovery(bo), sieciowe pominięte, dedup")
 
 
+def test_no_anomaly_clears_monitor_and_store_without_recovery():
+    """Dynamiczne wykluczenie usuwa latch i store; dashboard nie dostaje fałszywego recovery."""
+    from modules.anomaly import AlarmMonitor, AnomalyStore, BatteryMonitor, TempHumMonitor
+    from modules.anomaly.reconciler import AnomalyReconciler
+
+    disc = FakeGwDisc()
+    disc.short_rev = {sid: dev for dev, sid in disc.short_ids.items()}
+    states = {"Temp 1": {"battery": 10, "temperature": 99.0, "water_leak": True}}
+    excluded = set()
+    emitted = []
+    changes = []
+    store = AnomalyStore(lambda _gw, sid: disc.short_rev.get(sid),
+                         on_change=lambda gw: changes.append(gw))
+
+    def emit(sid, code, value=None):
+        emitted.append((sid, code, value))
+        store.handle_ab({"g": "G1", "d": [[sid, code, value]]})
+
+    rec = AnomalyReconciler(
+        "G1", store, probes=[], resolve_dev=lambda sid: disc.short_rev.get(sid),
+        dev_to_sid=lambda dev: disc.short_ids.get(dev), readd_fn=lambda *_args: None)
+    rec._mute[("Temp 1", "battery")] = time.time()
+    rec._stale_since[("Temp 1", "temp")] = time.time()
+    on_excluded = rec.exclude
+    battery = BatteryMonitor(
+        "G1", disc, lambda dev: states.get(dev, {}).get("battery"), emit,
+        lambda: (25, 15), skip_dev=lambda dev: dev in excluded, on_excluded=on_excluded)
+    temphum = TempHumMonitor(
+        "G1", disc, lambda dev: states.get(dev, {}), emit,
+        lambda: {"temp_high": 30}, skip_dev=lambda dev: dev in excluded,
+        on_excluded=on_excluded)
+    alarm = AlarmMonitor(
+        "G1", disc, lambda dev: states.get(dev, {}), emit,
+        skip_dev=lambda dev: dev in excluded, on_excluded=on_excluded)
+
+    battery.check(); temphum.check(); alarm.check()
+    assert store.counts("G1") == {"offline": 0, "battery": 1, "other": 2}
+    before = list(emitted)
+    excluded.add("Temp 1")
+    battery.check(); temphum.check(); alarm.check()
+    assert battery.snapshot() == [] and temphum.snapshot() == [] and alarm.snapshot() == []
+    assert store.counts("G1") == {"offline": 0, "battery": 0, "other": 0}
+    assert emitted == before, "wykluczenie nie może emitować bo/to/wo ani innego recovery"
+    assert not rec._mute and not rec._stale_since
+    assert changes, "ciche usunięcie musi odświeżyć dashboard/snapshot"
+    print("✅ no_anomaly: latch+store/reconciler wyczyszczone bez fałszywego recovery")
+
+
 def test_anomaly_batcher_dedup_and_flush():
     from modules.anomaly import AnomalyBatcher
     sent = []
@@ -448,7 +496,9 @@ if __name__ == "__main__":
              test_stagnation_battery_vs_mains, test_stagnation_recovery,
              test_stagnation_skips_unseen, test_stagnation_survives_restart,
              test_offline_by_type, test_offline_recovery_and_grace,
-             test_battery_low_critical_recovery, test_anomaly_batcher_dedup_and_flush,
+             test_battery_low_critical_recovery,
+             test_no_anomaly_clears_monitor_and_store_without_recovery,
+             test_anomaly_batcher_dedup_and_flush,
              test_anomaly_batcher_split, test_stagnation_all_devices_and_emit,
              test_gateway_offline_anomaly_and_suppression,
              test_anomaly_store_handle_dedup_clear_alert,

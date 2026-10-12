@@ -22,7 +22,7 @@ from collections import deque
 
 from .codec import decode, encode, is_short_frame, long_type
 from .fastlane import (DEFAULT_IMMEDIATE_TYPES, immediate_types,
-                       is_immediate_frame, lbt_wait_seconds)
+                       is_immediate_frame, lbt_wait_or_requeue)
 
 # meshtastic + pubsub imported lazily in start() — module loadable without hardware deps
 
@@ -31,7 +31,7 @@ class LoraTransport:
     def __init__(self, ports_cfg, reconnect_cfg=None, on_receive=None, logger=None,
                  tx_timeout=8, dedup_seconds=6, tx_cooldown=2.0, tx_hard_timeout=90,
                  immediate=None, lbt_quiet=2.0, lbt_max_wait=6.0,
-                 codec_role='gateway', codec_short_tx=False):
+                 codec_role='gateway', codec_short_tx=False, lbt_hard_cap=20.0):
         """
         ports_cfg:     list of dicts: [{"port": "/dev/...", "enabled": True,
                                         "label": "ANT-1", "gateways": ["G1"]}, ...]
@@ -60,6 +60,7 @@ class LoraTransport:
             DEFAULT_IMMEDIATE_TYPES if immediate is None else immediate)
         self.lbt_quiet = max(0.0, float(lbt_quiet))
         self.lbt_max_wait = max(0.0, float(lbt_max_wait))
+        self.lbt_hard_cap = max(0.0, float(lbt_hard_cap))
         self._last_rx_time = 0.0          # monotonic; LBT, aktualizowany dla KAZDEJ ramki RX
         self.codec_role = str(codec_role or 'gateway').lower()
         self.codec_short_tx = bool(codec_short_tx)
@@ -514,15 +515,26 @@ class LoraTransport:
                     time.sleep(min(_w, 0.2))
                     continue
             if immediate:
+                hard_started = job.setdefault('_lbt_started', wait_started)
                 while self.running:
                     now_mono = time.monotonic()
-                    _w = lbt_wait_seconds(self._last_rx_time, now_mono, wait_started,
-                                          self.lbt_quiet, self.lbt_max_wait)
+                    _w, requeue = lbt_wait_or_requeue(
+                        self._last_rx_time, now_mono, wait_started, hard_started,
+                        self.lbt_quiet, self.lbt_max_wait, self.lbt_hard_cap)
+                    if requeue:
+                        # Miękki limit nie jest zgodą na TX na zajętym kanale. Zachowaj
+                        # początek twardego limitu w jobie i spróbuj ponownie po ciszy.
+                        self._tx_queue.appendleft(job)
+                        job = None
+                        time.sleep(0.05)
+                        break
                     if _w <= 0:
                         break
                     time.sleep(min(_w, 0.1))
                 if not self.running:
                     break
+                if job is None:
+                    continue
             text, target_label = job['text'], job.get('label')
             if target_label:
                 with self.lock: iface = self.interfaces.get(target_label)

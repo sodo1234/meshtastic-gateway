@@ -23,9 +23,10 @@ class TempHumMonitor:
     _ICON = {"high": "🔺", "low": "🔻", "ok": "✅"}
 
     def __init__(self, gw_id, discovery, get_state, emit, get_thresholds,
-                 logger=None, check_interval=60, skip_dev=None):
+                 logger=None, check_interval=60, skip_dev=None, on_excluded=None):
         self.gw_id = gw_id
         self.skip_dev = skip_dev         # callable(dev) → True = urzadzenie wykluczone z anomalii (config anomaly.no_anomaly)
+        self.on_excluded = on_excluded   # callable(dev) → ciche usunięcie ze store/reconcilera
         self.disc = discovery            # GatewayDiscovery (is_monitored, short_ids, devices)
         self.get_state = get_state       # callable(dev) → dict (GatewayData.states[dev])
         self.emit = emit                 # callable(sid, code, value)
@@ -34,6 +35,7 @@ class TempHumMonitor:
         self.check_interval = check_interval
         self.level = {}                  # (dev, dim) → 'ok' | 'high' | 'low'
         self.value = {}                  # (dev, dim) → ostatni odczyt (snapshot/value)
+        self._excluded = set()
         self.running = True
 
     def start(self):
@@ -65,7 +67,14 @@ class TempHumMonitor:
         thr = self.get_thresholds() or {}
         for dev in list(self.disc.devices.keys()):   # WSZYSTKIE urządzenia bramki (nie tylko monitored)
             if self.skip_dev and self.skip_dev(dev):
+                for state in (self.level, self.value):
+                    for key in [key for key in state if key[0] == dev]:
+                        state.pop(key, None)
+                if dev not in self._excluded and self.on_excluded:
+                    self.on_excluded(dev)
+                self._excluded.add(dev)
                 continue
+            self._excluded.discard(dev)
             st = self.get_state(dev) or {}
             sid = self.disc.short_ids.get(dev)
             if sid is None:

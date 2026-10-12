@@ -239,6 +239,53 @@ def test_transfer_crc_mismatch():
     print("✅ transfer CRC mismatch → NACK ok=0")
 
 
+def test_transfer_apply_failure_is_not_completed_or_acked_ok():
+    """Apply musi być częścią transakcji: błąd zostawia bufor do retransmisji i daje NACK."""
+    from modules.calendar import CalendarTransfer
+    sent = []
+    fail = {"value": True}
+
+    def apply(_gw, _direction, _slots):
+        if fail["value"]:
+            raise RuntimeError("apply failed")
+
+    rx = CalendarTransfer(sent.append, chunk_size=200, on_received=apply)
+    begin, chunks, end, _n = _frames([[100, 60, 1]], chunk_size=200, tid="apply1")
+    rx.dispatch(begin)
+    rx.dispatch(chunks[0])
+    assert "apply1" in rx.incoming and "apply1" not in rx.completed
+    assert not any(f.get("t") == "cal_ack" and f.get("ok") == 1 for f in sent)
+
+    rx.handle_end(end)
+    assert sent[-1]["t"] == "cal_ack" and sent[-1]["ok"] == 0
+    assert "apply1" in rx.incoming and "apply1" not in rx.completed
+
+    fail["value"] = False
+    rx.handle_end(end)
+    assert sent[-1]["ok"] == 1
+    assert "apply1" not in rx.incoming and "apply1" in rx.completed
+    print("✅ transfer apply error → brak completed/ACK ok; NACK i udany retry")
+
+
+def test_transfer_deserialize_failure_is_not_completed():
+    """Poprawny CRC nie wystarcza, jeśli payload nie daje się zdeserializować."""
+    import base64
+    from modules.calendar import CalendarTransfer
+    sent = []
+    rx = CalendarTransfer(sent.append)
+    bad = base64.b64encode(b"not-zlib").decode()
+    crc = CalendarTransfer.crc16(bad)
+    begin = {"t": "cal_begin", "tid": "bad1", "g": "G1", "dir": "push",
+             "n": 1, "crc": crc}
+    chunk = {"t": "cal_chunk", "tid": "bad1", "s": 0, "d": bad}
+    end = {"t": "cal_end", "tid": "bad1", "g": "G1", "dir": "push",
+           "n": 1, "crc": crc}
+    rx.dispatch(begin); rx.dispatch(chunk); rx.handle_end(end)
+    assert sent[-1]["t"] == "cal_ack" and sent[-1]["ok"] == 0
+    assert "bad1" in rx.incoming and "bad1" not in rx.completed
+    print("✅ transfer deserialize error → NACK, bufor zachowany, brak completed")
+
+
 def test_build_ics():
     from modules.calendar import build_ics, DEFAULT_MODE_NAMES
     slots = [{"id": "s1", "start": "2026-06-11 08:00:00", "end": "2026-06-11 16:00:00", "mode": 1},
@@ -399,7 +446,8 @@ if __name__ == "__main__":
              test_transfer_serialize_roundtrip, test_transfer_reassembly_ok,
              test_transfer_missing_chunk_nack, test_transfer_duplicate_end_reack,
              test_transfer_lost_begin_recovers, test_transfer_lost_begin_and_chunk_nack,
-             test_transfer_crc_mismatch,
+             test_transfer_crc_mismatch, test_transfer_apply_failure_is_not_completed_or_acked_ok,
+             test_transfer_deserialize_failure_is_not_completed,
              test_build_ics, test_parse_ha_events, test_calendar_e2e_push,
              test_calendar_e2e_reverse, test_replace_schedule_mode_from_note,
              test_reverse_mirror_hash_converges]
