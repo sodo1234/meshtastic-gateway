@@ -441,6 +441,7 @@ class LoraTransport:
     # ── TX path ──
     # ruch odkładany podczas transferu-pliku (bulk/periodic; NIE odpowiedzi/komendy/transfery)
     _DEFER_DURING_XFER = {'b', 'ab', 'disc_vio', 'disc_meta', 'hb'}
+    _LBT_RETRY = 0.1                  # [s] odstęp ponownych prób LBT ramki fast-lane po requeue
 
     def _job_type(self, text):
         try:
@@ -466,13 +467,28 @@ class LoraTransport:
     def _pop_first_sendable(self):
         """Podczas transferu: wybierz pierwszy job NIE-odkładany (transfer/odpowiedź/komenda/alarm),
         zostaw ruch bulk w kolejce (bramka milczy → słyszy cack). None = tylko bulk → milcz."""
+        now = time.monotonic()
         with self.lock:
             for i, job in enumerate(self._tx_queue):
+                if job.get('_lbt_retry_at', 0.0) > now:
+                    continue                  # fast-lane czeka na ciszę (LBT) → nie blokuje reszty
                 if self._sendable_during_xfer(job['text']):
-                    self._tx_queue.rotate(-i)
-                    j = self._tx_queue.popleft()
-                    self._tx_queue.rotate(i)
-                    return j
+                    return self._pop_at(i)
+        return None
+
+    def _pop_at(self, i):
+        self._tx_queue.rotate(-i)
+        j = self._tx_queue.popleft()
+        self._tx_queue.rotate(i)
+        return j
+
+    def _pop_first_ready(self):
+        """Fallback FIFO: pierwszy job, który nie czeka na ponowną próbę LBT. None = same odroczone."""
+        now = time.monotonic()
+        with self.lock:
+            for i, job in enumerate(self._tx_queue):
+                if job.get('_lbt_retry_at', 0.0) <= now:
+                    return self._pop_at(i)
         return None
 
     def _tx_loop(self):
@@ -496,7 +512,9 @@ class LoraTransport:
                 if gap < self.tx_cooldown:
                     time.sleep(self.tx_cooldown - gap)
             if job is None:
-                job = self._tx_queue.popleft()
+                job = self._pop_first_ready()
+                if job is None:
+                    time.sleep(0.05); continue      # same ramki czekające na ciszę LBT
             immediate = is_immediate_frame(job['text'], self.immediate_types)
             # JEDNA bramka slotu, PO odstepie (cooldown potrafi przesunac nadanie za koniec okna):
             # ramka wychodzi w powietrze tylko w oknie bramki, z zapasem min_left na jej czas antenowy.
@@ -518,15 +536,18 @@ class LoraTransport:
                 hard_started = job.setdefault('_lbt_started', wait_started)
                 while self.running:
                     now_mono = time.monotonic()
+                    # Miękki limit liczony od PIERWSZEJ próby (hard_started): ponowna próba po
+                    # requeue tylko sprawdza ciszę, nie czeka znowu max_wait trzymając wątek TX.
                     _w, requeue = lbt_wait_or_requeue(
-                        self._last_rx_time, now_mono, wait_started, hard_started,
+                        self._last_rx_time, now_mono, hard_started, hard_started,
                         self.lbt_quiet, self.lbt_max_wait, self.lbt_hard_cap)
                     if requeue:
-                        # Miękki limit nie jest zgodą na TX na zajętym kanale. Zachowaj
-                        # początek twardego limitu w jobie i spróbuj ponownie po ciszy.
+                        # Miękki limit nie jest zgodą na TX na zajętym kanale. Odłóż ramkę na
+                        # początek kolejki z terminem ponownej próby: w tym czasie wątek TX
+                        # obsługuje inne joby (cal_cack, alarmy), zamiast trzymać ją do hard_cap.
+                        job['_lbt_retry_at'] = now_mono + self._LBT_RETRY
                         self._tx_queue.appendleft(job)
                         job = None
-                        time.sleep(0.05)
                         break
                     if _w <= 0:
                         break
