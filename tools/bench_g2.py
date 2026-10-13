@@ -138,8 +138,13 @@ def match_ctrl(gw, dev, val):
 
 def match_anomaly(gw, code):
     def m(f):
-        return (_is_gw(f, gw) and f.get('t') in ('ab', 'an_d')
-                and f'"{code}"' in json.dumps(f.get('d'), ensure_ascii=False))
+        if not _is_gw(f, gw):
+            return False
+        j = lambda k: json.dumps(f.get(k), ensure_ascii=False)
+        if f.get('t') == 'ab':
+            return f'"{code}"' in j('d')
+        # an_d (delta): dodane w 'a', zdjete w 'r'; dn = zdjecie 'do'
+        return f.get('t') == 'an_d' and (f'"{code}"' in j('a') or (code == 'dn' and '"do"' in j('r')))
     return m
 
 
@@ -208,11 +213,11 @@ def selftest():
     assert not match_ctrl('G2', 'Test 1', 'ON')({'t': 'st', 'g': 'G1', 'd': 'Test 1', 'v': 'ON'})
     assert match_anomaly('G2', 'do')({'t': 'ab', 'g': 'G2', 'd': [[5, 'do', None]]})
     assert not match_anomaly('G2', 'do')({'t': 'ab', 'g': 'G2', 'd': [[5, 'dn', None]]})
-    slots = {'G1': 40, 'G2': 10, 'G3': 10}
-    assert slot_window('G2', slots) == (40, 50) and slot_window('G3', slots) == (50, 60)
+    slots = {'G1': 20, 'G2': 20, 'G3': 20}
+    assert slot_window('G2', slots) == (20, 40) and slot_window('G3', slots) == (40, 60)
     imm = frozenset(DEFAULT_IMMEDIATE_TYPES)
-    total, bad = air_violations(['10:00:41.100 hb 120', '10:00:12.000 b 90',
-                                 '10:00:12.500 pong 40'], (40, 50), imm)
+    total, bad = air_violations(['10:00:21.100 hb 120', '10:00:12.000 b 90',
+                                 '10:00:12.500 pong 40'], (20, 40), imm)
     assert total == 2 and bad == ['10:00:12.000 b 90'], (total, bad)
     print('selftest OK')
 
@@ -233,7 +238,7 @@ def main():
     ap.add_argument('--gap', type=float, default=15.0, help='przerwa miedzy probami [s]')
     ap.add_argument('--timeout', type=float, default=120.0)
     ap.add_argument('--factor', type=float, default=1.2, help='PASS gdy mediana <= stara*factor')
-    ap.add_argument('--slots', default='{"G1":40,"G2":10,"G3":10}')
+    ap.add_argument('--slots', default='{"G1":20,"G2":20,"G3":20}')
     ap.add_argument('--selftest', action='store_true')
     args = ap.parse_args()
     if args.selftest:
