@@ -10,9 +10,12 @@ from collections.abc import Mapping
 from .codec import long_type
 
 
+# `an_d` (2026-10-14, decyzja usera): delta anomalii czekała na slot bramki ~30 s z ~45 s całości
+# (zmierzone G2: wykrycie :50 → eter :20 następnej minuty). Ramka mała (~75 B) i zdarzeniowa;
+# duże zmiany i tak idą blobem `ansnap` przez ReliableTransfer, więc szybki pas nie zapcha kanału.
 DEFAULT_IMMEDIATE_TYPES = (
     "ping", "pong", "sup_ping", "sup_pong", "cmd", "st", "stm",
-    "sync", "params", "params_req", "param_upd", "zg",
+    "sync", "params", "params_req", "param_upd", "zg", "an_d",
 )
 
 
