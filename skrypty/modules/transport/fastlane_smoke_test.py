@@ -63,6 +63,8 @@ def test_type_detection_long_and_short():
     assert is_immediate_frame('{"t":"params","g":"G1"}', DEFAULT_IMMEDIATE_TYPES)
     assert is_immediate_frame('{"t":"ps","g":"G1"}', DEFAULT_IMMEDIATE_TYPES)
     assert not is_immediate_frame({'t': 'hb'}, DEFAULT_IMMEDIATE_TYPES)
+    assert is_immediate_frame({'t': 'ad'}, DEFAULT_IMMEDIATE_TYPES), 'an_d (skrot ad) w szybkim pasie'
+    assert not is_immediate_frame({'t': 'ab'}, DEFAULT_IMMEDIATE_TYPES), 'blob anomalii zostaje w slocie'
     assert slot_wait_seconds({'t': 'pi'}, DEFAULT_IMMEDIATE_TYPES, 37) == 0
     assert slot_wait_seconds({'t': 'h'}, DEFAULT_IMMEDIATE_TYPES, 37) == 37
 
