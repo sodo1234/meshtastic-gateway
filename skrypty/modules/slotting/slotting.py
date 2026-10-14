@@ -16,6 +16,7 @@ class SlotScheduler:
     def __init__(self, gw_id, gateways=None, slot_seconds=20, num_slots=None,
                  clock=time.time, logger=None):
         gws = list(gateways or [gw_id])
+        self._gws = gws
         self.gw_id = gw_id
         # slot_seconds: liczba (wszystkie sloty rowne) ALBO dict {bramka: sekundy} — np. G1 40 s (93%
         # ruchu), G2/G3 po 10 s. Cykl = suma dlugosci; kolejnosc `gateways` = kolejnosc okien.
@@ -61,6 +62,29 @@ class SlotScheduler:
         if delta < 0:
             delta += self.cycle          # okno już minęło w tym cyklu → następny cykl
         return delta
+
+    def fast_lane_wait(self, active, now=None, guard=2.0):
+        """Szybki pas BRAMKI (2026-10-14): od razu w swoim i w wolnym slocie, ale NIE w slocie innej
+        aktywnej bramki. Powód: ukryty nadajnik — G2 nie słyszy G1 (słyszą się tylko przez supa), więc
+        LBT nie chroni; zmierzone v12.8: `param_upd` G2 w slocie G1 zderzył się z HB G1 i zginął.
+        `guard` = czas antenowy ramki: nie zaczynaj, jeśli cudzy slot zaczyna się za < guard s.
+        Zwraca sekundy oczekiwania (0 = nadawaj)."""
+        pos = self.position(now)
+        start = 0.0
+        windows = []
+        for i, ln in enumerate(self.lens):
+            windows.append((i, start, start + ln))
+            start += ln
+        foreign = {i for i, (g) in enumerate(self._gws) if g != self.gw_id and g in set(active)}
+        for i, a0, a1 in windows:
+            if a0 <= pos < a1:
+                if i in foreign:
+                    return a1 - pos                      # trwa cudzy slot → do jego końca
+                nxt = (i + 1) % len(windows)
+                if nxt in foreign and a1 - pos < guard:  # cudzy slot tuż-tuż → przeczekaj go
+                    return (a1 - pos) + self.lens[nxt]
+                return 0.0
+        return 0.0
 
     def frame_capacity(self, gap, now=None):
         """Ile ramek (co `gap` s) zmiesci sie w biezacym oknie; poza oknem — w calym nastepnym."""

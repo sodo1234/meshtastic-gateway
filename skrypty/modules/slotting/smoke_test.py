@@ -61,8 +61,23 @@ def test_safe_window():
     print("✅ SafeWindow: send tylko po RX w oknie")
 
 
+def test_fast_lane_avoids_foreign_slot():
+    """Szybki pas bramki: swój slot i wolny G3 = od razu; slot G1 = czekaj do końca; tuż przed G1 = przeczekaj."""
+    from modules.slotting import SlotScheduler
+    s = SlotScheduler("G2", gateways=["G1", "G2", "G3"], slot_seconds=20)
+    act = ["G1", "G2"]
+    assert s.fast_lane_wait(act, now=25) == 0          # swój slot
+    assert s.fast_lane_wait(act, now=45) == 0          # wolny slot G3
+    assert s.fast_lane_wait(act, now=5) == 15          # slot G1 → do jego końca
+    assert s.fast_lane_wait(act, now=59) == 21         # G1 za 1 s < guard 2 s → przeczekaj cały G1
+    assert s.fast_lane_wait(act, now=57) == 0          # G1 za 3 s → zdąży
+    g1 = SlotScheduler("G1", gateways=["G1", "G2", "G3"], slot_seconds=20)
+    assert g1.fast_lane_wait(act, now=30) == 10 and g1.fast_lane_wait(act, now=50) == 0
+    print("✅ szybki pas omija cudzy slot (ukryty nadajnik), swój i wolny slot bez czekania")
+
+
 if __name__ == "__main__":
-    tests = [test_imports, test_slot_windows, test_min_left_nie_zaczyna_na_koncu_okna, test_in_slot_and_wait, test_safe_window]
+    tests = [test_imports, test_slot_windows, test_min_left_nie_zaczyna_na_koncu_okna, test_in_slot_and_wait, test_safe_window, test_fast_lane_avoids_foreign_slot]
     failed = 0
     for t in tests:
         try:
