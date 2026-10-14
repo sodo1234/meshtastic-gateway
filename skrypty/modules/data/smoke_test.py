@@ -714,8 +714,26 @@ def test_b1_b2_slim_entries():
     print("✅ B1+B2: `b` bez LQI i bez zbędnego `a`, offline/powrót jawne, LQI w blobie")
 
 
+def test_b_frame_carries_dh_when_queue_empty():
+    """Opcja A (2026-10-14): ostatnia ramka `b` niesie `dh` równy lustru supa po jej nałożeniu
+    → zgodność bez czekania na HB. Przy kolejce w toku — bez hasha (wyprzedzałby lustro)."""
+    from modules.data import GatewayData, SupervisorData
+    gdisc, lora = FakeGwDiscovery(), FakeLora()
+    gd = GatewayData("G1", gdisc, lora, mon_interval=999, pri_interval=999)
+    sd = SupervisorData(FakeHA(), FakeSupDiscovery())
+    gd.on_z2m("zigbee2mqtt/Temp 1", json.dumps({"temperature": 21.7, "humidity": 44, "battery": 90}))
+    gd.mon_batch.flush()
+    f = json.loads(lora.sent[-1])
+    assert f.get("dh") == gd.state_hash(), f
+    sd.handle_b(f)
+    assert sd.state_hash("G1") == f["dh"], "dh z ramki = lustro supa po nałożeniu"
+    gd._out.append({"t": "b", "g": "G1", "d": []})          # coś jeszcze czeka → bez hasha
+    assert "dh" not in gd._with_hashes({"t": "b", "g": "G1", "d": []})
+    print("✅ `b` niesie dh tylko jako ostatnia ramka; dh = lustro supervisora")
+
+
 if __name__ == "__main__":
-    tests = [test_imports, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
+    tests = [test_imports, test_b_frame_carries_dh_when_queue_empty, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
              test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic,
              test_avail_blob_dedup_and_keepalive, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,

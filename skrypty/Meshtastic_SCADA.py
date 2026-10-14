@@ -2880,7 +2880,15 @@ def run_supervisor(log):
         anomaly_store.ghost_prune(gw, list(sup_disc.devices(gw).keys()))  # STEP 5: usuń anomalie znikłych
     dispatcher.register('db', on_db)
     dispatcher.register('disc_ack', lambda d: log.info('RX', f'disc_ack: {d}'))
-    dispatcher.register('b', sup_data.handle_b)          # STEP 3: batch data → HA
+    def on_b(d):
+        """STEP 3: batch data → HA. Gdy ramka niesie `dh` (opcja A, 2026-10-14) i zgadza się z lustrem
+        PO nałożeniu ramki — zgodność od razu, bez czekania na HB. Niezgodny `dh` ignorujemy: o
+        rozjeździe i dsnap dalej decyduje HB (bez tego burst ramek zamawiałby zbędne bloby)."""
+        sup_data.handle_b(d)
+        gw, dh = d.get('g'), d.get('dh')
+        if gw and dh and dh == sup_data.state_hash(gw):
+            _zg_po_sync(gw, {'dh': dh, 'sh': d.get('sh') or dh}, source='b')
+    dispatcher.register('b', on_b)
     def _cal_dispatch_sup(d):
         """Znacznik: bramka ZACZĘŁA pchać harmonogram w górę → wstrzymaj auto-push w dół
         (patrz drift-branch). Bez tego HB w trakcie transferu kasował edycję na bramce."""
