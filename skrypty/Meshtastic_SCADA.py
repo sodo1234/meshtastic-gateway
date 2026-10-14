@@ -1052,6 +1052,8 @@ def run_gateway(log):
         """4 flagi zgodności bramka↔supervisor: z ramki `zg` (push supa przy zmianie) LUB
         z `sup_pong` (darmowy refresher). Pong sam nie wystarcza — probe pinguje tylko przy
         ciszy na łączu, więc na ruchliwym łączu kafel nigdy by się nie zapełnił."""
+        if z is not None:
+            gw_stats['zg_disc_hash'] = discovery.disc_hash   # dla jakiej mapy sup potwierdził DISC
         if z is not None and gw_stats.get('zg') != z:  # publikuj tylko przy ZMIANIE
             gw_stats['zg'] = z
             publish_gwstat()                          # late-bind (jak time_offset/last_sync)
@@ -1203,10 +1205,14 @@ def run_gateway(log):
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/ping':
             log.info('BTN', '🔘 Ping button pressed'); heartbeat.send_heartbeat()
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/discovery':
-            log.info('BTN', '🔘 Discovery button pressed')
+            # 2026-10-14 (decyzja usera): sup potwierdził DISC (flaga `zg`) dla TEJ SAMEJ mapy → sama meta,
+            # bez pełnej devmapy (2–3 min kanału). Mapa zmieniła się od potwierdzenia albo brak `zg` → pełna.
+            _zg = gw_stats.get('zg') or ''
+            _meta = _zg[:1] == '1' and gw_stats.get('zg_disc_hash') == discovery.disc_hash
+            log.info('BTN', f'🔘 Discovery button pressed → {"meta (sup zgodny)" if _meta else "pełna"}')
             # F7: ręczny przycisk = jawne żądanie → force=True omija anti-spam 180s disc_meta/vio
-            threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay, force=True),
-                             daemon=True).start()
+            threading.Thread(target=lambda: discovery.send_discovery_with_delay(
+                             tx_delay, meta_only=_meta, force=True), daemon=True).start()
         elif topic == f'{STATE_PREFIX}/gw/{gw_lower}/cmd/dump':
             log.info('BTN', '🔘 Dump anomalii (bramka) pressed')     # F5: reconcyliacja teraz
             handle_dump_anom({'g': gw_id})
@@ -1679,7 +1685,18 @@ def run_supervisor(log):
     # on_avail (batch `a:`) ROUTOWANE przez _set_avail → trafia też do listy offline (kluczowy fix
     # spójności: wcześniej batch pomijał _set_avail i lista nie zgadzała się z licznikiem).
     sup_data = SupervisorData(ha, sup_disc, logger=log,
-                              on_avail=lambda gw, dev, av: _set_avail(gw, dev, av))
+                              on_avail=lambda gw, dev, av: _set_avail(gw, dev, av),
+                              persist_path=CONFIG.get('state', {}).get('sup_mirror_path',
+                                                                         '/tmp/lora_sup_mirror.json'))
+
+    def _mirror_saver():
+        while True:
+            time.sleep(30)
+            try:
+                sup_data.save()
+            except Exception as e:
+                log.warn('DATA', f'zapis lustra: {e}')
+    threading.Thread(target=_mirror_saver, daemon=True, name='mirror-save').start()
     # ACK batcha priorytetowego (2026-07-30): `b` z polem `p` → natychmiast `{t:back,g,p}` (P0 w
     # kolejce TX). Bramka dzięki temu wie, że alarm dotarł, i nie dubluje go w ciemno.
     sup_data.ack_fn = lambda gw, pid: send_to_all({"t": "back", "g": gw, "p": pid})
@@ -3048,7 +3065,10 @@ def run_supervisor(log):
                     sup_hb.manual_ping_all(known_gateways,
                                            send_broadcast_fn=lambda: send_to_all({"t": "ping"}))
                 elif a == 'discovery_all':
-                    log.info('BTN', '🔘 Discovery All'); send_to_all({"t": "disc"})
+                    # 2026-10-14 (decyzja usera): z hashem per bramka — zgodny = sama meta, bez pełnej devmapy
+                    log.info('BTN', '🔘 Discovery All')
+                    for g in known_gateways:
+                        send_to_all({"t": "disc", "g": g, "h": sup_disc.synced_hash_for_request(g)})
                 elif a == 'sync_all':
                     log.info('BTN', '🔘 Sync All'); send_to_all({"t": "sync", "sec": int(time.time())})
                 elif a.startswith('set_mode_'):            # 2026-07-18/24: dropdown trybu bramki (sup->LoRa) per-gw
@@ -3100,7 +3120,10 @@ def run_supervisor(log):
                 if a == 'ping':
                     log.info('BTN', f'🔘 Ping {gw}'); sup_hb.manual_ping(gw)
                 elif a == 'disc':
-                    log.info('BTN', f'🔘 Discovery {gw}'); send_to_all({"t": "disc", "g": gw})
+                    # 2026-10-14: hash mapy, którą sup MA (pusty przy niepełnej) → bramka śle pełną devmapę
+                    # tylko przy różnicy; zmierzone: każdy klik = devmapa 78/190 wpisów, 2–3 min kanału.
+                    log.info('BTN', f'🔘 Discovery {gw}')
+                    send_to_all({"t": "disc", "g": gw, "h": sup_disc.synced_hash_for_request(gw)})
                 elif a == 'sync':
                     log.info('BTN', f'🔘 Sync {gw}')
                     send_to_all({"t": "sync", "sec": int(time.time()), "g": gw})
