@@ -565,6 +565,7 @@ def test_dsnap_recovers_mirror_after_lost_frames():
         caps = {k: st[k] for k in TYPE_CAPS.get(info.get("type", "sensor"), ()) if k in st}
         if caps and sid is not None:
             snap[str(sid)] = encode_short(caps, available=True)
+    sd.clear_values("G1")                          # jak on_rt_received(dsnap): zrzut autorytatywny
     sd.handle_b({"t": "b", "g": "G1", "ts": 1,
                  "d": [[int(s), f] for s, f in snap.items()]})
     assert gd.state_hash() == sd.state_hash("G1"), "dsnap MUSI domknąć lustro jednym transferem"
@@ -732,8 +733,24 @@ def test_b_frame_carries_dh_when_queue_empty():
     print("✅ `b` niesie dh tylko jako ostatnia ramka; dh = lustro supervisora")
 
 
+def test_late_frame_does_not_overwrite_newer():
+    """Ramka `b` ze starszym `ts` (spóźniona z bufora anteny) nie nadpisuje nowszej wartości."""
+    from modules.data import SupervisorData
+    ha = FakeHA()
+    sd = SupervisorData(ha, FakeSupDiscovery())
+    sd.handle_b({"t": "b", "g": "G1", "ts": 200, "d": [[0, {"t": 24.3}]]})
+    sd.handle_b({"t": "b", "g": "G1", "ts": 100, "d": [[0, {"t": 23.8}]]})
+    assert sd.state["G1"]["Temp 1"]["temperature"] == 24.3, sd.state
+    sd.handle_b({"t": "b", "g": "G1", "ts": 200, "d": [[0, {"t": 24.4}]]})     # retransmisja: ten sam ts
+    assert sd.state["G1"]["Temp 1"]["temperature"] == 24.4
+    sd.clear_values("G1")                                                    # dsnap: od nowa
+    sd.handle_b({"t": "b", "g": "G1", "ts": 150, "d": [[0, {"t": 22.0}]]})
+    assert sd.state["G1"]["Temp 1"]["temperature"] == 22.0
+    print("✅ spóźniona ramka b nie cofa lustra; retransmisja i dsnap przechodzą")
+
+
 if __name__ == "__main__":
-    tests = [test_imports, test_b_frame_carries_dh_when_queue_empty, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
+    tests = [test_imports, test_late_frame_does_not_overwrite_newer, test_b_frame_carries_dh_when_queue_empty, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
              test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic,
              test_avail_blob_dedup_and_keepalive, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
