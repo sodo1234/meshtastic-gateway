@@ -17,6 +17,7 @@ sterowanie/status.
 """
 import json
 import threading
+import time
 
 
 def chunk_frames(base, key, items, max_bytes=200):
@@ -115,9 +116,14 @@ class Coalescer:
     bezpieczeństwa: nie trzymaj w pamięci więcej niż jedna masowa zmiana.
     """
 
-    def __init__(self, flush, window=2.0, max_items=250, logger=None, name='bulk'):
+    def __init__(self, flush, window=2.0, max_items=250, logger=None, name='bulk', quiet=None):
         self._flush = flush
         self.window = float(window)
+        # `quiet` (2026-10-14): wypuść też po `quiet` s CISZY — pojedyncze potwierdzenie komendy nie
+        # czeka pełnego okna (zmierzone: `st` stał 20 s, potem trafiał w slot G1 i czekał kolejne 18 s).
+        # `window` zostaje sufitem od pierwszego zdarzenia, więc ciągły strumień i tak wychodzi.
+        self.quiet = float(quiet) if quiet else None
+        self._first = 0.0
         self.max_items = int(max_items)
         self.log = logger
         self.name = name
@@ -131,6 +137,16 @@ class Coalescer:
             self._buf.append(item)
             if len(self._buf) >= self.max_items:
                 due = self._take_locked()
+            elif self.quiet:
+                now = time.monotonic()
+                if len(self._buf) == 1:
+                    self._first = now
+                if self._timer is not None:
+                    self._timer.cancel()
+                delay = max(0.0, min(self.quiet, self._first + self.window - now))
+                self._timer = threading.Timer(delay, self._fire)
+                self._timer.daemon = True
+                self._timer.start()
             elif self._timer is None:
                 self._timer = threading.Timer(self.window, self._fire)
                 self._timer.daemon = True
