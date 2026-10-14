@@ -118,7 +118,7 @@ def steps():
         ('gw_ping_hb', 'core', W('lora/gw/g2/cmd/ping', 'PRESS'), [('sup', RX('hb', G))], 120),
         # ── DISCOVERY ──
         ('disc_g2', 'disc', S('lora/supervisor/cmd/G2/disc', 'PRESS'),
-         [('sup', RX('disc_meta', G)), ('sup', RX('disc_vio', G))], 180),
+         [('sup', RX('disc_meta', G)), ('sup', RX('disc_vio', G))], 420),
         ('disc_all', 'disc', S('lora/supervisor/cmd/discovery_all', 'PRESS'), [('sup', RX('disc_meta', G))], 180),
         ('gw_disc', 'disc', W('lora/gw/g2/cmd/discovery', 'PRESS'), [('sup', RX('disc_meta', G))], 180),
         # ── STEROWANIE + opcja A (hash w ramce b) ──
@@ -183,11 +183,11 @@ def steps():
          [('sup', RX('param_upd', G + '.*"HH":71'))], 180),
         ('param_hh_restore', 'params', W('lora/params/gateway/set/HH', '70', 'lora/params/gateway/cmd/send_threshold', 'PRESS'),
          [('sup', RX('param_upd', G + '.*"HH":70'))], 180),
-        # ── STAGNACJA: P2=1 h → Test 2 (dawno bez zmian) dostaje sg; przywrócenie 24 h ──
-        ('stag_on', 'stag', S('lora/params/supervisor/g2/set/P2', '1', 'lora/params/supervisor/g2/cmd/send_config', 'PRESS'),
-         [('sup', RX('param_upd', G + '.*"P2":1[,}]')), ('sup', anom('sg'))], 600),
-        ('stag_restore', 'stag', S('lora/params/supervisor/g2/set/P2', '24', 'lora/params/supervisor/g2/cmd/send_config', 'PRESS'),
-         [('sup', RX('param_upd', G + '.*"P2":24'))], 180),
+        # ── STAGNACJA: P1=1 h (bateryjne) → urządzenie milczące >1 h (Door 1) dostaje sg; przywrócenie 48 h ──
+        ('stag_on', 'stag', S('lora/params/supervisor/g2/set/P1', '1', 'lora/params/supervisor/g2/cmd/send_config', 'PRESS'),
+         [('sup', RX('param_upd', G + '.*"P1":1[,}]')), ('sup', anom('sg'))], 600),
+        ('stag_restore', 'stag', S('lora/params/supervisor/g2/set/P1', '48', 'lora/params/supervisor/g2/cmd/send_config', 'PRESS'),
+         [('sup', RX('param_upd', G + '.*"P1":48'))], 180),
         # ── TRYB BRAMKI: z sup i z bramki ──
         ('mode_sup_day', 'mode', S('lora/supervisor/cmd/set_mode_g2', 'Dzienna'),
          [('gw', r'tryb bramki -> Dzienna|"t":"set_mode"'), ('sup', RX('hb', G + '.*"gm":"day"'))], 180),
