@@ -7,6 +7,8 @@ the retained topic, so a partial delta (just temp) must not wipe humidity/batter
 
 Any incoming `b` ⇒ device available=ON + last_seen refresh (online cascade).
 """
+import json
+import os
 import time
 
 from .z2m_reader import decode_short, encode_short, state_hash
@@ -18,7 +20,7 @@ def _now_str(epoch=None):
 
 class SupervisorData:
     def __init__(self, ha_entities, discovery, logger=None, on_avail=None,
-                 unknown_window=300, time_fn=None):
+                 unknown_window=300, time_fn=None, persist_path=None):
         self.ha = ha_entities          # HAEntities — pub_device_state
         self.disc = discovery          # SupervisorDiscovery — gw_devices (sid map)
         self.log = logger
@@ -29,6 +31,13 @@ class SupervisorData:
         self.state = {}                # {gw: {dev: {ha_json fields}}} — merged
         self.last_msg_ts = {}          # {(gw,dev): epoch} — ostatnia wiadomość (dla offline)
         self.frame_ts = {}             # {(gw,dev): `ts` ramki b, która ostatnio ustawiła wartości}
+        # TRWAŁE LUSTRO (2026-10-14, decyzja usera): restart supa zerował lustro → hash '0' →
+        # pełny dsnap każdej bramki (G1: 85 urządzeń, ~3 min kanału) przy KAŻDYM restarcie.
+        # Teraz lustro wraca z pliku; jeśli bramka zmieniła się w międzyczasie, wyłapie to
+        # potwierdzony rozjazd HB i dsnap — jak dotąd, tylko bez kosztu przy braku zmian.
+        self.persist_path = persist_path
+        self._saved = None
+        self.load()
         # RATE-LIMIT meldunku o nieznanych sidach (2026-07-25): przy niepełnej mapie KAŻDY
         # wpis `b` logował osobny WARN (carport: 5456 linii) i topił resztę logu. Teraz:
         # 1. wystąpienie melduje się od razu, potem jedno zbiorcze podsumowanie na okno.
@@ -152,6 +161,39 @@ class SupervisorData:
                 self.log.debug('DATA', f'💧 hydrate {gw}/{dev}: {list(fields)}')
             return True
         return False
+
+    def load(self):
+        if not self.persist_path or not os.path.exists(self.persist_path):
+            return False
+        try:
+            with open(self.persist_path, encoding='utf-8') as f:
+                d = json.load(f)
+            self.state = {g: dict(v) for g, v in (d.get('state') or {}).items()}
+            self.frame_ts = {tuple(k.split('|', 1)): v for k, v in (d.get('frame_ts') or {}).items()}
+            if self.log:
+                self.log.info('DATA', f'💾 lustro z pliku: ' + ', '.join(
+                    f'{g}={len(v)} urz. (hash {self.state_hash(g)})' for g, v in self.state.items()))
+            return True
+        except Exception as e:                       # uszkodzony plik = start od zera, nie crash
+            if self.log:
+                self.log.warn('DATA', f'lustro z pliku nieczytelne ({e}) — start od zera')
+            return False
+
+    def save(self):
+        """Zapis atomowy, tylko gdy lustro się zmieniło od ostatniego zapisu. Woła harness co ~30 s."""
+        if not self.persist_path:
+            return False
+        raw = json.dumps({'state': self.state,
+                          'frame_ts': {f'{g}|{d}': t for (g, d), t in self.frame_ts.items()}},
+                         separators=(',', ':'), sort_keys=True)
+        if raw == self._saved:
+            return False
+        tmp = self.persist_path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(raw)
+        os.replace(tmp, self.persist_path)
+        self._saved = raw
+        return True
 
     # ── state merge (retained JSON is full-replace) ─────
     def _merge(self, gw, dev, fields):

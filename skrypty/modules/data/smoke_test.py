@@ -749,8 +749,26 @@ def test_late_frame_does_not_overwrite_newer():
     print("✅ spóźniona ramka b nie cofa lustra; retransmisja i dsnap przechodzą")
 
 
+def test_mirror_persists_across_restart():
+    """Lustro supa wraca z pliku po restarcie (hash ten sam) — bez dsnap przy braku zmian."""
+    import tempfile, os
+    from modules.data import SupervisorData
+    path = os.path.join(tempfile.mkdtemp(), "mirror.json")
+    sd = SupervisorData(FakeHA(), FakeSupDiscovery(), persist_path=path)
+    sd.handle_b({"t": "b", "g": "G1", "ts": 200, "d": [[0, {"t": 24.3, "h": 40}]]})
+    h = sd.state_hash("G1")
+    assert sd.save() is True and sd.save() is False, "drugi zapis bez zmian = no-op"
+    sd2 = SupervisorData(FakeHA(), FakeSupDiscovery(), persist_path=path)
+    assert sd2.state_hash("G1") == h and h != "0"
+    sd2.handle_b({"t": "b", "g": "G1", "ts": 100, "d": [[0, {"t": 1.0}]]})   # spóźniona — nadal odrzucona
+    assert sd2.state["G1"]["Temp 1"]["temperature"] == 24.3
+    open(path, "w").write("{zepsuty")
+    assert SupervisorData(FakeHA(), FakeSupDiscovery(), persist_path=path).state == {}
+    print("✅ lustro supa przeżywa restart (hash, frame_ts); uszkodzony plik = start od zera")
+
+
 if __name__ == "__main__":
-    tests = [test_imports, test_late_frame_does_not_overwrite_newer, test_b_frame_carries_dh_when_queue_empty, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
+    tests = [test_imports, test_mirror_persists_across_restart, test_late_frame_does_not_overwrite_newer, test_b_frame_carries_dh_when_queue_empty, test_compute_delta, test_encode_decode_short, test_b1_b2_slim_entries,
              test_alarm_bypasses_channel_arbiter, test_reporting_policy_binary_event_sensor_cyclic,
              test_avail_blob_dedup_and_keepalive, test_state_hash_symmetric_gateway_vs_supervisor, test_dsnap_recovers_mirror_after_lost_frames,
              test_batcher_ack_retransmit_and_drop, test_pri_bypasses_slot_and_jumps_queue,
