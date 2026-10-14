@@ -1984,7 +1984,11 @@ def run_supervisor(log):
                 ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
                 on_change=lambda k, v, _g=gw: log.info('PARAM', f'↻ mirror[{_g}] {k}={v}'))
             sup_params[gw] = ps
-            ps.register_entities(); ps.subscribe()
+            # BEZ ps.subscribe() (2026-10-14): główna subskrypcja `lora/params/supervisor/#` już kieruje
+            # set/cmd do tej instancji. Nakładające się subskrypcje = broker dostarczał wiadomość 2×,
+            # więc każdy „Wyślij” szedł po LoRa DWA razy, a drugie nadanie supa (półdupleks) zagłuszało
+            # odpowiedź `param_upd` bramki — zmierzone: zgubione restore TH/T1 i 1/5 w benchmarku.
+            ps.register_entities()
             # #9 (2026-07-17): pull ZAWSZE przy tworzeniu mirrora (start sesji = brak edycji do
             # zclobberowania; bramka=master). Dotąd tylko „świeży persist" → po restarcie sup
             # mirror miał stary/domyślny stan ≠ bramka → param_ok=ROZJAZD na zawsze. 1 pakiet/sesja.
