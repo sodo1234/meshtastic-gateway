@@ -28,6 +28,7 @@ class SupervisorData:
         self.ack_fn = None
         self.state = {}                # {gw: {dev: {ha_json fields}}} — merged
         self.last_msg_ts = {}          # {(gw,dev): epoch} — ostatnia wiadomość (dla offline)
+        self.frame_ts = {}             # {(gw,dev): `ts` ramki b, która ostatnio ustawiła wartości}
         # RATE-LIMIT meldunku o nieznanych sidach (2026-07-25): przy niepełnej mapie KAŻDY
         # wpis `b` logował osobny WARN (carport: 5456 linii) i topił resztę logu. Teraz:
         # 1. wystąpienie melduje się od razu, potem jedno zbiorcze podsumowanie na okno.
@@ -59,6 +60,15 @@ class SupervisorData:
             if not dev:
                 self._note_unknown(gw, sid)
                 continue
+            # SPÓŹNIONA RAMKA (2026-10-14, zmierzone G2): po restarcie supa antena oddała ramkę `b`
+            # sprzed 12 min ZARAZ PO nowszej — stara wartość nadpisała lustro i zrobiła realny
+            # rozjazd `dh`. Ramka starsza niż ta, która ostatnio ustawiła urządzenie, nie wnosi nic.
+            # Ten sam `ts` (retransmisja P1) przechodzi — jest idempotentna.
+            _fts = data.get('ts')
+            if _fts and _fts < self.frame_ts.get((gw, dev), 0):
+                continue
+            if _fts:
+                self.frame_ts[(gw, dev)] = _fts
             short = dict(short) if isinstance(short, dict) else {}
             o = short.pop('o', 0)                     # wiek ostatniej wiadomosci [s] wzgledem `ts` ramki
             fields = decode_short(short)
@@ -161,6 +171,8 @@ class SupervisorData:
         swój hash z wartości sprzed 10 dni, widział rozjazd i prosił o `dsnap` co 5 minut —
         16 razy pod rząd, bez szansy na zbieżność. Zwrot: ile urządzeń wyczyszczono.
         """
+        for k in [k for k in self.frame_ts if k[0] == gw]:   # zrzut autorytatywny: od nowa
+            del self.frame_ts[k]
         n = 0
         for _dev, fields in (self.state.get(gw) or {}).items():
             stale = [k for k in fields if k not in ('available', 'last_seen')]
