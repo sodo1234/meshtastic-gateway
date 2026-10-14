@@ -2267,6 +2267,7 @@ def run_supervisor(log):
     # Uwaga: rozrozniamy BRAK pola od wartosci falsy — `dh` rowne '0' (bramka nic nie wyslala)
     # jest PELNOPRAWNA wartoscia i musi trafic do porownania.
     gw_hb_hash = {}                                       # gw → {pole: ostatnia znana wartosc}
+    data_mismatch_seen = {}                               # gw → (dh, sh, lustro) z ostatniego HB z rozjazdem
 
     _HB_HASH_KEYS = ('hash', 'ph', 'cal', 'ah', 'dh', 'sh')
 
@@ -2742,6 +2743,21 @@ def run_supervisor(log):
             # blokowal replacement po devmapie do 13:19:35. 180 s odpowiada granicy "stale HB";
             # aktywny dsnap (swieza ramka <180 s) nadal bezwzglednie blokuje duplikat.
             _data_mismatch = not _data_ok and (_dh not in ('--', None, '') or _sh not in ('--', None, ''))
+            # POTWIERDZONY ROZJAZD (2026-10-14). dsnap tylko z ŚWIEŻEGO HB/ponga (`d` niepuste) i dopiero
+            # gdy KOLEJNY HB niesie ten sam rozjazd. Zmierzone na v12.2: (1) G2 co ~45 min HB z `dh`
+            # wyprzedzającym ramkę `b` w drodze (lustro = poprzedni dh) → zbędny dsnap; (2) G1 po
+            # zakończonym dsnap porównywał lustro z `sh` z HB SPRZED transferu → dsnap co 180 s w kółko.
+            # Realna strata ramki dalej wychodzi — o jeden HB później. Flaga Dane pokazuje rozjazd od razu.
+            _mkey = (_dh, _sh, sup_data.state_hash(gw))
+            if not _data_mismatch:
+                data_mismatch_seen.pop(gw, None)
+            elif d:
+                _confirmed = data_mismatch_seen.get(gw) == _mkey
+                data_mismatch_seen[gw] = _mkey
+                if not _confirmed:
+                    _data_mismatch = False
+            else:
+                _data_mismatch = False
             if gw and not hb_stale and _data_mismatch and sup_disc.is_complete(gw):
                 _now = time.time()
                 _same_dsnap_active = rt.receiving(gw, kind='dsnap', stale_after=180.0)
