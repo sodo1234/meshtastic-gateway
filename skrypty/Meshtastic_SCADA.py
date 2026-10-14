@@ -64,7 +64,7 @@ from modules.calendar import (ScheduleManager, CalendarTransfer, build_ics,
 from modules.transport.reliable_transfer import ReliableTransfer  # bulk (mass_offline z2m-down)
 from modules.transport.channel import ChannelArbiter  # arbitraż półdupleksu: transfer-plik > wolumen
 from modules.transport.fastlane import (DEFAULT_IMMEDIATE_TYPES, immediate_types,
-                                        slot_wait_seconds)
+                                        slot_wait_seconds, is_immediate_frame)
 from modules.slotting import SlotScheduler, SafeWindow
 from modules.gateway_mode import GatewayMode, mode_active, fmt_uptime
 
@@ -168,8 +168,11 @@ def run_gateway(log):
 
         # Slot egzekwuje WYLACZNIE petla TX transportu (po odstepie, tuz przed nadaniem). Dawny wrapper
         # blokowal watki wywolujace (takze watek RX odpowiadajacy cack/ack) do 60 s.
-        lora.slot_gate = lambda _text=None: slot_wait_seconds(
-            _text, _immediate, slot.seconds_until_slot(min_left=_slot_min_left))
+        _slot_active = slot_cfg.get('active', ['G1', 'G2'])   # bramki, które realnie nadają (G3 = wolny slot)
+        lora.slot_gate = lambda _text=None: (
+            slot.fast_lane_wait(_slot_active, guard=slot_cfg.get('fast_guard', 2.0))
+            if is_immediate_frame(_text, _immediate)
+            else slot.seconds_until_slot(min_left=_slot_min_left))
 
     CONFIG['_lora_tx_queue'] = None     # kolejka TX wyłączona (single-drainer wieszał się na zawieszonym
     #                                     CP2102 send → cały TX stop). Właściwy fix = unified state file

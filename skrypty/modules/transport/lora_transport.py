@@ -518,7 +518,9 @@ class LoraTransport:
             immediate = is_immediate_frame(job['text'], self.immediate_types)
             # JEDNA bramka slotu, PO odstepie (cooldown potrafi przesunac nadanie za koniec okna):
             # ramka wychodzi w powietrze tylko w oknie bramki, z zapasem min_left na jej czas antenowy.
-            if not immediate and self.slot_gate is not None:
+            # Bramka slotu pytana TAKŻE dla szybkiego pasa (2026-10-14): na bramce zwraca czas do końca
+            # CUDZEGO slotu (ukryty nadajnik), na supie dla szybkiego pasa 0 — jak dotąd.
+            if self.slot_gate is not None:
                 try:
                     try:
                         _w = self.slot_gate(job['text'])         # bramka moze zalezec od typu ramki (odpowiedzi vs inicjowane)

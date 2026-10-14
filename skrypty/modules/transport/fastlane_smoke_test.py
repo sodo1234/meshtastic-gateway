@@ -74,7 +74,8 @@ def test_immediate_bypasses_slot_and_arbiter_front():
                               codec_role='supervisor')
     iface = _Iface()
     transport.interfaces['TEST'] = iface
-    transport.slot_gate = lambda _text: 30.0
+    # jak realne bramki (sup: slot_wait_seconds, bramka: fast_lane_wait poza cudzym slotem) — szybki pas 0
+    transport.slot_gate = lambda _text: 0.0 if is_immediate_frame(_text, DEFAULT_IMMEDIATE_TYPES) else 30.0
     transport.arbiter = _Busy()
     transport.send({'t': 'hb', 'g': 'G1'})
     event = transport.send({'t': 'ping', 'g': 'G1'})

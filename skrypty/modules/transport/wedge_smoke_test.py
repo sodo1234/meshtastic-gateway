@@ -139,7 +139,7 @@ def test_dsnap_zbiega_hash():
             return {'RA1_1': {'sid': 1, 'type': 'switch'}, 'RA1_2': {'sid': 2, 'type': 'switch'}}
 
     sd = SupervisorData.__new__(SupervisorData)
-    sd.disc, sd.log = _Disc(), None
+    sd.disc, sd.log, sd.frame_ts = _Disc(), None, {}
     sd.state = {'G1': {'RA1_1': {'state': 'ON', 'available': True},
                        'RA1_2': {'state': 'OFF', 'available': True}}}
 
