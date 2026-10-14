@@ -124,6 +124,22 @@ def test_flush_ktory_rzuca_nie_zabija_watku():
     print('  ✓ wyjątek we flushu nie zabija kolejnych okien')
 
 
+def test_coalescer_quiet_wypuszcza_po_ciszy_ale_okno_jest_sufitem():
+    """`quiet`: pojedynczy element wychodzi po ciszy (nie po pełnym oknie); ciągły strumień — po oknie."""
+    import time
+    from modules.protocol.bulk import Coalescer
+    out = []
+    c = Coalescer(lambda it: out.append((time.monotonic(), list(it))), window=0.6, quiet=0.1)
+    t0 = time.monotonic(); c.add('a'); time.sleep(0.3)
+    assert out and out[0][1] == ['a'] and out[0][0] - t0 < 0.25, f'pojedynczy po ciszy: {out}'
+    out.clear(); t0 = time.monotonic()
+    for i in range(10):                     # strumień co 0.08 s < quiet → wychodzi dopiero po oknie
+        c.add(i); time.sleep(0.08)
+    time.sleep(0.3)
+    assert out[0][0] - t0 >= 0.55 and len(out[0][1]) >= 7, f'okno jako sufit: {out}'
+    print('  ✓ quiet: pojedynczy po ciszy, ciągły strumień po oknie (sufit)')
+
+
 def main():
     print('═' * 62)
     print('RAMKA ZBIORCZA cmd/st — smoke test')
@@ -135,7 +151,8 @@ def main():
                test_dwie_bramki_nie_mieszaja_sie,
                test_element_wiekszy_niz_limit_nie_ginie,
                test_coalescer_zbiera_w_oknie_i_ma_zawor,
-             test_flush_ktory_rzuca_nie_zabija_watku)
+             test_flush_ktory_rzuca_nie_zabija_watku,
+             test_coalescer_quiet_wypuszcza_po_ciszy_ale_okno_jest_sufitem)
     for fn in testy:
         fn()
     print('═' * 62)

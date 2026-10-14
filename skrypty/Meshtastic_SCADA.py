@@ -419,7 +419,7 @@ def run_gateway(log):
     # gęściej, wypuść od razu po zapełnieniu ramki, nie czekaj do końca okna.
     st_bulk = Coalescer(_flush_st, window=_bulk_cfg.get('bulk_window_st', 20.0),
                         max_items=_bulk_cfg.get('bulk_max_items_st', 12),
-                        logger=log, name='st')
+                        logger=log, name='st', quiet=_bulk_cfg.get('bulk_quiet_st', 3.0))
 
     def st_send(dev, cap, val):
         """Status urządzenia → supervisor. Przez okno zbiorcze; 1 sztuka = stara ramka `st`.
