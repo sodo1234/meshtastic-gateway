@@ -100,7 +100,7 @@ RX = lambda t, extra='': rf'RX: \{{"t":"{t}"[^\n]*{extra}'
 
 
 def anom(code, side='a'):   # an_d: dodanie w "a", powrót do normy = zdjęcie w "r" (ten sam kod)
-    return rf'RX: \{{"t":"an_d",{G},.*"{side}":\[(\[\d+,"\w+"\],)*\[\d+,"{code}"\]'
+    return rf'RX: \{{"t":"an_d",{G},.*"{side}":\[(\[\d+,"\w+"[^]]*\],)*\[\d+,"{code}"[,\]]'
 
 
 # (nazwa, grupa, wyzwalacz, [(log, regex)], timeout) — log: 'sup' | 'gw'
