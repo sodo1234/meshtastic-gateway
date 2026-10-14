@@ -597,12 +597,28 @@ class GatewayData:
         """Wyślij pakiet właściwym transportem: alarmy (`p`) omijają slot, monitored idzie w slocie."""
         pid = packet.get('p')
         lora = self.pri_lora if (pid is not None and self.pri_lora is not None) else self.lora
-        lora.send(json.dumps(packet, separators=(',', ':')))
+        lora.send(json.dumps(self._with_hashes(packet), separators=(',', ':')))
         if pid is not None:
             # Dopiero TERAZ ramka jest w eterze — start zegara ACK. Liczenie od flush() kazało
             # retransmitować pakiet, który stał w `_out` za arbitrem transferu (i „gubić" dane,
             # których nikt nie nadał).
             self.pri_batch.mark_sent(pid)
+
+    def _with_hashes(self, packet):
+        """HASH W RAMCE `b` (2026-10-14, opcja A). Po komendzie z dashboardu status wracał ramką `b`
+        bez hasha, więc supervisor porównywał nowe lustro ze starym `dh` z HB → „ROZJAZD" do
+        najbliższego HB/ponga. Doklejamy `dh` (+`sh` gdy różny) TYLKO gdy ta ramka jest ostatnią
+        oczekującą — wtedy `sent_states` (note_sent przy enqueue) = dokładnie to, co już w eterze.
+        Przy kolejce w toku hash wyprzedzałby lustro, więc go nie dajemy (zostaje HB).
+        Kopia, nie mutacja: retransmisja P1 nie może nieść starego hasha. Ponad 150 B —
+        pomijamy (stara bramka/sup bez pola = zachowanie jak dotąd)."""
+        if self._out or self.mon_batch.pending_count() or self.pri_batch.pending_count():
+            return packet
+        dh, sh = self.state_hash(), self.status_hash()
+        out = dict(packet, dh=dh) if sh == dh else dict(packet, dh=dh, sh=sh)
+        if len(json.dumps(out, separators=(',', ':'))) > 150:                 # operacyjny sufit LoRa (CLAUDE.md)
+            return packet
+        return out
 
     def state_hash(self):
         """Hash stanu urządzeń monitored+priority — trafia do HB jako `dh` (B6, 2026-08-01).
