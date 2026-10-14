@@ -401,8 +401,11 @@ def run_gateway(log):
     #    nadal wygląda natychmiastowo. ──
     _bulk_cfg = CONFIG.get('control', {})
     def _flush_st(items):
-        for fr in st_frames(gw_id, items, max_bytes=_bulk_cfg.get('bulk_max_bytes', 200)):
-            lora_send(fr)
+        frs = list(st_frames(gw_id, items, max_bytes=_bulk_cfg.get('bulk_max_bytes', 200)))
+        for i, fr in enumerate(frs):
+            # Opcja A (2026-10-14): potwierdzenie komendy to `st`, nie `b` — ostatnia ramka flushu
+            # niesie `dh`/`sh` (te same warunki co w `b`: nic nie czeka w kolejce danych, ≤150 B).
+            lora_send(data._with_hashes(fr) if i == len(frs) - 1 else fr)
         if len(items) > 1:
             log.info('CTRL', f'📦 st zbiorczo: {len(items)} urządzeń → mniej ramek LoRa')
     # OKNO ZMIERZONE NA ŻYWO (harmonogram 22:15 na G1, 2026-08-26): 65 potwierdzeń `st`
@@ -2901,9 +2904,7 @@ def run_supervisor(log):
         PO nałożeniu ramki — zgodność od razu, bez czekania na HB. Niezgodny `dh` ignorujemy: o
         rozjeździe i dsnap dalej decyduje HB (bez tego burst ramek zamawiałby zbędne bloby)."""
         sup_data.handle_b(d)
-        gw, dh = d.get('g'), d.get('dh')
-        if gw and dh and dh == sup_data.state_hash(gw):
-            _zg_po_sync(gw, {'dh': dh, 'sh': d.get('sh') or dh}, source='b')
+        _zg_from_frame(d)
     dispatcher.register('b', on_b)
     def _cal_dispatch_sup(d):
         """Znacznik: bramka ZACZĘŁA pchać harmonogram w górę → wstrzymaj auto-push w dół
@@ -2948,8 +2949,16 @@ def run_supervisor(log):
         if not quiet:
             log.info('CTRL', f'🎛️ st {gw}/{dev} = {val} → online + odbite w HA (cmd/zmiana zewn.)')
 
+    def _zg_from_frame(d):
+        """Opcja A: ramka danych/statusu z `dh` zgodnym z lustrem PO jej nałożeniu → zgodność od razu.
+        Niezgodny `dh` ignorujemy — o rozjeździe i dsnap decyduje potwierdzony HB."""
+        gw, dh = d.get('g'), d.get('dh')
+        if gw and dh and dh == sup_data.state_hash(gw):
+            _zg_po_sync(gw, {'dh': dh, 'sh': d.get('sh') or dh}, source=d.get('t', '?'))
+
     def handle_st(d):
         _apply_st(d.get('g', '?'), d.get('d'), str(d.get('v', '')).upper())
+        _zg_from_frame(d)
     dispatcher.register('st', handle_st)
 
     def handle_stm(d):
@@ -2958,6 +2967,7 @@ def run_supervisor(log):
         for dev, val in m.items():
             _apply_st(gw, dev, str(val).upper(), quiet=True)   # linia na urządzenie = ten sam flood, tylko w logu
         log.info('CTRL', f'📦 stm {gw}: {len(m)} urządzeń → online + odbite w HA')
+        _zg_from_frame(d)
     dispatcher.register('stm', handle_stm)
 
     def handle_vsw_st(d):
