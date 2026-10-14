@@ -1,0 +1,26 @@
+== ping
+  ping #1:   9.1 s
+  ping #2:   7.0 s
+  ping #3:  10.6 s
+== ctrl
+  ctrl #1:   9.2 s
+  ctrl #2:  18.8 s
+  ctrl #3:   9.2 s
+== params
+  params #1:  29.9 s
+  params #2:  11.1 s
+  params #3:  16.8 s
+== anomaly (offline -> do, online -> dn)
+  anomaly #1:  11.4 s
+  anomaly #2:  17.3 s
+  anomaly #3:  12.3 s
+  anomaly #4:  16.4 s
+  anomaly #5:  13.3 s
+  anomaly #6:  15.0 s
+
+== wynik
+ping     FAIL  mediana 9.1 s, max 10.6 s, zgubione 0/3 | stara 6 s, v9 60 s, limit 7 s
+ctrl     PASS  mediana 9.2 s, max 18.8 s, zgubione 0/3 | stara 31 s, v9 38 s, limit 37 s
+params   FAIL  mediana 16.8 s, max 29.9 s, zgubione 0/3 | stara 7 s, v9 32 s, limit 8 s
+anomaly  FAIL  mediana 14.1 s, max 17.3 s, zgubione 0/6 | stara 11 s, v9 19 s, limit 13 s
+air      PASS  bulk 2144 ramek, poza oknem 20-40 s: 0
