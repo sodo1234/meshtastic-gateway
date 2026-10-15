@@ -4,7 +4,9 @@ Dokumentacja techniczna: **uruchamianie skryptów** + **obsługa dashboardu**.
 Dotyczy bieżącego kodu step-by-step (`Meshtastic_SCADA.py` + `skrypty/modules/*`),
 NIE legacy monolitów `*_v38.py`.
 
-> Aktualizacja: 2026-08-05. Skróty: **GW** = bramka, **SUP** = supervisor.
+> Aktualizacja: 2026-10-15 — **wersja końcowa v12.11** (commit `b2f8673`, branch `step-04-calendar`).
+> G1 chodzi na v12.10 — różnica v12.11 dotyczy wyłącznie kodu supervisora (G1 działa identycznie).
+> Skróty: **GW** = bramka, **SUP** = supervisor.
 
 ---
 
@@ -30,13 +32,16 @@ NIE legacy monolitów `*_v38.py`.
 
 | Rola | Nazwa (launcher) | IP Tailscale | Uwaga |
 |------|------------------|--------------|-------|
-| Bramka produkcyjna | `carport` (G1) | `100.104.38.14` | REALNY site, 194 urządzenia — ostrożnie |
-| Bramka testbed | `carport-g2` | `100.98.155.78` | dom, do testów |
-| Supervisor | `supervisor` | `100.79.111.24` | G0 |
+| Bramka produkcyjna | `carport` (G1) | `100.68.79.100` | REALNY site (carport) — ostrożnie; v12.10 |
+| Bramka testbed | `carport-g2` | `100.98.155.78` | dom, testy i E2E; v12.11 |
+| Supervisor | `supervisor` | `100.79.111.24` | G0; v12.11 |
 
-> **G1 bywa nieosiągalna po sieci** (host miga w Tailscale). Nie znaczy to, że nie żyje —
-> potrafi pracować i gadać po LoRa, będąc bez SSH. Stan sprawdzaj po HB na supervisorze,
-> nie po pingu. Deploy w oknie dostępności: `bash deploy/deploy_g1.sh` (§3.3).
+Stare adresy G1 (`100.104.38.14`, `100.93.121.31`) są martwe — nie wracać do nich.
+
+> **G1 = offline-first.** Carport nie ma stałego internetu; host pojawia się w Tailscale
+> tylko chwilami. Nie znaczy to, że bramka nie żyje — pracuje i gada po LoRa bez SSH.
+> Stan sprawdzaj po HB na supervisorze, nie po pingu. Gdy w sesji jest okno dostępności,
+> **najpierw deploy na G1** (`bash deploy/deploy_g1.sh 100.68.79.100 gw`, §3.3), potem reszta.
 
 Login SSH: użytkownik `td` (klucz skonfigurowany — launcher używa `BatchMode`).
 
@@ -61,8 +66,9 @@ Login SSH: użytkownik `td` (klucz skonfigurowany — launcher używa `BatchMode
 
 ### 3.1 Launcher (zalecane)
 
-Webowy launcher (Flask) na **`http://localhost:8765`** steruje startem/stopem na
-zdalnych maszynach (SSH → `tmux`). Robi robust-kill + weryfikację (nie kłamie, że
+Webowy launcher (Flask) na **`http://127.0.0.1:8765`** steruje startem/stopem na
+zdalnych maszynach (SSH → `tmux`). **Nie wstaje sam po restarcie PC** — uruchom go ręcznie
+z katalogu repo: `python launcher/app.py`. Robi robust-kill + weryfikację (nie kłamie, że
 „stopped", jeśli proces żyje).
 
 **Przez UI:**
@@ -96,8 +102,8 @@ curl -s -X POST http://localhost:8765/api/stop \
 Inne endpointy: `/api/status`, `/api/scripts?host=`, `/api/usb-devices?host=`,
 `/api/config?host=` + `/api/config-save` (podgląd/edycja `config.py`), `/api/pull-log`.
 
-> **Zasada:** skrypty testowe URUCHAMIA SIĘ Z LAUNCHERA. Nie odpalać/ubijać ręcznie
-> legacy `*_v38.py`.
+> **Zasada:** skrypty URUCHAMIA SIĘ Z LAUNCHERA. Legacy `*_v38.py` jest martwe — nie
+> odpalać, nie modyfikować.
 
 ### 3.2 Fallback — ręcznie przez SSH + tmux
 
@@ -131,28 +137,30 @@ ssh td@100.98.155.78 'cd ~/meshtastic && venv/bin/python -c "import ast; ast.par
 > wartości (tokeny, listy `monitored`/`priority`, porty, `params_preset`). Edytować remote
 > in-place (sed/ssh) albo przez `/api/config-save`.
 
-**Deploy całości jednym strzałem** (gdy host bywa osiągalny tylko chwilami — G1):
+**Deploy całości jednym strzałem** — standardowa droga wgrywania:
+`bash deploy/deploy_g1.sh <IP> <gw|sup>` (drugi argument = rola / sesja tmux).
 ```bash
-bash deploy/deploy_g1.sh              # domyślnie 100.104.38.14
-bash deploy/deploy_g1.sh 100.98.155.78   # ten sam mechanizm na G2
+bash deploy/deploy_g1.sh 100.68.79.100 gw    # G1 carport (domyślny host)
+bash deploy/deploy_g1.sh 100.98.155.78 gw    # G2 testbed
+bash deploy/deploy_g1.sh 100.79.111.24 sup   # supervisor
 ```
-Kolejność jest celowa: backup na maszynie → kopia plików → **walidacja AST NA MASZYNIE**
-→ dopiero restart. Skrypt świadomie nie dotyka `config.py` ani stanów w `/tmp`.
-Po deployu sprawdź na supervisorze: HB z polem `dh` oraz spadek liczby ramek `b`.
+Kolejność jest celowa: backup na maszynie (`~/meshtastic_backup_<data>.tgz`) → kopia plików
+→ **walidacja AST NA MASZYNIE** → smoke testy → dopiero restart. Skrypt świadomie nie dotyka
+`config.py` ani stanów w `/tmp`. Po deployu sprawdź na supervisorze HB od bramki i pięć flag
+zgodności (§5.5).
 
 ---
 
-## 4. Wdrożenie dashboardu
+## 4. Dashboard
 
-Dashboard Lovelace generowany skryptem — uruchom **na danej maszynie** (osobno GW i SUP,
-każdy generuje swój wariant wg `ROLE`):
-
-```bash
-ssh td@100.98.155.78 'cd ~/meshtastic && venv/bin/python homeassistant/gen_unified_dashboard.py'
-```
-
-Tworzy dashboard `url_path = lora-scada` (tytuł „LoRa SCADA"), tryb storage.
+Dashboard `url_path = lora-scada` (tytuł „LoRa SCADA"), tryb storage, na każdej maszynie.
 Encje pochodzą z MQTT Discovery (retained w brokerze) — dashboard tylko je układa.
+
+> **ZAKAZ uruchamiania starych generatorów** (`gen_unified_dashboard.py`, `gen_*_dashboard.py`)
+> — nadpisują ręcznie ułożone ekrany. Zmiany wprowadza się chirurgicznie przez HA WebSocket API,
+> z backupem konfiguracji Lovelace przed zapisem (wzór: `tools/fix_popups_live.py`).
+> Odtworzenie od zera: backup HA albo zrzuty z paczki `3_DASHBOARDY_HOME_ASSISTANT`.
+> Kontrola, czy każda encja z dashboardu istnieje: `tools/dash_audit.py` (§11).
 
 ---
 
@@ -263,7 +271,7 @@ supervisora, oraz **hashe zgodności** — pięć równorzędnych flag („zgodn
 | PARAM | parametry P/T/Progi | auto-heal (pull od mastera) |
 | KALENDARZ | harmonogram produkcji | push/pull na przycisk |
 | ANOMALIE | lista aktywnych anomalii | `dump_anom` → blob `ansnap` |
-| **DANE** | stan urządzeń (`dh`) | dociąga pełny stan blobem `dsnap` |
+| **DANE** | stan urządzeń (`dh`) | dociąga pełny stan blobem `dsnap` — tylko po potwierdzonym rozjeździe (§5.6) |
 
 Flaga DANE ma sens dopiero odkąd binarne raportują tylko zdarzeniowo: skoro nie ma
 periodyku, to hash — a nie „coś w końcu przyjdzie" — pilnuje, żeby lustro supervisora
@@ -274,6 +282,31 @@ nie rozjechało się po cichu.
 (potrafiło być +21 s) i wyglądało to jak dryf zegara, którym nie było — obie maszyny
 mają NTP. Uczciwe zastrzeżenie: łącze jest asymetryczne, więc RTT/2 to przybliżenie;
 gdy chcesz mieć pewność co do zegarów, patrz na `tq` (jakość czasu), nie na offset.
+
+### 5.6 Synchronizacja stanu (v12.3–v12.11)
+
+- **Hash w ramkach.** Ostatnia ramka danych `b` oraz potwierdzenie komendy `st`/`stm` niosą
+  `dh`/`sh` (gdy nic więcej nie czeka w kolejce, ≤150 B). Supervisor przyjmuje hash tylko,
+  gdy zgadza się z lustrem po nałożeniu zmian → flaga DANE zgodna od razu po sterowaniu.
+- **`dsnap` tylko po potwierdzonym rozjeździe.** Supervisor zamawia pełny stan dopiero, gdy
+  dwa kolejne świeże HB/pongi niosą ten sam rozjazd (klucz: `dh`, `sh`, hash lustra), i nie
+  zamawia go na podstawie starego hasha po transferze. Zniknęła pętla `dsnap` G1 co 180 s.
+- **Spóźnione ramki odrzucane.** Antena supervisora po restarcie potrafi oddać ramki sprzed
+  minut/dni; ramka `b` starsza niż ostatnio zastosowana dla urządzenia nie cofa lustra
+  (`dsnap` resetuje ten licznik).
+- **Discovery z hashem.** Przycisk Discovery (per bramka i „all”) na supervisorze wysyła znany
+  hash mapy; zgodny → bramka odsyła samą `disc_meta`, bez pełnej devmapy (2–3 min kanału).
+  Przycisk Discovery na bramce działa tak samo (flaga DISC z `zg` dla tej samej mapy).
+  W trybie „sama meta” nie idzie też `disc_vio` — pełna mapa poleci, gdy mapa na bramce się zmieni
+  albo supervisor nie ma kompletnego lustra.
+- **Trwałe lustro supervisora** `/tmp/lora_sup_mirror.json` (zapis co 30 s, gdy była zmiana).
+  Restart supervisora nie wymaga `dsnap` — G1/G2 zgodne po kilkudziesięciu sekundach.
+  Pierwszy start BEZ pliku: hydratacja z retained HA może wnieść stare stany → jeden `dsnap`.
+- **Szybki pas** (ping/pong/sterowanie/parametry/`an_d`) wychodzi poza slotem z LBT, ale
+  omija slot INNEJ aktywnej bramki (G2 nie słyszy G1 — ukryty nadajnik; `slotting.active`
+  domyślnie `[G1, G2]`, `fast_guard` 2 s). Potwierdzenia `st` wychodzą po 3 s ciszy (sufit 20 s).
+- **v12.11:** supervisor wysyła polecenie parametrów raz (wcześniej 2× przez nakładające się
+  subskrypcje MQTT; drugie nadanie zagłuszało `param_upd` bramki).
 
 ---
 
@@ -298,7 +331,7 @@ ssh td@100.98.155.78 'curl -s -H "Authorization: Bearer $HA_TOKEN" http://localh
 |-------|-------------------------|-----------|
 | Kafle temp/leak/door **zamrożone**, dane nie idą | bramka w trybie nieaktywnym (`ga=0`) lub proces stanął | sprawdź HB (`gm`/`ga`); ustaw tryb `Całodobowa` lub sprawdź czy proces żyje |
 | Kafel „świeży czas, stara wartość" | pakiet `b` zgubiony na LoRa; kafel podtrzymany przez avail-blob | poczekaj na kolejny cykl (15 min) lub naciśnij **Refresh**; `last_seen` mówi prawdę |
-| Encja zamrożona mimo świeżego state topicu | brak `force_update` w configu encji / stale-registry HA | re-generuj dashboard / republish configu encji; ostatecznie restart HA MQTT |
+| Encja zamrożona mimo świeżego state topicu | brak `force_update` w configu encji / stale-registry HA | republish configu encji (dashboardu NIE generować — §4); ostatecznie restart HA MQTT |
 | Urządzenie „offline" mimo że żyje | timeout per-typ (T1/T2/T3) za krótki dla bateryjnego | podnieś T2/T3 (Parametry → Wyślij Timeout) |
 | `ROZJAZD ⚠️` parametrów utrzymuje się | zgubiony `param_upd`; masz niewysłaną edycję na supervisorze | naciśnij **Send** (na bramce = master) — auto-heal ruszy po chwili |
 | MCP `ha-gw`/`ha-sup` = **401** | token wygasł/zrewokowany | zaktualizuj `HA_TOKEN` w `config.py` (obie maszyny) + `~/.claude.json`; restart roli + **restart Claude Code** |
@@ -318,7 +351,10 @@ ssh td@100.98.155.78 'curl -s -H "Authorization: Bearer $HA_TOKEN" http://localh
 | `/tmp/lora_sid_map_<gw>.json` | **trwała mapa nazwa→sid** (stabilne sidy) |
 | `/tmp/lora_anomaly_ids.json` | aktywne anomalie |
 | `/tmp/lora_schedule_gw.json` | harmonogram (kalendarz) |
-| `/tmp/test_transport.log` | log runtime skryptu `test_*` |
+| `/tmp/lora_sup_mirror.json` | trwałe lustro stanów urządzeń (supervisor, v12.7) |
+| `/tmp/lora_sup_devices.json` | mapy urządzeń + zsynchronizowane hashe per bramka (supervisor) |
+| `/tmp/test_transport.log` | log runtime (+ `/tmp/test_transport.stderr.log`) |
+| `/tmp/lora_air.log` | log faktycznego nadania ramek w eter |
 
 ---
 
@@ -364,3 +400,54 @@ Kolejność jest istotna — każdy krok zdejmuje jedną klasę „dlaczego to n
 - Restart supervisora jest bezpieczny (bramki autonomiczne); restart bramki = krótka
   utrata monitoringu tej lokalizacji.
 - Nie zmieniać stylu/mechanik dashboardu ad-hoc — trzymać się wzorca.
+
+---
+
+## 11. Narzędzia testowe (z PC, przez SSH — tylko G2 + supervisor)
+
+| Narzędzie | Do czego |
+|-----------|----------|
+| `python tools/e2e_g2.py` | pełny test E2E na żywo G2 ↔ supervisor: 47 kroków (core, czas, discovery, sterowanie, dane, alarmy zalanie/dym, anomalie, clear, bulk, parametry, stagnacja, tryb, kalendarz). `--list`, `--only grupa`, `--skip`, `--gap`. Po sobie przywraca parametry/tryb/anomalie. |
+| `python tools/dash_audit.py 100.79.111.24 100.98.155.78` | każda encja z dashboardów musi istnieć i nie być `unavailable` (tylko odczyt). „Brakujące” na G2 w `scada-ctl`/`scada-meas` to sondy szablonu — karty renderują się poprawnie. |
+| `python tools/bench_g2.py` | benchmark opóźnień G2 ↔ supervisor + kontrola slotów; wyniki w `logs/bench_*.out` |
+| `tools/frame_stats.py`, `tools/lora_traffic_log.py` | rozmiary ramek / analiza ruchu z plików `traffic_*.tsv` |
+
+E2E i benchmarku nie uruchamia się na G1 (produkcja).
+
+## 12. Wyniki benchmarku (G2 ↔ supervisor, mediana z 3 powtórzeń)
+
+| Pomiar | 2f126bf (stara) | v12.6 | **v12.10 (końcowa)** |
+|--------|-----------------|-------|----------------------|
+| ping | 6 s | 8,6 s | **9,1 s** |
+| sterowanie | 31 s | 26,0 s | **9,2 s** |
+| parametry | 7 s | 11,5 s | **16,8 s** |
+| anomalia (offline→`do`, online→`dn`) | 11 s | 44,9 s | **14,1 s** |
+| zgubione | — | — | **0** |
+| sloty (bulk poza oknem) | — | PASS | **PASS (0 z 2144 ramek)** |
+
+Źródło: `logs/bench_v126_20261014.out`, `logs/bench_v1210_20261014.out` (pomiar 10 min po
+restarcie). Ping/parametry/anomalia są nieco powyżej mediany starej wersji — koszt slotowania
+i hashy zgodności; sterowanie przyspieszyło ~3×. **v12.11** (koniec podwójnej wysyłki
+parametrów): 11 naciśnięć = 11 ramek, parametry 8/8 w E2E, bench parametrów 9,2 s, 0/5 zgubionych.
+E2E na v12.6: 46/47 PASS (stagnacji nie da się wyzwolić na żywo — §13).
+
+## 13. Znane ograniczenia (świadome)
+
+- **Transfery startowe G1 ~15 min po restarcie bramki** (devmap / ansnap / bdata). W tym oknie
+  opóźnienia są wyższe; pomiarów nie robić wcześniej niż 10 min po restarcie. `disc_meta` /
+  `disc_vio` czekają na koniec transferu (projektowo, potrafi 5–14 min).
+- **Stagnację zeruje też z2m `availability: online`** — zegar stagnacji zeruje KAŻDA wiadomość
+  urządzenia (`gateway_data.py`). Decyzja 2026-10-14: zostaje tak. Stagnacja jest pokryta
+  testami jednostkowymi, na żywo się jej nie wyzwoli.
+- G1 w dzień: przekaźniki bez napięcia — po restarcie bramki jeden `dsnap` czyści stare
+  wartości (oczekiwane).
+- Pomiar ruchu ramek/h dla v12.10+ niewykonany.
+
+## 14. Powiadomienia alarmowe (WhatsApp) — W PRZYGOTOWANIU
+
+> Placeholder — funkcja niewdrożona.
+
+- **Dziś:** alarmy = `persistent_notification` na HA supervisora (+ listy anomalii na dashboardzie).
+- **Zakres produkcyjny (planowany):** zalanie, dym, bramka offline, supervisor offline.
+- Do ustalenia: kanał/bramka WhatsApp, odbiorcy, eskalacja, oraz kto zgłasza awarię samego
+  supervisora (nie może zgłosić własnej).
