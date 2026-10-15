@@ -490,3 +490,42 @@ restartuje ról LoRa.
   (restart HA core) i credential Telegram w n8n.
 - Test ręczny: `rest_command.telegram_lora` z `message: "test"` (Narzędzia deweloperskie → Akcje);
   alarm G2: `python tools/e2e_g2.py --only alarm` (G1 = produkcja — nie wyzwalać alarmów).
+
+### Sterowanie z Telegrama
+
+Wdrożone 2026-10-15 na tym samym bocie **@jspos_bot** (decyzja Jakuba: bez osobnego bota).
+Jedyny poller zostaje w n8n „Jarvis v2 — POS” (`hSjFqC3Hx1nZzR5e`): `Fetch & Filter` pobiera
+`getUpdates` z `allowed_updates=["message","callback_query"]`, przepuszcza tylko chat/user
+**7206629906** i tylko przyciski z prefiksem `scada:`. IF **„Czy SCADA?”** (tekst zaczyna się od
+`/status|/on|/off|/ping|/pomoc` albo jest to przycisk `scada:`) → Execute Workflow (bez czekania)
+do **„SCADA Telegram — sterowanie”** (`1W3fmZuPEunk8MuO`). Gałąź FALSE = dotychczasowa ścieżka
+(Instagram → shorts, reszta → Assistant).
+
+| Komenda | Działanie (HA supervisora, te same encje co dashboard) | Potwierdzenie |
+|---|---|---|
+| `/status [g1\|g2]` | odczyt: `binary_sensor.*_status`, `*_uptime_bramki`, `*_ostatni_rx`, urządzenia offline/total, liczniki anomalii offline/bateria/inne | — |
+| `/ping <g1\|g2>` | `button.press` na `button.lora_gw_g1_ping` / `button.lora_g2_ping` | nowy `sensor.lora_gX_ostatni_rx` (każdy RX bramki po pingu) |
+| `/on`, `/off <g1\|g2> <urządzenie>` | `switch.turn_on/off` na `switch.lora_*` o nazwie „LoRa G1/G2 <urządzenie>” (dopasowanie bez spacji/`_`/wielkości liter, np. `Test1` = „Test 1”) | stan encji = on/off |
+| `/pomoc` | lista komend | — |
+
+- Odpowiedź dopiero po potwierdzeniu: poll stanu co 2 s, po 60 s „brak potwierdzenia”.
+- **G1 = produkcja:** `/on` i `/off` na G1 najpierw wysyłają pytanie z przyciskiem „✅ Potwierdź”
+  (`scada:confirm:g1|<on/off>|<czas base36>|<urządzenie>`, ważny 2 min; po kliknięciu przycisk
+  znika). G2 wykonuje od razu. `/ping` i `/status` nie zmieniają stanu — bez potwierdzenia.
+- Bez discovery, parametrów i kasowania z Telegrama (świadomie).
+- Inne czaty: ignorowane bez odpowiedzi (filtr w pollerze i drugi raz w węźle `Plan`).
+- Log: n8n data table **`scada_tg_log`** (`Qa2Dd5JAqLHRS1tb`): ts, chat_id, who, command, gw,
+  result (`ok` / `brak potwierdzenia` / `czeka na potwierdzenie` / `wygasło` / `błąd`, + `[sent]`), reply.
+- Dostęp do HA: credential n8n `5eVqSKMZzjKXrlr3` (ten sam co watchdog). **Bez wpisanego tokenu
+  (`Bearer <long-lived token supa>`) każda komenda kończy się błędem 401 w węźle `HA states`
+  i bot nic nie odpowiada.**
+- Wejście testowe podworkflow: `{chat_id: 7206629906, user_message: "/status", dry_run: true}`
+  — `dry_run` nie wysyła nic na Telegram, odpowiedź trafia do logu (`reply`).
+- Rollback pollera: n8n-mcp `n8n_workflow_versions` rollback `hSjFqC3Hx1nZzR5e` wersja lokalna
+  **495** (albo natywna `f78c69cc-159f-4426-a8a8-0ce173b1d345` — stan sprzed zmiany).
+  Wyłączenie samego sterowania: deaktywuj `1W3fmZuPEunk8MuO` (komendy przestaną działać, reszta bota bez zmian).
+- **Przycisk „Status bramki” pod alarmem zalanie/dym — NIEWDROŻONY.** Wymaga zmiany `payload`
+  w `rest_command.telegram_lora` (dodać `reply_markup` z `callback_data: scada:status:<gw>`, gdy
+  podano `gw`) i `gw: "{{ 'g1' if 'g1' in trigger.entity_id else 'g2' }}"` w `lora_tg_alarm_zalanie_dym`;
+  wystarczy potem `rest_command.reload` + `automation.reload` (bez restartu HA). Podworkflow już
+  obsługuje `scada:status:g1|g2`.
