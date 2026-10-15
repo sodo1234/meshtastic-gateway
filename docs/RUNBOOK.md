@@ -443,11 +443,50 @@ E2E na v12.6: 46/47 PASS (stagnacji nie da się wyzwolić na żywo — §13).
   wartości (oczekiwane).
 - Pomiar ruchu ramek/h dla v12.10+ niewykonany.
 
-## 14. Powiadomienia alarmowe (WhatsApp) — W PRZYGOTOWANIU
+## 14. Powiadomienia alarmowe (Telegram)
 
-> Placeholder — funkcja niewdrożona.
+Wdrożone 2026-10-15. Kanał: bot Telegram **@jspos_bot** („JS_Personal_OS”, ten sam co POS Daily),
+odbiorca: chat **7206629906** (Jakub). **Tylko wysyłka** (`sendMessage`) — tego bota odpytuje
+(`getUpdates`) n8n „Jarvis v2 — POS”; nie wolno stawiać drugiego pollera/webhooka
+(żadnego `telegram_bot` z `platform: polling/webhook`).
 
-- **Dziś:** alarmy = `persistent_notification` na HA supervisora (+ listy anomalii na dashboardzie).
-- **Zakres produkcyjny (planowany):** zalanie, dym, bramka offline, supervisor offline.
-- Do ustalenia: kanał/bramka WhatsApp, odbiorcy, eskalacja, oraz kto zgłasza awarię samego
-  supervisora (nie może zgłosić własnej).
+**Zakres (decyzja Jakuba): tylko krytyczne** — zalanie, dym, bramka G1/G2 offline, supervisor
+offline. Anomalie temp/wilg/bateria i urządzenia offline NIE idą na Telegram (zostają
+`persistent_notification` + dashboard).
+
+### Jak to działa
+
+| Alarm | Gdzie | Mechanizm |
+|---|---|---|
+| Zalanie / dym | HA supervisora, automatyzacja `lora_tg_alarm_zalanie_dym` | trigger na zmianie `sensor.lora_gateway_g1_gw_g1_other_anomalies` i `sensor.lora_g2_anomalie_inne`; wysyła tylko **nowe** wpisy `water_leak`/`smoke` z atrybutu `items` (diff poprzedni → nowy stan) = jeden komunikat na zdarzenie, z bramką i urządzeniem. Zgaśnięcie alarmu i stan po restarcie HA (`unknown/unavailable`) nie wysyłają nic. |
+| Bramka offline / wróciła | HA supervisora, `lora_tg_bramka_offline` | `binary_sensor.lora_gw_g1_status` / `binary_sensor.lora_g2_status` = `off` przez ≥5 min → alarm; powrót `off→on` po przerwie ≥5 min → „wróciła online (N min)”. |
+| Supervisor offline / wrócił | **n8n lokalnie (PC)**, workflow `NowxaDaRHDEU7zd2` „LoRa SCADA — watchdog supervisora (Telegram)” | co 5 min `GET http://100.79.111.24:8123/api/states/sensor.lora_g1_uptime_bramki`; porażka = brak odpowiedzi HA albo `last_updated` starszy niż 10 min (skrypt supa przelicza uptime co 30 s, więc encja zmienia się co minutę — `binary_sensor.*_status` NIE nadaje się, zmienia się tylko przy przejściu). 2 kolejne porażki → alarm, potem jedna wiadomość „sup wrócił”. Stan w static data workflow. Wysyłka przez credential Telegram „POS” (`k4eZR4snn5Ldi3T1`). |
+
+Supervisor sam swojej awarii nie zgłosi — dlatego watchdog stoi poza nim (n8n na PC). G1 nie ma
+internetu i niczego nie wysyła; wszystko idzie z supa (ma internet) albo z n8n.
+
+### Gdzie skonfigurowane (HA supervisora, `/var/lib/homeassistant/homeassistant/`)
+
+- `configuration.yaml` → `rest_command: telegram_lora` (POST JSON `{chat_id, text}`; `url: !secret telegram_lora_url`).
+- `secrets.yaml` → `telegram_lora_url` (URL API z tokenem bota; tokenu NIE kopiować do repo/dokumentów).
+  Źródło tokenu: `TELEGRAM_BOT_TOKEN` w `local-ai-packaged/.env` na PC.
+- `automations.yaml` → dwie automatyzacje `lora_tg_*` (na końcu pliku).
+- Backup sprzed zmian: `/var/lib/homeassistant/backup_telegram_20261015_194054/`.
+- n8n watchdog: credential HTTP Header „HA sup LoRa (watchdog) — WSTAW TOKEN” (`5eVqSKMZzjKXrlr3`).
+  Dopóki ma placeholder, HA odpowiada 401 i watchdog sprawdza tylko „HA żyje”; po wpisaniu
+  `Bearer <long-lived token supa>` sprawdza też świeżość skryptu.
+
+**Uwaga:** `rest_command` to integracja YAML — ładuje się dopiero po **restarcie HA core**
+supervisora (reload nie wystarcza, gdy integracji wcześniej nie było). Restart HA core nie
+restartuje ról LoRa.
+
+### Wyłączenie / zmiana odbiorcy
+
+- Wyciszenie alarmów HA: wyłącz `automation.lora_telegram_alarm_zalanie_dym` /
+  `automation.lora_telegram_bramka_offline_wrocila` (UI albo `automation.turn_off`).
+- Watchdog: deaktywuj workflow `NowxaDaRHDEU7zd2` w n8n.
+- Inny odbiorca: zmień `chat_id` w `rest_command.telegram_lora` (configuration.yaml → restart HA
+  core) oraz `chatId` w węźle „Telegram POS” workflow. Inny bot: podmień token w `secrets.yaml`
+  (restart HA core) i credential Telegram w n8n.
+- Test ręczny: `rest_command.telegram_lora` z `message: "test"` (Narzędzia deweloperskie → Akcje);
+  alarm G2: `python tools/e2e_g2.py --only alarm` (G1 = produkcja — nie wyzwalać alarmów).
