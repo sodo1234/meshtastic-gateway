@@ -45,6 +45,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 from config import CONFIG, ROLE
+from modules.state import STATE_DIR, remap as _state_remap   # v12.16: stan na DYSKU, nie tmpfs
+_state_remap(CONFIG)                                          # '/tmp/lora_*' z configów maszyn → STATE_DIR
 from modules.transport import Dispatcher, MqttTransport, LoraTransport
 from modules.transport.tx_queue import PriorityTxQueue
 from modules.protocol.bulk import (Coalescer, cmd_frames, st_frames,  # ramki ZBIORCZE cmdm/stm
@@ -188,7 +190,7 @@ def run_gateway(log):
         max_payload=CONFIG.get('discovery', {}).get('max_payload', 150),
         # STABLE SID: trwała mapa nazwa→sid per-bramka (koniec dryfu sidów przy zmianie składu).
         sid_persist_path=CONFIG.get('state', {}).get(
-            'sid_map_path', f'/tmp/lora_sid_map_{gw_id.lower()}.json'))
+            'sid_map_path', f'{STATE_DIR}/lora_sid_map_{gw_id.lower()}.json'))
 
     # HB: monitored WYŁĄCZNY (bez priority). is_monitored() liczy priority jako monitored
     # (→ mon=6); tu liczymy mon=monitored\priority (=4), pri=priority (=2), dev=total (=7).
@@ -263,7 +265,7 @@ def run_gateway(log):
         report_full_every=data_cfg.get('report_full_every', 1),        # (d) delta availability: pełny sweep co N-ty
         offline_after=data_cfg.get('offline_after'))                   # #7 gw-side liveness
     # v12.14: `sent_states` (źródło `dh`) trwałe — restart bramki bez rozjazdu danych i bez dsnap
-    _sent_path = CONFIG.get('state', {}).get('gw_sent_path', f'/tmp/lora_gw_sent_{gw_lower}.json')
+    _sent_path = CONFIG.get('state', {}).get('gw_sent_path', f'{STATE_DIR}/lora_gw_sent_{gw_lower}.json')
     log.info('DATA', f'💾 wysłany stan z pliku: {data.load_sent(_sent_path)} urządzeń ({_sent_path})')
 
     # STEP 3: lokalna encja Zigbee LQI per urządzenie (Z2M nie tworzy jej sam) —
@@ -465,7 +467,7 @@ def run_gateway(log):
     _an_seed = CONFIG.get('anomaly', {})
     param_sync = ParamSync(
         'gateway', gw_id, mqtt, lora_send, logger=log,
-        persist_path=CONFIG.get('state', {}).get('params_path', '/tmp/lora_params.json'),
+        persist_path=CONFIG.get('state', {}).get('params_path', (STATE_DIR + '/lora_params.json')),
         ha_prefix=HA_PREFIX, state_prefix=STATE_PREFIX,
         on_change=lambda k, v: log.info('PARAM', f'↻ apply {k}={v} (mechanizm)'),
         # E3 (2026-08-03): PRESET PRODUKCYJNY. Kolejność: default modułu → `params_preset`
@@ -527,8 +529,8 @@ def run_gateway(log):
     data.active_fn = gw_mode.is_active
     try:
         import os as _os
-        if _os.path.exists('/tmp/lora_mode_gw.json'):
-            _pm = json.load(open('/tmp/lora_mode_gw.json')).get('mode')
+        if _os.path.exists((STATE_DIR + '/lora_mode_gw.json')):
+            _pm = json.load(open((STATE_DIR + '/lora_mode_gw.json'))).get('mode')
             if _pm and gw_mode.set_mode(_pm):
                 log.info('MODE', 'tryb bramki z persist: %s' % _pm)
     except Exception as _e:
@@ -578,7 +580,7 @@ def run_gateway(log):
     # auto-czyści (handle_ab). on_change → publikacja kubełków (1:1 sup) + encje v10 (per-wpis clear).
     gw_anom_store = AnomalyStore(
         resolve_dev=lambda g, sid: discovery.short_rev.get(sid),
-        persist_path=an_cfg.get('gw_persist_path', '/tmp/lora_anomaly_gw.json'), logger=log)
+        persist_path=an_cfg.get('gw_persist_path', (STATE_DIR + '/lora_anomaly_gw.json')), logger=log)
     gw_anom_pub = AnomalyBucketPublisher(gw_anom_store, mqtt, HA_PREFIX, STATE_PREFIX, logger=log)
     gw_anom_v10 = AnomalyHAv10Bridge(gw_anom_store, mqtt, HA_PREFIX, STATE_PREFIX, logger=log)
     # DEBOUNCE leading+trailing (2026-07-08): pierwsza zmiana publikuje NATYCHMIAST (klik clear w
@@ -704,7 +706,7 @@ def run_gateway(log):
     mode_names = {int(k): v for k, v in CONFIG.get('mode_names', {}).items()}
     win_days = cal_cfg.get('window_days', 14)
     scheduler = ScheduleManager(mode_names=mode_names, gateways=[gw_id], logger=log,
-                                persist_path=CONFIG.get('state', {}).get('schedule_path', '/tmp/lora_schedule_gw.json'))
+                                persist_path=CONFIG.get('state', {}).get('schedule_path', (STATE_DIR + '/lora_schedule_gw.json')))
     cal_state = {'mode': 0, 'next': 0, 'src': 'none'}
 
     def publish_calstat():
@@ -781,7 +783,21 @@ def run_gateway(log):
     # składnik steady-state ~13-16 pkt/45min z ackami). Wysyłaj blob TYLKO gdy zawartość ('a')
     # się zmieniła; wymuszenie co 6h (heartbeat spójności). Bezpieczne: zmiany live płyną w `b`
     # (flagi a:0/1), rozjazd łata reconcile po `oh` z HB.
-    _avail_gate = {'h': None, 'ts': 0.0}
+    # v12.16 (2026-10-21, user): bramka avail TRWAŁA (plik) — po restarcie bramki blob dostępności
+    # leci TYLKO gdy dostępność/LQI się zmieniły (G1: 5 chunków ~2 min przy każdym starcie). Sup, który
+    # stracił lustro (reboot), i tak to wykryje (`sh` → dsnap_req → reset bramki niżej → blob).
+    _AVAIL_GATE_PATH = f'{STATE_DIR}/lora_gw_avail_{gw_lower}.json'
+    try:
+        _avail_gate = json.load(open(_AVAIL_GATE_PATH, encoding='utf-8'))
+        _avail_gate = {'h': _avail_gate.get('h'), 'ts': float(_avail_gate.get('ts') or 0.0)}
+    except Exception:
+        _avail_gate = {'h': None, 'ts': 0.0}
+
+    def _save_avail_gate():
+        try:
+            json.dump(_avail_gate, open(_AVAIL_GATE_PATH, 'w', encoding='utf-8'))
+        except Exception:
+            pass
 
     def _send_avail_blob(blob):
         # B1 (2026-08-03): LQI jedzie tym blobem (wypadło z ramek `b`), więc gate nie może patrzeć
@@ -797,6 +813,7 @@ def run_gateway(log):
             log.info('XFER', f'⏭️ avail-blob pominięty — hash {h} bez zmian (gate 6h)')
             return
         _avail_gate['h'] = h; _avail_gate['ts'] = now
+        _save_avail_gate()
         rt.start_send(gw_id, 'avail', blob)
     data.avail_blob_fn = _send_avail_blob
 
@@ -839,7 +856,7 @@ def run_gateway(log):
         logger=log, interval=an_cfg.get('reconcile_interval', 180),
         mute_window=an_cfg.get('mute_window', 300))
     # v12.15: `ah` trwały (plik) → znany od pierwszego HB/hs po restarcie bramki
-    an_reconciler.load_hash(an_cfg.get('ah_path', f'/tmp/lora_gw_ah_{gw_lower}.txt'))
+    an_reconciler.load_hash(an_cfg.get('ah_path', f'{STATE_DIR}/lora_gw_ah_{gw_lower}.txt'))
     # store change (add/remove/ręczny clear) → NATYCHMIAST wyślij blob (bez re-scanu → clear nie cofany).
     gw_anom_store.on_change = lambda g: (_publish_gw_anom(g), an_reconciler.send_snapshot())
 
@@ -1181,6 +1198,7 @@ def run_gateway(log):
         # stoi na ROZJAZD. Prosba o dsnap = lustro stracilo stan, wiec zdejmij bramki: najblizszy
         # sweep wysle `avail` (2026-10-09).
         _avail_gate['h'] = None
+        _save_avail_gate()
         data._avail_hash = None
     dispatcher.register('dsnap_req', handle_dsnap_req)
     dispatcher.set_fallback(lambda d: log.debug('RX', f'unknown t={d.get("t")}'))
@@ -1468,7 +1486,7 @@ def run_gateway(log):
         "icon": "mdi:theme-light-dark", "device": _cal_di}, separators=(',', ':')), retain=True)
     def _persist_mode_gw(m):
         try:
-            open('/tmp/lora_mode_gw.json', 'w').write(json.dumps({'mode': m}))
+            open((STATE_DIR + '/lora_mode_gw.json'), 'w').write(json.dumps({'mode': m}))
         except Exception as _e:
             log.warn('MODE', 'persist mode: %s' % _e)
     publish_calstat()                                    # bieżący tryb (z persist /tmp/lora_schedule_gw.json)
@@ -1666,7 +1684,7 @@ def run_supervisor(log):
                                                 "h": sup_disc.synced_hash_for_request(gw)}),
         # F7 (cichy start): persist gw_devices+gw_synced → po restarcie supervisora hashe
         # zgadzają się od razu (note_hash nie żąda niczego) → koniec sztormu devmap/db po starcie.
-        persist_path='/tmp/lora_sup_devices.json')
+        persist_path=(STATE_DIR + '/lora_sup_devices.json'))
 
     # STEP 3: data layer — `b` → merged HA state
     dev_avail = {}                       # {(gw,dev): bool} — REALNY licznik offline (A)
@@ -1703,7 +1721,7 @@ def run_supervisor(log):
     sup_data = SupervisorData(ha, sup_disc, logger=log,
                               on_avail=lambda gw, dev, av: _set_avail(gw, dev, av),
                               persist_path=CONFIG.get('state', {}).get('sup_mirror_path',
-                                                                         '/tmp/lora_sup_mirror.json'))
+                                                                         (STATE_DIR + '/lora_sup_mirror.json')))
 
     def _mirror_saver():
         while True:
@@ -1727,7 +1745,7 @@ def run_supervisor(log):
     win_days = cal_cfg.get('window_days', 14)
     cal_id = cal_cfg.get('calendar_id', 'calendar.lora_global')
     scheduler = ScheduleManager(mode_names=mode_names, gateways=known_gateways, logger=log,
-                                persist_path='/tmp/lora_schedule_sup.json')
+                                persist_path=(STATE_DIR + '/lora_schedule_sup.json'))
     # ChannelArbiter supervisora: transfer-plik (kalendarz push w dół / odbiór devmap/ansnap/
     # gw_push od bramek) trzyma kanał — wolumen supervisora czeka. accept_gw=None → agreguje
     # transfery od WSZYSTKICH bramek (per-gw filtr jest po stronie bramek).
@@ -1989,7 +2007,7 @@ def run_supervisor(log):
             return None
         ps = sup_params.get(gw)
         if ps is None:
-            persist = f'/tmp/lora_params_sup_{gw.lower()}.json'
+            persist = f'{STATE_DIR}/lora_params_sup_{gw.lower()}.json'
             fresh = not os.path.exists(persist)
             ps = ParamSync(
                 'supervisor', gw, mqtt, send_to_all, logger=log,
@@ -2134,7 +2152,7 @@ def run_supervisor(log):
     anomaly_store = AnomalyStore(
         resolve_dev=lambda gw, sid: sup_data._dev_from_sid(gw, sid),
         on_change=publish_anomalies, on_alert=anomaly_popup,
-        persist_path=an_cfg.get('persist_path', '/tmp/lora_anomaly_ids.json'), logger=log)
+        persist_path=an_cfg.get('persist_path', (STATE_DIR + '/lora_anomaly_ids.json')), logger=log)
     # GHOST-PRUNE (2026-07-07, audyt): persistence trzyma anomalie bramek spoza konfiguracji
     # (np. stare test_1/test_2 [G1] po przemianowaniu maszyny G1→G2) → fałszywie zawyżony licznik
     # alarmów (175 vs 173). Przy starcie wywal wszystko dla nieznanych bramek.
@@ -2309,7 +2327,7 @@ def run_supervisor(log):
     # v12.14 (2026-10-21): cache TRWAŁY (plik, jak lustro). Był tylko w pamięci → po restarcie supa
     # kafle hashy bramek („disc”, „cal”…) stały na `--`, dopóki rotacja `_fit` nie dowiozła każdego
     # pola (HB co 900 s → nawet godzina). Wartość z pliku to „ostatnia znana” — ten sam kontrakt.
-    _HB_HASH_PATH = CONFIG.get('state', {}).get('sup_hbhash_path', '/tmp/lora_sup_hbhash.json')
+    _HB_HASH_PATH = CONFIG.get('state', {}).get('sup_hbhash_path', (STATE_DIR + '/lora_sup_hbhash.json'))
     try:
         gw_hb_hash = json.load(open(_HB_HASH_PATH, encoding='utf-8'))   # gw → {pole: ostatnia znana wartosc}
     except Exception:

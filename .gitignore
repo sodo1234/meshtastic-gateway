@@ -46,3 +46,6 @@ tools/jev_log.jsonl
 
 # JEV — lista prywatnych sesji (lokalna)
 tools/jev_private_sessions.txt
+
+# stan runtime bramek/supa (v12.16, na maszynach ~/meshtastic/state)
+skrypty/state/
