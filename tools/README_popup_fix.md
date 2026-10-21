@@ -10,5 +10,5 @@ DO ZROBIENIA gdy G1 osiagalny (poniedzialek): ten sam skrypt na HA G1 (`lora-sca
 
 Uzycie (na maszynie z HA, w ~/meshtastic, venv): `venv/bin/python fix_popups_live.py <url_path> apply`
 (bez `apply` = tylko statystyki). Kopia zapasowa `/tmp/lovelace_backup_<url_path>_<ts>.json`; przywrocenie:
-`venv/bin/python restore_dashboard.py <url_path> <plik_backup>`. Skrypt NIE jest idempotentny (nie uruchamiac dwa razy na tym samym dashboardzie
-bez przywrocenia kopii — owinie szablony ponownie).
+`venv/bin/python restore_dashboard.py <url_path> <plik_backup>`. Od 2026-10-21 skrypt jest idempotentny (pomija szablony juz owiniete);
+`fix_popups_live.py all [apply]` = wszystkie dashboardy tego HA. Stan 10-21: G1, G2, sup (lora-scada, lora-scada-g1) — 16 popupow, wszystkie owiniete.
