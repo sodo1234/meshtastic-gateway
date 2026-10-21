@@ -39,6 +39,7 @@ TYPES = {
         "dsnap_req": "dr",
         "dump_anom": "du",
         "hb": "h",
+        "hs": "hs",   # v12.15: komplet hashy bramki (już 2 znaki — bez skrótu)
         "param_upd": "pu",
         "params": "ps",
         "params_req": "pr",
@@ -87,6 +88,7 @@ KEYS = {
     "disc_ap": {"hash": "hh"},
     "disc_meta": {"hash": "hh", "dev_n": "dn"},
     "hb": {"hash": "hh"},
+    "hs": {"hash": "hh"},
     "pong": {"hash": "hh"},
     "rt_ack": {"miss": "mi"},
     "rt_begin": {"kind": "k", "win": "w"},

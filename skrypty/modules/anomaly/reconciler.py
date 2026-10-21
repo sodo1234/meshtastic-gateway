@@ -201,6 +201,32 @@ class AnomalyReconciler:
         """Hash listy aktywnych — TA SAMA formuła po obu stronach (supervisor weryfikuje deltę)."""
         return hashlib.md5(json.dumps(rows, separators=(',', ':')).encode()).hexdigest()[:8]
 
+    # v12.15 (2026-10-21, wymóg usera „bramki trzymają hashe w plikach”): `ah` z pliku od PIERWSZEGO
+    # HB po restarcie. Wcześniej `ah` był pusty do 1. przebiegu reconcilera (≤180 s), a HB idzie co
+    # 900 s → kafel anomalii na supie stał na `--` nawet kwadrans.
+    def load_hash(self, path):
+        self._hash_path = path
+        try:
+            with open(path, encoding='utf-8') as f:
+                self.saved_hash = (f.read().strip() or None)
+        except Exception:
+            self.saved_hash = None
+        return self.saved_hash
+
+    def current_hash(self):
+        """`ah` do HB/hs: ostatnio przekazany, a przed 1. przebiegiem — zapisany w pliku."""
+        return self._last_hash or getattr(self, 'saved_hash', None)
+
+    def _save_hash(self):
+        path = getattr(self, '_hash_path', None)
+        if not path or not self._last_hash:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(self._last_hash)
+        except Exception:
+            pass
+
     def _transmit(self, blob, force_send, ts):
         """Wyślij zmianę stanu anomalii: DELTA (1 pakiet an_d) gdy mała, pełny blob gdy bootstrap/
         duża/force. Zwraca True gdy coś poszło. Aktualizuje _last_hash/_last_sent."""
@@ -213,6 +239,7 @@ class AnomalyReconciler:
                 base.sort(key=lambda r: (r[0], r[1]))
                 self._last_sent = {(r[0], r[1]): (r[2] if len(r) > 2 else None) for r in base}
                 self._last_hash = self.blob_hash(base)
+                self._save_hash()
                 if self.log:
                     self.log.info('ANOM', f'⏭️ start: baza {len(base)} anomalii z persistu '
                                           f'(ah={self._last_hash}) — bez ansnap, decyduje hash')
@@ -244,6 +271,7 @@ class AnomalyReconciler:
         else:
             return False
         self._last_hash = h
+        self._save_hash()
         self._last_sent = cur
         return True
 

@@ -12,6 +12,7 @@ on_z2m(topic, payload); register handle_req on the dispatcher for `req`.
 """
 import datetime
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -302,7 +303,35 @@ class GatewayData:
         samego. Ramka zgubiona na RF nadal daje rozjazd — i o to chodzi, to jedyna realna strata.
         Woła to KAŻDA ścieżka nadawania: `_enqueue` (ramki `b`) oraz blob `dsnap` w harnessie."""
         if caps:
-            self.sent_states.setdefault(dev, {}).update(caps)
+            cur = self.sent_states.setdefault(dev, {})
+            if any(cur.get(k) != v for k, v in caps.items()):
+                cur.update(caps)
+                self._save_sent()
+
+    # v12.14 (2026-10-21, wymóg usera „bramki trzymają hashe w plikach”): `sent_states` (źródło `dh`)
+    # TRWAŁE. Po restarcie bramki `dh` = ten sam co przed nim = lustro supa → zgodne bez `dsnap`.
+    # Wcześniej start dawał dh=0 → rozjazd → dsnap przy KAŻDYM restarcie (hydracja z HA tego nie
+    # łatała: z2m retained wypełniał stany wcześniej, więc hydracja pomijała wszystkie urządzenia).
+    def load_sent(self, path):
+        self._sent_path = path
+        try:
+            with open(path, encoding='utf-8') as f:
+                self.sent_states = {d: dict(c) for d, c in json.load(f).items() if isinstance(c, dict)}
+        except Exception:
+            pass
+        return len(self.sent_states)
+
+    def _save_sent(self):
+        path = getattr(self, '_sent_path', None)
+        if not path:
+            return
+        try:
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(self.sent_states, f, separators=(',', ':'))
+            os.replace(tmp, path)                      # atomowo: brak prądu w trakcie ≠ pusty plik
+        except Exception:
+            pass
 
     def _pub_avail(self, dev, available):
         """UNIFIKACJA: zgłoś zmianę dostępności (to samo źródło co `a:`) → encja na lokalnym HA."""

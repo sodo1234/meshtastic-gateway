@@ -16,6 +16,7 @@ from .codec import long_type
 DEFAULT_IMMEDIATE_TYPES = (
     "ping", "pong", "sup_ping", "sup_pong", "cmd", "st", "stm",
     "sync", "params", "params_req", "param_upd", "zg", "an_d",
+    "hs",   # v12.15: komplet hashy (≤2 ramki na HB/ping) — od razu, nie po transferze/slocie
 )
 
 

@@ -46,6 +46,7 @@ SAMPLES = {
     "hb": {"t": "hb", "g": "G1", "up": 123456, "dev": 199, "mon": 82, "pri": 78,
            "ts": 1700000000, "hash": "abcd", "cal": "cafe", "ph": "1234", "dh": "5678",
            "sh": "9abc", "ah": "def0", "gm": "calendar", "ga": 1, "tq": "synced", "m": 1},
+    "hs": {"t": "hs", "g": "G1", "ts": 1700000000, "hash": "abc123def456", "ph": "1234abcd", "cal": "aaaabbbbcccc", "ah": "def0", "dh": "5678", "sh": "9abc"},
     "param_upd": {"t": "param_upd", "g": "G1", "d": {"P1": 20}, "ph": "abcd"},
     "params": {"t": "params", "g": "G1", "d": {"P1": 20, "T1": 1800}},
     "params_req": {"t": "params_req", "g": "G1"},

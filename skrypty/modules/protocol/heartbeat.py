@@ -97,7 +97,10 @@ class GatewayHeartbeat:
                 payload.update(self.diag_fn() or {})
             except Exception:
                 pass
-        return self._fit(payload)
+        hashes = {k: payload.pop(k) for k in self.HASH_KEYS if k in payload}
+        payload = self._fit(payload)                   # info bez hashy (te jadą w `hs`, patrz _send_pair)
+        payload.update(hashes)
+        return payload
 
     # ── TWARDY SUFIT RAMKI ───────────────────────────────────────────────────
     # Meshtastic tnie/odrzuca pakiet >220 B i NIE chunkuje go — to cicha awaria: bramka
@@ -143,10 +146,24 @@ class GatewayHeartbeat:
     def _size(payload):
         return len(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
 
+    # v12.15 (2026-10-21, decyzja usera): HASHE W OSOBNEJ RAMCE `hs`. Komplet 6 hashy razem z polami
+    # HB nie mieścił się w 200 B (G1: 218 B) → `_fit` rotacyjnie je gubił i sup pokazywał `--`/stare.
+    # Teraz HB/pong = informacje (~130 B), zaraz za nim `hs` = wszystkie hashe (~110 B), obie z zapasem.
+    HASH_KEYS = ('hash', 'ph', 'cal', 'ah', 'dh', 'sh')
+
+    def _send_pair(self, pkt_type):
+        msg = self.build_payload(pkt_type)
+        hs = {'t': 'hs', 'g': self.gw_id, 'ts': msg.get('ts')}
+        for k in self.HASH_KEYS:
+            if k in msg:
+                hs[k] = msg.pop(k)
+        self.lora.send(json.dumps(msg, separators=(',', ':')))
+        if len(hs) > 3:
+            self.lora.send(json.dumps(self._fit(hs), separators=(',', ':')))
+        return msg
+
     def send_heartbeat(self):
-        msg = self.build_payload('hb')
-        text = json.dumps(msg, separators=(',', ':'))
-        self.lora.send(text)
+        msg = self._send_pair('hb')
         self._last_hb = time.time()
         if self.log:
             self.log.info('HB', f'💓 HB: dev={msg["dev"]} mon={msg["mon"]} pri={msg["pri"]}')
@@ -157,9 +174,7 @@ class GatewayHeartbeat:
             if self.log:
                 self.log.debug('HB', f'↪️ ping dla {data.get("g")} — nie moja, ignoruję')
             return
-        msg = self.build_payload('pong')
-        text = json.dumps(msg, separators=(',', ':'))
-        self.lora.send(text)
+        msg = self._send_pair('pong')
         if self.log:
             self.log.info('HB', f'🏓 PONG: dev={msg["dev"]} mon={msg["mon"]} pri={msg["pri"]}')
 

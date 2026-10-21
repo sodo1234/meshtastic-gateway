@@ -22,57 +22,54 @@ KRYTYCZNE = ('t', 'g', 'up', 'dev', 'mon', 'pri', 'ts', 'gm', 'ga', 'm', 'tq')
 
 
 class _Lora:
-    def send(self, text): pass
+    def __init__(self): self.sent = []
+    def send(self, text): self.sent.append(json.loads(text))
 
 
-def _hb(devs=194):
+def _hb(devs=194, diag=None, gw='G1'):
     d = {f'DEV{i}': {'monitored': True} for i in range(devs)}
-    return GatewayHeartbeat(gw_id='G1', devices_fn=lambda: d, lora=_Lora(),
-                            diag_fn=lambda: dict(DIAG), start_time=0)
+    return GatewayHeartbeat(gw_id=gw, devices_fn=lambda: d, lora=_Lora(),
+                            diag_fn=lambda: dict(diag if diag is not None else DIAG), start_time=0)
 
 
 def _size(p): return len(json.dumps(p, separators=(',', ':')).encode('utf-8'))
 
 
+def _frames(hb, typ):
+    hb.lora.sent.clear()
+    hb.send_heartbeat() if typ == 'hb' else hb.handle_ping({'g': hb.gw_id})
+    return hb.lora.sent
+
+
 def main():
+    # v12.15: HB/pong = informacje, hashe w osobnej ramce `hs` — KOMPLET w każdym beacie.
     hb = _hb()
-
-    # 1. HB i pong MIESZCZA sie pod limitem Meshtastic
     for typ in ('hb', 'pong'):
-        p = hb.build_payload(typ)
-        assert _size(p) <= GatewayHeartbeat.FRAME_LIMIT, (typ, _size(p))
-        assert _size(p) <= GatewayHeartbeat.FRAME_SAFE, (typ, _size(p))
+        fr = _frames(hb, typ)
+        assert [f['t'] for f in fr] == [typ, 'hs'], fr
+        info, hs = fr
+        # 1. obie ramki pod sufitem roboczym (z zapasem)
+        assert _size(info) <= GatewayHeartbeat.FRAME_SAFE, (typ, _size(info))
+        assert _size(hs) <= GatewayHeartbeat.FRAME_SAFE, ('hs', _size(hs))
+        # 2. liveness w info, ZERO hashy w info
+        for k in KRYTYCZNE:
+            assert k in info, f'porzucono pole krytyczne {k}'
+        assert not set(GatewayHeartbeat.HASH_KEYS) & set(info), info
+        # 3. komplet hashy w KAŻDEJ ramce hs (koniec rotacji/głodzenia pól)
+        assert set(GatewayHeartbeat.HASH_KEYS) <= set(hs), hs
+        assert hs['g'] == 'G1' and hs['ts'] == info['ts']
 
-    # 2. pola LIVENESS nigdy nie znikaja — inaczej supervisor traci podstawowa diagnostyke
-    p = hb.build_payload('hb')
-    for k in KRYTYCZNE:
-        assert k in p, f'porzucono pole krytyczne {k}'
+    # 4. bramka bez hashy (np. przed discovery) → sama ramka info, bez pustego `hs`
+    maly = _hb(devs=1, diag={'ga': 1}, gw='G2')
+    assert [f['t'] for f in _frames(maly, 'hb')] == ['hb']
 
-    # 3. ROTACJA: przez kilka beatow kazde opcjonalne pole kiedys przechodzi
-    widziane = set()
-    for _ in range(12):
-        widziane |= set(hb.build_payload('hb'))
-    for k in GatewayHeartbeat._DROP_ORDER:
-        assert k in widziane, f'pole {k} glodzone — nigdy nie wyszlo w 12 beatach'
+    # 5. skrajność: bardzo szerokie hashe dalej nie przebijają limitu Meshtastic
+    gruby = _hb(devs=999, diag={k: 'F' * 24 for k in GatewayHeartbeat.HASH_KEYS})
+    for f in _frames(gruby, 'hb'):
+        assert _size(f) <= GatewayHeartbeat.FRAME_LIMIT, _size(f)
 
-    # 4. gdy payload i tak sie miesci, NIC nie jest porzucane (bramka mala jak G2)
-    maly = GatewayHeartbeat(gw_id='G2', devices_fn=lambda: {'A': {}}, lora=_Lora(),
-                            diag_fn=lambda: {'dh': 'abc123', 'ga': 1}, start_time=0)
-    p2 = maly.build_payload('hb')
-    assert 'dh' in p2 and 'ga' in p2 and _size(p2) <= GatewayHeartbeat.FRAME_SAFE
-
-    # 5. skrajnosc: bardzo szerokie pola diagnostyczne dalej nie przebijaja limitu
-    gruby = GatewayHeartbeat(gw_id='G1', devices_fn=lambda: {f'D{i}': {} for i in range(999)},
-                             lora=_Lora(), start_time=0,
-                             diag_fn=lambda: {k: 'F' * 24 for k in GatewayHeartbeat._DROP_ORDER})
-    p3 = gruby.build_payload('hb')
-    assert _size(p3) <= GatewayHeartbeat.FRAME_LIMIT, _size(p3)
-    for k in KRYTYCZNE:
-        if k in ('gm', 'ga', 'm', 'tq'):
-            continue                      # te wnosi diag_fn, tu go nie ma
-        assert k in p3, f'porzucono pole krytyczne {k} przy skrajnym payloadzie'
-
-    print(f"OK — 5/5: hb={_size(hb.build_payload('hb'))} B, pong={_size(hb.build_payload('pong'))} B, "
+    info, hs = _frames(hb, 'hb')
+    print(f"OK — 5/5: hb={_size(info)} B + hs={_size(hs)} B (komplet 6 hashy), "
           f"limit {GatewayHeartbeat.FRAME_LIMIT} B, sufit roboczy {GatewayHeartbeat.FRAME_SAFE} B")
 
 

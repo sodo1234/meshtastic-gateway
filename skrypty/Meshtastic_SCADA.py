@@ -229,7 +229,7 @@ def run_gateway(log):
                          # porównuje ze swoim i żąda dump TYLKO przy rozjeździe (koniec ślepych
                          # pełnych ansnap co dump_interval). an_reconciler zdefiniowany niżej,
                          # wywołanie dopiero po starcie HB (wzorzec jak param_sync wyżej).
-                         **({'ah': an_reconciler._last_hash} if an_reconciler._last_hash else {}),
+                         **({'ah': an_reconciler.current_hash()} if an_reconciler.current_hash() else {}),
                          # B6 (2026-08-01): hash STANU URZĄDZEŃ. Odkąd binarne raportują wyłącznie
                          # zdarzeniowo, zbieżności lustra nie pilnuje periodyk tylko ten hash — sup
                          # porównuje ze swoim i przy rozjeździe prosi o `dsnap` (jeden transfer).
@@ -262,6 +262,9 @@ def run_gateway(log):
         report_interval=data_cfg.get('report_interval', 0),            # #8 periodic heartbeat
         report_full_every=data_cfg.get('report_full_every', 1),        # (d) delta availability: pełny sweep co N-ty
         offline_after=data_cfg.get('offline_after'))                   # #7 gw-side liveness
+    # v12.14: `sent_states` (źródło `dh`) trwałe — restart bramki bez rozjazdu danych i bez dsnap
+    _sent_path = CONFIG.get('state', {}).get('gw_sent_path', f'/tmp/lora_gw_sent_{gw_lower}.json')
+    log.info('DATA', f'💾 wysłany stan z pliku: {data.load_sent(_sent_path)} urządzeń ({_sent_path})')
 
     # STEP 3: lokalna encja Zigbee LQI per urządzenie (Z2M nie tworzy jej sam) —
     # czyta wprost z topicu z2m, więc gateway dashboard ma LQI w pełnej rozdzielczości.
@@ -770,7 +773,7 @@ def run_gateway(log):
     # 2026-10-09: rt_end niesie biezace hashe bramki (dh/sh/ah) → supervisor liczy zgodnosc W CHWILI
     # konca transferu, a nie dopiero po nastepnym HB/pingu. HB zostaje kontrola dryfu.
     rt.hash_fn = lambda: {**_hb_hashes(),
-                          **({'ah': an_reconciler._last_hash} if an_reconciler._last_hash else {})}
+                          **({'ah': an_reconciler.current_hash()} if an_reconciler.current_hash() else {})}
     # (a)+(d) MAPA i pełny sweep availability jako skompresowane bloby przez ReliableTransfer
     # (kind='devmap'/'avail') — zamiast 94 pkt `db` / ~33 pkt `b`/sweep. Kanał rt_* (osobny od cal_*).
     discovery.map_send_fn = lambda payload: rt.start_send(gw_id, 'devmap', payload)
@@ -835,6 +838,8 @@ def run_gateway(log):
                                        f"missing={rep.get('missing')} stale={rep.get('stale')}"),
         logger=log, interval=an_cfg.get('reconcile_interval', 180),
         mute_window=an_cfg.get('mute_window', 300))
+    # v12.15: `ah` trwały (plik) → znany od pierwszego HB/hs po restarcie bramki
+    an_reconciler.load_hash(an_cfg.get('ah_path', f'/tmp/lora_gw_ah_{gw_lower}.txt'))
     # store change (add/remove/ręczny clear) → NATYCHMIAST wyślij blob (bez re-scanu → clear nie cofany).
     gw_anom_store.on_change = lambda g: (_publish_gw_anom(g), an_reconciler.send_snapshot())
 
@@ -2301,14 +2306,30 @@ def run_supervisor(log):
     # 10111 → 01111) i push `zg` przy kazdej zmianie = niepotrzebny ruch LoRa.
     # Uwaga: rozrozniamy BRAK pola od wartosci falsy — `dh` rowne '0' (bramka nic nie wyslala)
     # jest PELNOPRAWNA wartoscia i musi trafic do porownania.
-    gw_hb_hash = {}                                       # gw → {pole: ostatnia znana wartosc}
-    data_mismatch_seen = {}                               # gw → (dh, sh, lustro) z ostatniego HB z rozjazdem
+    # v12.14 (2026-10-21): cache TRWAŁY (plik, jak lustro). Był tylko w pamięci → po restarcie supa
+    # kafle hashy bramek („disc”, „cal”…) stały na `--`, dopóki rotacja `_fit` nie dowiozła każdego
+    # pola (HB co 900 s → nawet godzina). Wartość z pliku to „ostatnia znana” — ten sam kontrakt.
+    _HB_HASH_PATH = CONFIG.get('state', {}).get('sup_hbhash_path', '/tmp/lora_sup_hbhash.json')
+    try:
+        gw_hb_hash = json.load(open(_HB_HASH_PATH, encoding='utf-8'))   # gw → {pole: ostatnia znana wartosc}
+    except Exception:
+        gw_hb_hash = {}
+    data_mismatch_seen = {}                               # gw → ts pierwszego świeżego HB z rozjazdem (v12.14)
+    data_ping_guard = {}                                  # gw → ts pingu po potwierdzonym rozjeździe (v12.15)
 
     _HB_HASH_KEYS = ('hash', 'ph', 'cal', 'ah', 'dh', 'sh')
 
     def _hb_val(gw, d, key):
         """Wartosc pola z HB, a przy BRAKU — ostatnia znana (patrz `merge_hb_hashes`)."""
-        return merge_hb_hashes(gw_hb_hash.setdefault(gw, {}), d, _HB_HASH_KEYS)[key]
+        cache = gw_hb_hash.setdefault(gw, {})
+        before = dict(cache)
+        val = merge_hb_hashes(cache, d, _HB_HASH_KEYS)[key]
+        if cache != before:
+            try:
+                json.dump(gw_hb_hash, open(_HB_HASH_PATH, 'w', encoding='utf-8'), separators=(',', ':'))
+            except Exception:
+                pass
+        return val
 
     def reconcile_availability(gw):
         """Reconcile listy offline z dev_avail (łapie zgubione `do`/`dn`). Recovery → usuń+kasuj ack.
@@ -2704,7 +2725,11 @@ def run_supervisor(log):
         """Zgodnosc bramka↔supervisor (flagi disc/param/cal/anom/dane) + push `zg` + topic /hashes.
         Wolana z HB/pong ORAZ tuz po zakonczeniu transferu (hashe z rt_end → gw_hb_hash)."""
         if gw:
-            def _mark(ok):
+            def _mark(ok, val=None):
+                # v12.15 (2026-10-21, user): brak hasha ≠ „zgodny”. Flaga `zg` dalej traktuje brak jako
+                # „bez zdania” (żadnych napraw), ale kafel mówi prawdę: hash jeszcze nie przyszedł.
+                if val in ('--', None, ''):
+                    return 'brak danych ⏳'
                 return 'zgodny ✅' if ok else 'ROZJAZD ⚠️'
             _disc = _hb_val(gw, d, 'hash'); _param = _hb_val(gw, d, 'ph')
             _cal = _hb_val(gw, d, 'cal'); _ah = _hb_val(gw, d, 'ah')
@@ -2724,7 +2749,9 @@ def run_supervisor(log):
             _param_ok = True if _param == '--' else bool(psync is not None
                                                          and _param == psync.params_hash())
             _cal_ok = True if _cal == '--' else bool(_cal and _cal == expected_cal_hash.get(gw))
-            _ah_ok = bool(gw_ah_sync.get(gw)) if _ah != '--' else True
+            # v12.15: porównanie liczone TERAZ z listy supa (nie z `gw_ah_sync` w pamięci) — po restarcie
+            # supa hash z pliku jest znany, a wynik porównania był pusty → fałszywy ROZJAZD przy równych hashach.
+            _ah_ok = True if _ah == '--' else (AnomalyReconciler.blob_hash(_sup_anom_rows(gw)) == _ah)
             # 5. FLAGA — DANE (2026-08-03, decyzja usera). Hash stanu urządzeń (`dh`, B6) jest
             # równorzędny z disc/param/cal/anom: odkąd binarne raportują tylko zdarzeniowo, to on
             # pilnuje, że lustro nie rozjechało się po cichu. Bez flagi klient nie widzi rozjazdu,
@@ -2782,17 +2809,29 @@ def run_supervisor(log):
             # gdy KOLEJNY HB niesie ten sam rozjazd. Zmierzone na v12.2: (1) G2 co ~45 min HB z `dh`
             # wyprzedzającym ramkę `b` w drodze (lustro = poprzedni dh) → zbędny dsnap; (2) G1 po
             # zakończonym dsnap porównywał lustro z `sh` z HB SPRZED transferu → dsnap co 180 s w kółko.
-            # Realna strata ramki dalej wychodzi — o jeden HB później. Flaga Dane pokazuje rozjazd od razu.
-            _mkey = (_dh, _sh, sup_data.state_hash(gw))
+            # Realna strata ramki dalej wychodzi — o jeden HB później.
+            # v12.14 (2026-10-21, decyzja usera): potwierdzenie = rozjazd na 2 kolejnych ŚWIEŻYCH HB/pong
+            # odległych ≥60 s — BEZ wymogu identycznego klucza (dh, sh, lustro). Przy częstych zmianach
+            # stanów klucz był co HB inny, więc zgubiona ramka NIGDY nie dostawała dsnap. Flaga Dane na
+            # dashboardzie = ten sam POTWIERDZONY rozjazd (przejściowy — ramka `b` w drodze — nie miga).
+            # Każda ocena „zgodne” (też po rt_end dsnap) czyści licznik od razu.
             if not _data_mismatch:
                 data_mismatch_seen.pop(gw, None)
-            elif d:
-                _confirmed = data_mismatch_seen.get(gw) == _mkey
-                data_mismatch_seen[gw] = _mkey
-                if not _confirmed:
-                    _data_mismatch = False
+            elif d and ('dh' in d or 'sh' in d):           # v12.15: liczy tylko ramka NIOSĄCA hash danych
+                _first = data_mismatch_seen.setdefault(gw, time.time())
+                _data_mismatch = (time.time() - _first) >= 60.0
             else:
-                _data_mismatch = False
+                _first = data_mismatch_seen.get(gw)
+                _data_mismatch = False                     # naprawę zamawia tylko świeży HB/pong
+                if _first is not None and (time.time() - _first) >= 60.0:
+                    _data_ok = False                       # potwierdzony wcześniej — flaga zostaje
+                    # v12.15: zamiast czekać na HB (900 s) — poproś o świeże hashe (pong+hs), max raz/180 s
+                    if time.time() - data_ping_guard.get(gw, 0) > 180:
+                        data_ping_guard[gw] = time.time()
+                        send_to_all({"t": "ping", "g": gw})
+            if not _data_ok and not (gw in data_mismatch_seen
+                                     and (time.time() - data_mismatch_seen[gw]) >= 60.0):
+                _data_ok = True                            # niepotwierdzony = bez zdania (nie ROZJAZD)
             if gw and not hb_stale and _data_mismatch and sup_disc.is_complete(gw):
                 _now = time.time()
                 _same_dsnap_active = rt.receiving(gw, kind='dsnap', stale_after=180.0)
@@ -2813,52 +2852,33 @@ def run_supervisor(log):
                 send_to_all({"t": "zg", "g": gw, "z": _zgv})   # probe bramki pinguje TYLKO przy ciszy.
                 log.info('HB', f'🛡️ {gw}: zgodność {_zgv} → push do bramki')
             mqtt.publish(f"{STATE_PREFIX}/gw/{gw.lower()}/hashes", json.dumps({
-                'disc': _disc, 'disc_ok': _mark(_disc_ok),
+                'disc': _disc, 'disc_ok': _mark(_disc_ok, _disc),
                 # RE-SYNC GUARD: ile urządzeń mam w mapie / ile bramka zgłasza w HB.
                 # „78/194" mówi od razu ile brakuje — bez zaglądania w log.
                 'disc_n': f"{len(sup_disc.devices(gw))}/{sup_disc.gw_devn.get(gw, '?')}",
-                'param': _param, 'param_ok': _mark(_param_ok),
-                'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok),
-                'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok),
-                'data': _sh, 'data_ok': _mark(_data_ok),   # 5. flaga: hash STANU bramki (sh) + zgodność (dh)
+                'param': _param, 'param_ok': _mark(_param_ok, _param),
+                'cal': _cal, 'cal_expected': expected_cal_hash.get(gw, '--'), 'cal_ok': _mark(_cal_ok, _cal),
+                'anomaly': _ah, 'anomaly_ok': _mark(_ah_ok, _ah),
+                'data': _sh, 'data_ok': _mark(_data_ok, _sh),   # 5. flaga: hash STANU bramki (sh) + zgodność (dh)
                 'data_sent': _dh,                          # co bramka dowiozła (diagnostyka rozjazdu)
-                'status_ok': _mark(_status_ok),            # 2026-08-26: czy STATUS (z dostępnością) zsynchronizowany
-                'all_ok': 'WSZYSTKO ZGODNE ✅' if _all_ok else 'ROZJAZD ⚠️'},
+                'status_ok': _mark(_status_ok, _sh),            # 2026-08-26: czy STATUS (z dostępnością) zsynchronizowany
+                'all_ok': ('ROZJAZD ⚠️' if not _all_ok else
+                           'brak danych ⏳' if '--' in (_disc, _param, _cal, _ah, _sh) else 'WSZYSTKO ZGODNE ✅')},
                 separators=(',', ':')), retain=True)
 
-    def on_hb(d):
-        gw = d.get('g'); sup_hb.handle_hb(d)
-        # SPOZNIONY HB (2026-10-01): kanal LoRa z transferami potrafi dostarczyc HB z OPOZNIENIEM
-        # rzedu 10 min (zmierzone G1: nadany 13:15, odebrany 13:25). Taki HB niesie hashe SPRZED
-        # ostatniej zmiany, wiec wszystkie „rozjazdy" z niego sa falszywe i wywoluja zbedne re-synce
-        # (kalendarz 3x, dsnap, dump_anom). Decyzje o rozjezdzie podejmujemy tylko z SWIEZEGO HB.
-        _hb_ts = d.get('ts')
-        hb_stale = bool(_hb_ts) and (time.time() - float(_hb_ts)) > 180
-        if hb_stale:
-            log.info('HB', f'⏳ {gw}: HB sprzed {int(time.time() - float(_hb_ts))}s — pomijam decyzje o rozjezdzie hashy')
-        if gw:
-            ha.reg_gw_controls(gw)
-            reg_gw_hashes(gw)                             # STEP 17: encje hash bramki
-            reg_cal_button_gw(gw)                         # STEP 4: per-bramka Sync Calendar
-            reg_anomaly_entities(gw)                      # STEP 5: encje an_offline/_battery/_other
-            reg_gw_time_entities(gw)                      # STEP 5+: encje jakość czasu + pora dnia
-            publish_gw_time(gw, d)                        # STEP 5+: tq/gm/ga → dashboard supervisora
-            ah = d.get('ah')                              # AH-GATE: hash stanu anomalii z bramki
-            if ah and not hb_stale:
-                local_ah = AnomalyReconciler.blob_hash(_sup_anom_rows(gw))
-                gw_ah_sync[gw] = (local_ah == ah)
-                if local_ah != ah and not hb_stale and time.time() - ah_guard.get(gw, 0) > 120:
-                    ah_guard[gw] = time.time()
-                    log.warn('ANOM', f'⚠️ HB [{gw}]: ah rozjazd {local_ah}≠{ah} → dump_anom (reconcile)')
-                    send_to_all({"t": "dump_anom", "g": gw})
-            ga = d.get('ga')                             # STEP 5: aktywność trybu bramki (supresja)
-            if ga is not None:
-                gw_active[gw] = bool(ga)
-        # RE-SYNC GUARD (A): HB/pong niesie prawdziwe `dev` — karm nim licznik kompletności.
-        # Bez tego gw_devn wypełniało tylko disc_meta (praktycznie: restart bramki), więc
-        # check_complete spał, a niepełny mirror (78/194) nie miał jak się naprawić.
+    def _on_hashes(gw, d, hb_stale):
+        """v12.15: hashe bramki (ah/hash/cal/ph/dh/sh) → decyzje o rozjeździe + flagi `zg`.
+        Wołane z ramki `hs` (komplet hashy, od v12.15) ORAZ z HB/pong (stare bramki niosą hashe w HB).
+        Brak pola = bez zdania (każda gałąź sprawdza obecność)."""
+        ah = d.get('ah')                              # AH-GATE: hash stanu anomalii z bramki
+        if gw and ah and not hb_stale:
+            local_ah = AnomalyReconciler.blob_hash(_sup_anom_rows(gw))
+            gw_ah_sync[gw] = (local_ah == ah)
+            if local_ah != ah and not hb_stale and time.time() - ah_guard.get(gw, 0) > 120:
+                ah_guard[gw] = time.time()
+                log.warn('ANOM', f'⚠️ HB [{gw}]: ah rozjazd {local_ah}≠{ah} → dump_anom (reconcile)')
+                send_to_all({"t": "dump_anom", "g": gw})
         if not hb_stale:
-            sup_disc.note_devn(gw, d.get('dev'))
             sup_disc.note_hash(gw, d.get('hash', ''))
         cal = d.get('cal')                               # STEP 4: hash kalendarza bramki → drift
         if cal is not None and gw and not hb_stale and cal != expected_cal_hash.get(gw):
@@ -2872,28 +2892,6 @@ def run_supervisor(log):
                 cal_sync_guard[gw] = now
                 log.info('CAL', f'🔄 {gw} cal drift ({cal}≠{expected_cal_hash.get(gw)}) → re-sync')
                 targeted_calendar_sync([gw])
-        # #2: SYNC CZASU sterowany hashem — TYLKO gdy rozjazd, nie na każdym starcie.
-        # Rozjazd = pierwszy kontakt w sesji (offset nieznany) LUB tq bramki nieświeży
-        # (unsynced/stale/holdover). synced/ntp po 1. sync = cisza. „supervisor inicjalizuje".
-        if gw:
-            tq = d.get('tq')
-            up = int(d.get('up', 0) or 0)
-            if up < gw_last_up.get(gw, 0):               # #2: uptime spadł = bramka zrestartowała
-                synced_gw.discard(gw)                    # → utraciła sync (offset '--'), wyślij ponownie
-                time_sync_guard.pop(gw, None)            # restart = zdarzenie pilne → omiń debounce 120s
-                gw_zg.pop(gw, None)                      # 2026-07-29: bramka wstala z pustymi kaflami
-                                                         # zgodnosci → wymus push przy najblizszym HB
-            gw_last_up[gw] = up
-            first = gw not in synced_gw
-            if first or tq in ('unsynced', 'stale', 'holdover'):
-                now = time.time()
-                if now - time_sync_guard.get(gw, 0) > 120:
-                    time_sync_guard[gw] = now; synced_gw.add(gw)
-                    log.info('SYNC', f'🕐 {gw} sync czasu ({"pierwszy kontakt" if first else tq}) → send sync')
-                    send_to_all({"t": "sync", "sec": int(time.time()), "g": gw})
-        # offline-hash `oh` w HB: zostawiony jako sygnał diagnostyczny, ale NIE triggeruje reconcile —
-        # availability jest napędzana CIĄGŁYM batch `a:` (przez _set_avail), więc lista zawsze == licznik.
-        # (Wcześniej `oh` z GatewayOfflineAnomaly ≠ hash z batch-a: → ciągłe niepotrzebne dumpy.)
         psync = get_sup_params(gw)                       # F3: lazy mirror per-bramka (1. kontakt tworzy)
         ph = d.get('ph')                                 # STEP 17: hash parametrów (wskaźnik driftu)
         if ph and not hb_stale and psync is not None and ph != psync.params_hash():
@@ -2918,8 +2916,67 @@ def run_supervisor(log):
         # disc: gw_synced (mapa zarejestrowana), param: mirror, cal: expected, anomaly: gw_ah_sync.
         # Spóźniony HB nie może nadpisać nowszych hashy z completion callbacków.
         _eval_zg(gw, {} if hb_stale else d, hb_stale, psync)
+
+    def on_hs(d):
+        gw = d.get('g')
+        if not gw:
+            return
+        _ts = d.get('ts')
+        _stale = bool(_ts) and (time.time() - float(_ts)) > 180
+        reg_gw_hashes(gw)
+        _on_hashes(gw, d, _stale)
+
+    def on_hb(d):
+        gw = d.get('g'); sup_hb.handle_hb(d)
+        # SPOZNIONY HB (2026-10-01): kanal LoRa z transferami potrafi dostarczyc HB z OPOZNIENIEM
+        # rzedu 10 min (zmierzone G1: nadany 13:15, odebrany 13:25). Taki HB niesie hashe SPRZED
+        # ostatniej zmiany, wiec wszystkie „rozjazdy" z niego sa falszywe i wywoluja zbedne re-synce
+        # (kalendarz 3x, dsnap, dump_anom). Decyzje o rozjezdzie podejmujemy tylko z SWIEZEGO HB.
+        _hb_ts = d.get('ts')
+        hb_stale = bool(_hb_ts) and (time.time() - float(_hb_ts)) > 180
+        if hb_stale:
+            log.info('HB', f'⏳ {gw}: HB sprzed {int(time.time() - float(_hb_ts))}s — pomijam decyzje o rozjezdzie hashy')
+        if gw:
+            ha.reg_gw_controls(gw)
+            reg_gw_hashes(gw)                             # STEP 17: encje hash bramki
+            reg_cal_button_gw(gw)                         # STEP 4: per-bramka Sync Calendar
+            reg_anomaly_entities(gw)                      # STEP 5: encje an_offline/_battery/_other
+            reg_gw_time_entities(gw)                      # STEP 5+: encje jakość czasu + pora dnia
+            publish_gw_time(gw, d)                        # STEP 5+: tq/gm/ga → dashboard supervisora
+            ga = d.get('ga')                             # STEP 5: aktywność trybu bramki (supresja)
+            if ga is not None:
+                gw_active[gw] = bool(ga)
+        # RE-SYNC GUARD (A): HB/pong niesie prawdziwe `dev` — karm nim licznik kompletności.
+        # Bez tego gw_devn wypełniało tylko disc_meta (praktycznie: restart bramki), więc
+        # check_complete spał, a niepełny mirror (78/194) nie miał jak się naprawić.
+        if not hb_stale:
+            sup_disc.note_devn(gw, d.get('dev'))
+        # #2: SYNC CZASU sterowany hashem — TYLKO gdy rozjazd, nie na każdym starcie.
+        # Rozjazd = pierwszy kontakt w sesji (offset nieznany) LUB tq bramki nieświeży
+        # (unsynced/stale/holdover). synced/ntp po 1. sync = cisza. „supervisor inicjalizuje".
+        if gw:
+            tq = d.get('tq')
+            up = int(d.get('up', 0) or 0)
+            if up < gw_last_up.get(gw, 0):               # #2: uptime spadł = bramka zrestartowała
+                synced_gw.discard(gw)                    # → utraciła sync (offset '--'), wyślij ponownie
+                time_sync_guard.pop(gw, None)            # restart = zdarzenie pilne → omiń debounce 120s
+                gw_zg.pop(gw, None)                      # 2026-07-29: bramka wstala z pustymi kaflami
+                                                         # zgodnosci → wymus push przy najblizszym HB
+            gw_last_up[gw] = up
+            first = gw not in synced_gw
+            if first or tq in ('unsynced', 'stale', 'holdover'):
+                now = time.time()
+                if now - time_sync_guard.get(gw, 0) > 120:
+                    time_sync_guard[gw] = now; synced_gw.add(gw)
+                    log.info('SYNC', f'🕐 {gw} sync czasu ({"pierwszy kontakt" if first else tq}) → send sync')
+                    send_to_all({"t": "sync", "sec": int(time.time()), "g": gw})
+        # offline-hash `oh` w HB: zostawiony jako sygnał diagnostyczny, ale NIE triggeruje reconcile —
+        # availability jest napędzana CIĄGŁYM batch `a:` (przez _set_avail), więc lista zawsze == licznik.
+        # (Wcześniej `oh` z GatewayOfflineAnomaly ≠ hash z batch-a: → ciągłe niepotrzebne dumpy.)
+        _on_hashes(gw, d, hb_stale)                       # v12.15: od nowych bramek hashe jadą w `hs`
     dispatcher.register('hb', on_hb)
     dispatcher.register('pong', on_hb)
+    dispatcher.register('hs', on_hs)                      # v12.15: komplet hashy w osobnej ramce
     dispatcher.register('disc_meta', sup_disc.handle_disc_meta)
     dispatcher.register('disc_vio', sup_disc.handle_disc_vio)
 
