@@ -1510,7 +1510,11 @@ def run_gateway(log):
         log.info('DISC', f'✅ {len(discovery.devices)} devices z Z2M')
         for dev in discovery.devices:                    # STEP 3: lokalne encje LQI
             reg_gw_lqi(dev)
-        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay),
+        # v12.12 (2026-10-21, decyzja usera): start = SAMA meta (hash). Pełna devmapa tylko gdy
+        # sup zgłosi rozjazd: note_hash porównuje hash z KAŻDEGO HB/pong i żąda `disc` ze swoim `h`
+        # (pusty przy niepełnym/utraconym lustrze, np. reboot supa — /tmp to tmpfs). Wcześniej start
+        # ZAWSZE pchał devmapę (G1: ~9 min kanału), a dsnap danych czekał za nią w kolejce.
+        threading.Thread(target=lambda: discovery.send_discovery_with_delay(tx_delay, meta_only=True),
                          daemon=True).start()
     else:
         log.warn('DISC', 'Brak Z2M devices — wyślę discovery gdy Z2M dostarczy listę')
