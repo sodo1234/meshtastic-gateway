@@ -8,7 +8,7 @@ Zasady: JEV tylko PODNOSI/ustala poziom przy pewnosci >= 0.85; zadania dotykajac
 systemow (G1/G2/sup/deploy/produkcja) dostaja min. poziom 2; poziom 3 bez ANTHROPIC_API_KEY
 jest ODMAWIANY (inaczej claude -p zjadlby subskrypcje). Wynik: ostatnie 1500 znakow + log JSONL.
 """
-import json, os, re, subprocess, sys, time
+import json, os, re, shutil, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(__file__))
 from jev_decide import ask, LEVELS
 
@@ -40,12 +40,12 @@ def pick_level(text):
     return lvl, conf
 
 
-def run(level, text, cwd, budget):
+def run(level, text, cwd, budget, timeout=1800):
     if level == 0:
         return "local", "POZIOM 0: zadanie dla sesji lokalnej (nic nie uruchomiono).", "local"
     if level == 1:
         model = "gemini-3-pro-preview"
-        cmd = ["gemini", "--skip-trust", "-m", "gemini-3-pro-preview", "-p", text]
+        cmd = [shutil.which("gemini") or "gemini", "--skip-trust", "-m", "gemini-3-pro-preview", "-p", text]
     elif level == 2:
         model = "codex-companion/high"
         cmd = ["node", CODEX, "task", "--write", "--fresh", "--effort", "high", text]
@@ -58,12 +58,12 @@ def run(level, text, cwd, budget):
         cmd = ["claude", "-p", text, "--bare", "--model", "sonnet",
                "--max-budget-usd", str(budget), "--permission-mode", "acceptEdits"]
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=1800,
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace",
                            env=env if level == 3 else None)
         return model, (p.stdout or p.stderr or "")[-1500:], "ok" if p.returncode == 0 else f"exit {p.returncode}"
     except subprocess.TimeoutExpired as e:
-        out = e.stdout or e.stderr or "przekroczono limit 1800 s"
+        out = e.stdout or e.stderr or f"przekroczono limit {timeout} s"
         return model, str(out)[-1500:], "timeout"
     except Exception as e:
         return model, f"{type(e).__name__}: {e}"[-1500:], "error"

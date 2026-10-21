@@ -13,7 +13,16 @@ async def main():
             while True:
                 m=json.loads(await ws.recv())
                 if m.get("id")==i[0]: return m
-        cfg=(await call("lovelace/config",force=False,url_path=url_path))["result"]
+        if url_path=='all':  # wszystkie dashboardy tego HA (+ domyslny)
+            paths=[None]+[d["url_path"] for d in (await call("lovelace/dashboards/list"))["result"] if d.get("mode")=="storage"]
+            for p in paths: await one(call,p)
+            return
+        await one(call,url_path)
+async def one(call,url_path):
+        r=await call("lovelace/config",force=False,url_path=url_path)
+        if not r.get("success"): print(url_path,"pominiety:",r.get("error",{}).get("code")); return
+        cfg=r["result"]
+        print("==",url_path)
         bk=f"/tmp/lovelace_backup_{url_path}_{int(time.time())}.json"; json.dump(cfg,open(bk,'w'),ensure_ascii=False); print("backup:",bk)
         stats={"popups":0,"strings":0}
         def wrap(o):
@@ -21,6 +30,8 @@ async def main():
             if isinstance(o,dict): return {k:wrap(v) for k,v in o.items()}
             if isinstance(o,str):
                 t=o.strip()
+                if t.startswith('[[[ return "[[['):  # juz owiniety (2026-10-21: idempotentny)
+                    stats["done"]=stats.get("done",0)+1; return o
                 if t.startswith('[[[') and t.endswith(']]]'):
                     stats["strings"]+=1
                     return "[[[ return "+json.dumps(t,ensure_ascii=False)+"; ]]]"
