@@ -388,6 +388,10 @@ def run_gateway(log):
             biezace = data.states.setdefault(dev, {})
             if 'state' not in biezace:
                 biezace['state'] = st.upper()
+                # v12.13 (2026-10-21): stan z HA = to, co bramka wysłała przed restartem → baza `dh`
+                # BEZ nadawania (koniec startowego flush ALL `b`). Supervisor porównuje `dh` ze swoim
+                # lustrem; rozjazd (zgubiona ramka, reboot supa) → potwierdzony HB → jeden `dsnap`.
+                data.note_sent(dev, {'state': biezace['state']})
                 n += 1
         log.info('DATA', f'🌱 hydracja z HA: {n} urządzeń ma stan po starcie '
                          f'(sh={data.status_hash()}) — lustro nie zostanie wyzerowane')

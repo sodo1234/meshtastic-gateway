@@ -78,6 +78,14 @@ class AnomalyReconciler:
         self.delta_send_fn = delta_send_fn
         self.delta_max = delta_max
         self._last_sent = None           # {(sid,code): val} stan ostatnio przekazany supervisorowi
+        # v12.13 (2026-10-21): START PROCESU ≠ POWÓD DO TRANSFERU. Store przeżywa restart (persist),
+        # a supervisor ma tę samą listę — przed v12.13 pierwszy _transmit i tak słał pełny `ansnap`
+        # (`_last_hash`=None), także przy `ah` zgodnym z supem (G1 live 10-21). Teraz baza delty =
+        # store wczytany z persistu (zdjęty TU, zanim silniki ruszą); sidy rozwiązywane dopiero
+        # przy 1. _transmit (discovery startuje asynchronicznie). Rozjazd naprawia hash: `ah` w HB
+        # ≠ lista supa → dump_anom → force_send; zła baza → `h` w an_d ≠ hash supa → dump_anom.
+        self._boot = [(dev, a.get("code"), a.get("value"))
+                      for (g, dev, _cat), a in store.anomalies.items() if g == gw_id]
         # SELF-CLEAR STALE (2026-07-07, audyt: zombie „Test 2/offline"): wpis w store, którego
         # silniki już NIE potwierdzają (zgubione recovery) → usuń po karencji stale_grace
         # (≥2 kolejne skany), zamiast wysyłać zombie w każdym blobie (churn: sup pokazuje →
@@ -197,6 +205,18 @@ class AnomalyReconciler:
         """Wyślij zmianę stanu anomalii: DELTA (1 pakiet an_d) gdy mała, pełny blob gdy bootstrap/
         duża/force. Zwraca True gdy coś poszło. Aktualizuje _last_hash/_last_sent."""
         h = self.blob_hash(blob)
+        if self._boot is not None:
+            if not force_send and self._last_sent is None:   # v12.13: baza = persist, bez nadawania
+                base = [[s, c] if v is None else [s, c, v]
+                        for s, c, v in ((self.dev_to_sid(d), c, v) for d, c, v in self._boot)
+                        if s is not None]
+                base.sort(key=lambda r: (r[0], r[1]))
+                self._last_sent = {(r[0], r[1]): (r[2] if len(r) > 2 else None) for r in base}
+                self._last_hash = self.blob_hash(base)
+                if self.log:
+                    self.log.info('ANOM', f'⏭️ start: baza {len(base)} anomalii z persistu '
+                                          f'(ah={self._last_hash}) — bez ansnap, decyduje hash')
+            self._boot = None
         if not force_send and h == self._last_hash:
             return False
         cur = {(r[0], r[1]): (r[2] if len(r) > 2 else None) for r in blob}

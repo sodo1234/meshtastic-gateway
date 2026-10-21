@@ -233,6 +233,7 @@ def test_patch4_inactive_gating_per_device():
     gd = GatewayData("G1", disc, lora, mon_interval=999, pri_interval=999, report_interval=1)
     gd.active_fn = lambda: False                          # bramka NIEAKTYWNA (np. night w dzień)
     gd._start_ts = time.time() - 1000
+    gd._sweep_n = 1                                       # sweep PO starcie (v12.13: start nic nie pcha)
     for d in disc.devices:                                # wszystkie żywe wg z2m native
         gd._z2m_avail[d] = True
         gd.states[d] = {"temperature": 22.0, "humidity": 40, "battery": 100,
@@ -590,7 +591,7 @@ def test_avail_blob_dedup_and_keepalive():
     gd.mon_batch.flush()
 
     gd.report_liveness()
-    assert len(blobs) == 1, f"pierwszy sweep musi wyslac blob: {len(blobs)}"
+    assert len(blobs) == 1, f"pierwszy sweep musi wyslac blob (liveness po restarcie): {len(blobs)}"
 
     for i in range(AVAIL_KEEPALIVE_SWEEPS):         # identyczna tresc → pomijane
         gd.report_liveness()
@@ -621,16 +622,21 @@ def test_reporting_policy_binary_event_sensor_cyclic():
     gd.on_z2m("zigbee2mqtt/Test 1", json.dumps({"state": "ON"}))                        # switch
     gd.mon_batch.flush(); lora.sent.clear()
 
-    gd.report_liveness(); gd.mon_batch.flush()      # 1. sweep = bootstrap dla WSZYSTKICH
-    assert lora.sent, "pierwszy sweep po starcie MUSI wysłać stan (bootstrap dashboardu)"
-    assert blobs, "blob availability musi lecieć (nośnik liveness binarnych)"
-
     def sids_sent():
         out = set()
         for fr in lora.sent:
             for e in json.loads(fr).get("d", []):
                 out.add(e[0])
         return out
+
+    dh0 = gd.state_hash()
+    gd.report_liveness(); gd.mon_batch.flush()      # 1. sweep po starcie
+    # v12.13: bez startowego flush ALL — binarne NIE lecą przez `b` (decyduje hash dh/sh w HB →
+    # dsnap przy rozjeździe); liveness niesie blob `avail`; pomiarowe dalej cyklicznie.
+    assert 0 in sids_sent(), "pomiarowy (Temp 1) leci cyklicznie także w 1. sweepie"
+    assert 3 not in sids_sent(), f"przekaźnik NIE leci na starcie (sup ma lustro): {lora.sent}"
+    assert blobs, "blob availability musi lecieć po starcie (nośnik liveness binarnych)"
+    assert gd.state_hash() == dh0, "1. sweep nie zmienia bazy dh przekaźnika"
 
     lora.sent.clear()
     gd.report_liveness(); gd.report_liveness()      # kolejne sweepy BEZ żadnej zmiany

@@ -472,9 +472,9 @@ internetu i niczego nie wysyła; wszystko idzie z supa (ma internet) albo z n8n.
   Źródło tokenu: `TELEGRAM_BOT_TOKEN` w `local-ai-packaged/.env` na PC.
 - `automations.yaml` → dwie automatyzacje `lora_tg_*` (na końcu pliku).
 - Backup sprzed zmian: `/var/lib/homeassistant/backup_telegram_20261015_194054/`.
-- n8n watchdog: credential HTTP Header „HA sup LoRa (watchdog) — WSTAW TOKEN” (`5eVqSKMZzjKXrlr3`).
-  Dopóki ma placeholder, HA odpowiada 401 i watchdog sprawdza tylko „HA żyje”; po wpisaniu
-  `Bearer <long-lived token supa>` sprawdza też świeżość skryptu.
+- n8n watchdog i sterowanie: credential typu **Bearer Auth** z long-lived tokenem HA supa (sam token,
+  bez słowa „Bearer”; stary credential typu HTTP Header usunięty 2026-10-15). Token kopiować ikoną
+  w HA — niewidoczny znak spoza ASCII w nagłówku daje **500** (nie 401).
 
 **Uwaga:** `rest_command` to integracja YAML — ładuje się dopiero po **restarcie HA core**
 supervisora (reload nie wystarcza, gdy integracji wcześniej nie było). Restart HA core nie
@@ -516,9 +516,8 @@ do **„SCADA Telegram — sterowanie”** (`1W3fmZuPEunk8MuO`). Gałąź FALSE 
 - Inne czaty: ignorowane bez odpowiedzi (filtr w pollerze i drugi raz w węźle `Plan`).
 - Log: n8n data table **`scada_tg_log`** (`Qa2Dd5JAqLHRS1tb`): ts, chat_id, who, command, gw,
   result (`ok` / `brak potwierdzenia` / `czeka na potwierdzenie` / `wygasło` / `błąd`, + `[sent]`), reply.
-- Dostęp do HA: credential n8n `5eVqSKMZzjKXrlr3` (ten sam co watchdog). **Bez wpisanego tokenu
-  (`Bearer <long-lived token supa>`) każda komenda kończy się błędem 401 w węźle `HA states`
-  i bot nic nie odpowiada.**
+- Dostęp do HA: ten sam credential Bearer co watchdog. Zły/pusty token → 401 (albo 500 przy
+  znaku spoza ASCII) w węźle `HA states` i bot nic nie odpowiada.
 - Wejście testowe podworkflow: `{chat_id: 7206629906, user_message: "/status", dry_run: true}`
   — `dry_run` nie wysyła nic na Telegram, odpowiedź trafia do logu (`reply`).
 - Rollback pollera: n8n-mcp `n8n_workflow_versions` rollback `hSjFqC3Hx1nZzR5e` wersja lokalna

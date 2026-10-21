@@ -304,17 +304,20 @@ class GatewayData:
         if caps:
             self.sent_states.setdefault(dev, {}).update(caps)
 
-    def _enqueue(self, dev, caps_dict, force=False, available=True):
-        sid = self.disc.short_ids.get(dev)
-        if sid is None:
-            return
-        # UNIFIKACJA: zgłoś zmianę dostępności (to samo źródło co `a:`) → encja na lokalnym HA
+    def _pub_avail(self, dev, available):
+        """UNIFIKACJA: zgłoś zmianę dostępności (to samo źródło co `a:`) → encja na lokalnym HA."""
         if self.on_avail is not None and self._avail_pub.get(dev) != available:
             self._avail_pub[dev] = available
             try:
                 self.on_avail(dev, available)
             except Exception:
                 pass
+
+    def _enqueue(self, dev, caps_dict, force=False, available=True):
+        sid = self.disc.short_ids.get(dev)
+        if sid is None:
+            return
+        self._pub_avail(dev, available)
         # B1/B2 (2026-08-03): wpis `b` chudnie o dwa pola, które nic nie wnosiły.
         #  • `q` (LQI) był w 87% wpisów, nigdy nie wyzwalał wysyłki (ride-along) i tylko rozpychał
         #    ramkę → przeniesiony do blobu `avail` (pełny sweep, jeden skompresowany transfer).
@@ -476,7 +479,8 @@ class GatewayData:
                         lq_blob[str(sid)] = int(round(float(lq)))
                     except (TypeError, ValueError):
                         pass
-            changed = (self._alive.get(dev) != alive)    # (d) zmiana dostępności od ostatniego sweepu
+            prev = self._alive.get(dev)
+            changed = (prev != alive)                    # (d) zmiana dostępności od ostatniego sweepu
             # EFEKTYWNOŚĆ (2026-07-05): non-monitored na PEŁNYM sweepie z blobem → TYLKO blob, NIE
             # także `b`. Bug: przy starcie (pusty _alive → changed=True dla WSZYSTKICH) słał 199×
             # non-monitored I przez `b` I do blobu (redundancja = zalew ~33 pakietów `b`). Monitored:
@@ -494,7 +498,24 @@ class GatewayData:
                 # Liveness binarnych niesie blob `avail` (jeden transfer zamiast ~65 ramek `b`),
                 # z którego supervisor odświeża zegar offline.
                 measurement = info.get('type') == 'sensor'
-                send_b = changed or (full_sweep if measurement else self._sweep_n <= 1)
+                # v12.13 (2026-10-21): koniec startowego „flush ALL" binarnych. Pierwszy sweep po
+                # starcie wysyłał `b` dla KAŻDEGO monitored binarnego (G1: ~107 wpisów = transfer
+                # `bdata` w pierwszych minutach), choć supervisor ma lustro z persistu. Bazę `dh`
+                # daje teraz hydracja z HA (harness: note_sent bez nadawania), a rozjazd naprawia
+                # potwierdzony `dh`/`sh` w HB → JEDEN `dsnap`. Na starcie „zmiana" względem pustego
+                # `_alive` to brak wiedzy, nie zmiana — leci tylko realna zmiana względem seeda z2m.
+                # Liveness binarnych po starcie niesie blob `avail` (ZOSTAJE: po restarcie/braku prądu
+                # „kto żyje” to nowa informacja, a dostępności non-monitored nie pokrywa żaden hash HB).
+                # Pomiarowe bez zmian (cyklicznie, odczyt się starzeje).
+                if measurement:
+                    send_b = changed or full_sweep
+                elif self._sweep_n <= 1:
+                    send_b = prev is not None and changed
+                    if not send_b:
+                        self._pub_avail(dev, alive)      # lokalna encja HA dalej świeża, bez LoRa
+                        self._a_sent[dev] = alive        # B2: powrót online po starcie niesie a:1
+                else:
+                    send_b = changed
             elif use_blob:
                 send_b = False                            # pełny sweep → availability przez blob (1 transfer)
             else:

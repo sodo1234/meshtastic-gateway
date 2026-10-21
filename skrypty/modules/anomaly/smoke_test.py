@@ -508,7 +508,9 @@ def test_delta_and_snapshot_share_gateway_clock():
         readd_fn=lambda sid, code, val: st.handle_ab({"g": "G1", "d": [[sid, code, val]]}),
         snapshot_send_fn=snaps.append, delta_send_fn=deltas.append,
         interval=999, mute_window=0)
-    rec.run_once()                                   # bootstrap → pełny blob (brak _last_sent)
+    rec.run_once()                                   # v12.13: start z pustego persistu → delta, nie blob
+    assert not snaps and deltas and isinstance(deltas[-1].get("ts"), int), (snaps, deltas)
+    rec.run_once(force_send=True)                    # dump_anom/ansnap_req → pełny blob
     assert snaps and isinstance(snaps[-1].get("ts"), int), f"snapshot bez ts: {snaps[-1:]}"
     truth.append([0, "th", 30.0])                    # mała zmiana → delta
     rec.run_once()
@@ -518,8 +520,41 @@ def test_delta_and_snapshot_share_gateway_clock():
     print("✅ an_d i ansnap niosą zegar bramki (oś porządkująca spóźniony snapshot)")
 
 
+def test_reconciler_start_no_ansnap_when_store_persisted():
+    """v12.13 (2026-10-21): restart bramki NIE wysyła `ansnap`, gdy store (persist) = lista supa.
+    Live G1 10-21: pełny blob po starcie mimo zgodnego `ah`. Baza delty = store z persistu,
+    `ah` w HB od razu znany; zmiana po starcie = delta `an_d` liczona od tej bazy; force_send
+    (dump_anom/ansnap_req supa przy rozjeździe) nadal wysyła pełny blob."""
+    from modules.anomaly import AnomalyStore, AnomalyReconciler
+    sid2dev = {0: "Temp 1", 1: "Temp 2"}
+    st = AnomalyStore(resolve_dev=lambda gw, sid: sid2dev.get(sid))
+    st.handle_ab({"g": "G1", "d": [[0, "lb", 20]]})  # = wczytane z persistu przed startem
+    sup_rows = [[0, "lb", 20]]                       # supervisor ma tę samą listę
+    snaps, deltas = [], []
+    truth = [[0, "lb", 20]]
+    rec = AnomalyReconciler(
+        "G1", st, probes=[lambda: list(truth)],
+        resolve_dev=lambda sid: sid2dev.get(sid),
+        dev_to_sid=lambda dev: {v: k for k, v in sid2dev.items()}.get(dev),
+        readd_fn=lambda sid, code, val: st.handle_ab({"g": "G1", "d": [[sid, code, val]]}),
+        snapshot_send_fn=snaps.append, delta_send_fn=deltas.append,
+        interval=999, mute_window=0)
+    rec.run_once()
+    assert not snaps and not deltas, f"start bez zmian NIE nadaje: {snaps} {deltas}"
+    assert rec._last_hash == AnomalyReconciler.blob_hash(sup_rows), "ah w HB = hash listy supa"
+    truth.append([1, "th", 31.0])                    # nowa anomalia po starcie → delta od bazy
+    rec.run_once()
+    assert not snaps and len(deltas) == 1 and deltas[0]["a"] == [[1, "th", 31.0]], deltas
+    sup_rows = sorted(sup_rows + deltas[0]["a"], key=lambda r: (r[0], r[1]))
+    assert deltas[0]["h"] == AnomalyReconciler.blob_hash(sup_rows), "delta domyka hash supa"
+    rec.run_once(force_send=True)                    # sup wykrył rozjazd → pełny blob jak dotąd
+    assert len(snaps) == 1 and len(snaps[0]["a"]) == 2, snaps
+    print("✅ reconciler: start z persistu bez ansnap, zmiana = delta od bazy, force = blob")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_delta_and_snapshot_share_gateway_clock,
+             test_reconciler_start_no_ansnap_when_store_persisted,
              test_stagnation_battery_vs_mains, test_stagnation_recovery,
              test_stagnation_skips_unseen, test_stagnation_survives_restart,
              test_offline_by_type, test_offline_recovery_and_grace,
